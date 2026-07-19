@@ -54,7 +54,7 @@ REACT_QUALITY_DEPENDENCIES = (
 CONFIG_SCHEMA = {
     "project": {"name": None},
     "stacks": {
-        "python": {"enabled": None},
+        "python": {"enabled": None, "directory": None},
         "react": {"enabled": None, "directory": None, "package_manager": None},
         "bash": {"enabled": None},
         "dotnet": {"enabled": None, "solution": None, "test_project": None},
@@ -94,6 +94,11 @@ def validate_config(data: dict) -> None:
         )
     for label, value, allow_dot in (
         (
+            "stacks.python.directory",
+            get(data, "stacks", "python", "directory", default="backend"),
+            True,
+        ),
+        (
             "stacks.react.directory",
             get(data, "stacks", "react", "directory", default="frontend"),
             True,
@@ -110,6 +115,10 @@ def validate_config(data: dict) -> None:
         ),
     ):
         validate_repository_path(str(value), label, allow_empty=allow_dot)
+    if get(data, "stacks", "python", "enabled", default=False):
+        validate_python_package_directory(
+            str(get(data, "stacks", "python", "directory", default="backend"))
+        )
 
 
 def validate_repository_path(
@@ -133,12 +142,48 @@ def validate_repository_path(
     return resolved
 
 
+def validate_python_package_directory(value: str) -> None:
+    path = Path(value.strip())
+    if len(path.parts) != 1:
+        raise SystemExit(
+            "stacks.python.directory must be one top-level importable Python package "
+            f"name, for example 'backend': {value!r}"
+        )
+    package_name = path.name
+    if not package_name.isidentifier() or package_name.startswith("_"):
+        raise SystemExit(
+            "stacks.python.directory must be one top-level importable Python package "
+            f"name, for example 'backend': {value!r}"
+        )
+
+
 def shell_quote(value: str) -> str:
     return "'" + value.replace("'", "'\\''") + "'"
 
 
 def chain(commands: list[str]) -> str:
     return " && ".join(f"({command})" for command in commands)
+
+
+IGNORED_SCRIPT_DIRS = {
+    ".git",
+    ".ai",
+    ".venv",
+    "venv",
+    "node_modules",
+    "build",
+    "dist",
+    "target",
+}
+
+
+def project_shell_scripts() -> list[Path]:
+    return [
+        path
+        for path in ROOT.rglob("*.sh")
+        if path.is_file()
+        and not any(part in IGNORED_SCRIPT_DIRS for part in path.parts)
+    ]
 
 
 def generate_env(data: dict) -> str:
@@ -153,15 +198,17 @@ def generate_env(data: dict) -> str:
 
     if get(data, "stacks", "python", "enabled", default=False):
         run = "uv run --locked"
+        directory = str(get(data, "stacks", "python", "directory", default="backend"))
+        target = shell_quote(directory)
         setup += ["uv sync --locked --all-groups"]
-        fmt_check += [f"{run} ruff format --check --exclude .ai ."]
-        fmt_apply += [f"{run} ruff format --exclude .ai ."]
+        fmt_check += [f"{run} ruff format --check {target} tests"]
+        fmt_apply += [f"{run} ruff format {target} tests"]
         lint += [
-            f"{run} ruff check --exclude .ai .",
-            f"{run} mypy --exclude '^\\.ai/' .",
+            f"{run} ruff check {target} tests",
+            f"{run} mypy {target} tests",
         ]
-        tests += [f"{run} pytest"]
-        security += [f"{run} bandit -q -r . -x ./.ai,./tests,./.venv,./venv"]
+        tests += [f"{run} python -m pytest"]
+        security += [f"{run} bandit -q -r {target}"]
         dependency_scans += [f"{run} pip-audit"]
         build += ["uv build"]
 
@@ -186,10 +233,14 @@ def generate_env(data: dict) -> str:
         build += [prefix + runner + " build"]
 
     if get(data, "stacks", "bash", "enabled", default=False):
+        shell_script_count = len(project_shell_scripts())
         lint += [
             "find . -type f -name '*.sh' -not -path './.git/*' -not -path './.ai/*' -print0 | xargs -0 -r shellcheck"
         ]
-        tests += ["test -d tests/shell && bats tests/shell"]
+        if shell_script_count:
+            tests += [
+                "test -d tests/shell || { printf 'Bash scripts were found, but tests/shell is missing. Add Bats tests or disable stacks.bash.enabled.\\n' >&2; exit 1; }; bats tests/shell"
+            ]
 
     if get(data, "stacks", "dotnet", "enabled", default=False):
         solution = str(get(data, "stacks", "dotnet", "solution", default="") or ".")
@@ -285,6 +336,20 @@ def npm_package_name(specification: str) -> str:
     return specification.split("@", 1)[0]
 
 
+def ensure_setuptools_package_discovery(pyproject: Path, package_name: str) -> None:
+    text = pyproject.read_text(encoding="utf-8")
+    parsed = tomllib.loads(text)
+    setuptools = parsed.get("tool", {}).get("setuptools", {})
+    if "packages" in setuptools or "py-modules" in setuptools:
+        return
+    pyproject.write_text(
+        text.rstrip()
+        + "\n\n[tool.setuptools.packages.find]\n"
+        + f'include = ["{package_name}"]\n',
+        encoding="utf-8",
+    )
+
+
 def enabled_stack_names(data: dict) -> list[str]:
     stacks = get(data, "stacks", default={})
     if not isinstance(stacks, dict):
@@ -299,6 +364,10 @@ def enabled_stack_names(data: dict) -> list[str]:
 def bootstrap_python(data: dict) -> None:
     if not get(data, "stacks", "python", "enabled", default=False):
         return
+    directory = str(get(data, "stacks", "python", "directory", default="backend"))
+    backend = validate_repository_path(directory, "stacks.python.directory")
+    if backend is None:
+        raise SystemExit("stacks.python.directory must not be empty")
 
     uv_path = shutil.which("uv")
     if not uv_path:
@@ -341,6 +410,24 @@ def bootstrap_python(data: dict) -> None:
         run_command(["uv", "add", "--dev", *missing], ROOT)
     else:
         run_command(["uv", "sync"], ROOT)
+
+    backend.mkdir(parents=True, exist_ok=True)
+    init_file = backend / "__init__.py"
+    if not init_file.exists():
+        init_file.write_text('"""Application backend package."""\n', encoding="utf-8")
+
+    tests_dir = ROOT / "tests"
+    tests_dir.mkdir(exist_ok=True)
+    smoke_test = tests_dir / "test_backend.py"
+    package_name = backend.name
+    ensure_setuptools_package_discovery(pyproject, package_name)
+    if not smoke_test.exists():
+        smoke_test.write_text(
+            f"import {package_name}\n\n\n"
+            "def test_backend_package_imports() -> None:\n"
+            f"    assert {package_name} is not None\n",
+            encoding="utf-8",
+        )
 
 
 def package_manager_commands(
@@ -559,9 +646,8 @@ def update_next_steps() -> None:
         "# Next steps\n\n"
         "Keep at most 5-10 prioritized actionable items. Remove completed or obsolete entries.\n\n"
         "## Prioritized\n\n"
-        "1. Complete `SECURITY.md` with the private reporting channel and supported-version policy.\n"
-        "2. Complete the purpose and project-specific fields in `.ai/PROJECT_CONTEXT.md`.\n"
-        "3. Record the required decisions in `.ai/policies/QUALITY_GATES.md` and configure branch protection.\n\n"
+        "1. Complete the purpose and project-specific fields in `.ai/PROJECT_CONTEXT.md`.\n"
+        "2. Record the required decisions in `.ai/policies/QUALITY_GATES.md` and configure branch protection.\n\n"
         "## Blockers\n\n"
         "- Full verification remains blocked until the required project-readiness fields are complete.\n\n"
         "## Residual risks\n\n"
@@ -626,7 +712,7 @@ See `docs/architecture/overview.md` and `docs/architecture/decisions/`.
 
 ## Security
 
-See `SECURITY.md`.
+See `.ai/policies/SECURITY_GUIDELINES.md`.
 
 """
     path.write_text(content, encoding="utf-8")

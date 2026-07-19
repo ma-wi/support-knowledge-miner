@@ -4,6 +4,7 @@ project:
 stacks:
   python:
     enabled: true
+    directory: "backend"
   react:
     enabled: true
     directory: "frontend"
@@ -20,8 +21,8 @@ engineering_knowledge:
 
 documentation:
   budgets:
-    agents_md_lines: 940
-    project_context_lines: 950
-    current_plan_lines: 350
-    next_steps_items: 510
-    active_work_item_lines: 980
+    agents_md_lines: 240
+    project_context_lines: 250
+    current_plan_lines: 35
+    next_steps_items: 10
+    active_work_item_lines: 180

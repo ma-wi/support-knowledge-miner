@@ -2,6 +2,16 @@
 
 Third-party packages are untrusted executable supply-chain inputs. Adding or upgrading a dependency is a security-relevant change.
 
+## Default baseline
+
+- Allow-list mode is off by default for small/private projects; turn it on only for high-assurance projects.
+- Deny-list starts empty; add exact package coordinates only for known-bad, forbidden, or organization-blocked packages.
+- Lockfiles are mandatory for every supported ecosystem that has one.
+- Version ranges are allowed when a committed lockfile provides reproducibility.
+- Mutable or remote direct sources are rejected by default.
+- New direct dependencies must be justified; do not add a package for a small stable utility.
+- Critical/high vulnerability, license, provenance, or install-script concerns block completion until resolved.
+
 ## Required review for new direct dependencies
 
 Record in the durable specification, implementation plan, or pull request as appropriate:

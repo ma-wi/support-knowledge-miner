@@ -1,3 +1,7 @@
+---
+apply: always
+---
+
 # React and TypeScript rules
 
 Apply to React, TypeScript, JavaScript, and frontend configuration.

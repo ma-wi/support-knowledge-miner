@@ -4,6 +4,19 @@
 
 Document current truth, durable rationale, and actionable next steps. Do not document agent reasoning, chat transcripts, tool logs, or a chronological work diary.
 
+## Default baseline
+
+- `README.md` explains the current project for humans.
+- `.ai/PROJECT_CONTEXT.md` gives agents a compact map of the project.
+- `SECURITY.md` documents the real security reporting process before CI is expected to pass.
+- `.ai/NEXT_STEPS.md` contains only short-term unresolved follow-up.
+- `CHANGELOG.md` is created only when the project has an actual release process.
+- Temporary `.ai/work/` files stay until review is complete, then durable facts are moved to maintained documentation.
+
+## Language and spelling
+
+In German-language documentation, write German umlauts directly as `ä`, `ö`, and `ü`. Do not replace them with `ae`, `oe`, or `ue` unless a technical identifier, command, file path, or external proper name requires ASCII.
+
 ## Canonical information classes
 
 - Binding rules: `AGENTS.md`, `.aiassistant/rules/`, quality and security policies.
@@ -19,7 +32,6 @@ Each fact should have one canonical location. Other files should link to it inst
 ## Audience separation
 
 - `README.md`: users and new human contributors.
-- `CONTRIBUTING.md`: create it when the project's human development workflow is established.
 - `docs/architecture/`: durable system design and ADRs.
 - `.ai/`: compact agent context, workflow, active work, and templates.
 - `CHANGELOG.md`: create it when the project has a defined release and versioning process.

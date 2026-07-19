@@ -50,13 +50,13 @@ Do not disable rules, delete tests, reduce coverage, suppress findings, or chang
 
 ## Required project decisions
 
-- Minimum coverage policy:
-- Supported runtime matrix:
-- Warning-as-error policy:
-- Security severity threshold:
-- Dependency update policy:
-- Flaky-test policy:
-- CI required checks:
+- Minimum coverage policy: Neue Funktionen und Bugfixes brauchen passende automatische Tests. Es gibt vorerst keine feste Prozentzahl.
+- Supported runtime matrix: Unterstützt wird nur die Umgebung, die in GitHub Actions läuft und durch die Dateien im Repository festgelegt ist.
+- Warning-as-error policy: Warnungen aus Linting, Typprüfung, Build oder Security-Checks sollen wie Fehler behandelt und behoben werden.
+- Security severity threshold: Kritische und hohe Sicherheitsprobleme blockieren den Merge.
+- Dependency update policy: Neue oder aktualisierte Abhängigkeiten müssen begründet und mit Lockfile eingecheckt werden.
+- Flaky-test policy: Unzuverlässige Tests werden repariert; sie dürfen nicht einfach ignoriert oder gelöscht werden.
+- CI required checks: Vor dem Merge muss GitHub Actions mit `./.ai/tools/verify.sh` erfolgreich durchlaufen.
 
 ## Dependency and package gate
 

@@ -1,3 +1,7 @@
+---
+apply: always
+---
+
 # Security and dependency rules
 
 Apply when authentication, authorization, input handling, files, processes, networks, persistence, secrets, or dependencies are involved.

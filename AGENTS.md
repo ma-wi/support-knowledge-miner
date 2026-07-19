@@ -139,7 +139,7 @@ closeout, curate durable documentation before deleting temporary artifacts and r
 `CURRENT_PLAN.md`.
 
 - Lifecycle/status: `.ai/policies/WORKFLOW.md`
-- Roles: `.ai/roles/{planner,implementer,code-reviewer}.md`
+- Roles: `.ai/roles/{PLANNER,IMPLEMENTER,CODE_REVIEWER}.md`
 - Security/dependencies: `.ai/policies/{SECURITY_GUIDELINES,DEPENDENCY_POLICY}.md`
 - Documentation/quality: `.ai/policies/{DOCUMENTATION_RULES,QUALITY_GATES}.md`
 

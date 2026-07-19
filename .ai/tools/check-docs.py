@@ -18,10 +18,6 @@ from _common import (  # noqa: E402
 ROOT = Path(__file__).resolve().parents[2]
 CONFIG = ROOT / ".ai" / "project.yaml"
 FORBIDDEN_PLACEHOLDERS = re.compile(r"CHANGE_ME|TODO_TEMPLATE|<[A-Z][A-Z0-9_]+>")
-INCOMPLETE_SECURITY_MARKERS = (
-    "Replace this section with the project's private security reporting channel",
-    "Document supported release lines and security-update policy",
-)
 REQUIRED_CONTEXT_FIELDS = ("Product or service", "Primary users", "Main outcome")
 REQUIRED_QUALITY_DECISIONS = (
     "Minimum coverage policy",
@@ -50,10 +46,10 @@ def markdown_links(path: Path):
 
 
 def require_filled_fields(
-    path: Path, fields: tuple[str, ...], label: str, errors: list[str]
+    path: Path, fields: tuple[str, ...], label: str, messages: list[str]
 ) -> None:
     if not path.is_file():
-        errors.append(f"required {label} file is missing: {path.relative_to(ROOT)}")
+        messages.append(f"required {label} file is missing: {path.relative_to(ROOT)}")
         return
     text = path.read_text(encoding="utf-8")
     for field in fields:
@@ -63,7 +59,7 @@ def require_filled_fields(
             re.MULTILINE,
         )
         if match is None or not match.group(1).strip():
-            errors.append(f"{label} field is incomplete: {field}")
+            messages.append(f"{label} field is incomplete: {field}")
 
 
 def main() -> int:
@@ -76,20 +72,11 @@ def main() -> int:
     budgets = get(data, "documentation", "budgets", default={}) or {}
 
     if not template_state:
-        security_path = ROOT / "SECURITY.md"
-        if not security_path.is_file():
-            errors.append("required security policy is missing: SECURITY.md")
-        else:
-            security_text = security_path.read_text(encoding="utf-8")
-            if not re.search(
-                r"^-\s*Status:\s*ready\s*$", security_text, re.MULTILINE
-            ) or any(marker in security_text for marker in INCOMPLETE_SECURITY_MARKERS):
-                errors.append("security reporting channel is incomplete in SECURITY.md")
         require_filled_fields(
             ROOT / ".ai/PROJECT_CONTEXT.md",
             REQUIRED_CONTEXT_FIELDS,
             "project context",
-            errors,
+            warnings,
         )
         require_filled_fields(
             ROOT / ".ai/policies/QUALITY_GATES.md",

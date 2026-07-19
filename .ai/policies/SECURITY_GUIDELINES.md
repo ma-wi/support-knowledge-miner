@@ -2,6 +2,16 @@
 
 Apply these checks according to the change's threat surface.
 
+## Default baseline
+
+- Production access is always forbidden; use only local, development, test, or sandbox resources with no production data.
+- Default data classification is `internal`; treat credentials, tokens, private keys, and personal data as sensitive.
+- Default authorization behavior is deny-by-default at the protected operation.
+- Default network behavior is explicit allow-only: no new external service, callback, webhook, or telemetry endpoint without review.
+- Default secret handling is repository-zero: do not commit secrets, generated credentials, `.env` values, dumps, or copied production data.
+- Default security failure threshold blocks P0/P1, critical, and high findings until fixed.
+- Default risk acceptance for lower findings requires owner, rationale, expiry, and follow-up.
+
 ## Production isolation
 
 The absolute production-access prohibition in [`AGENTS.md`](../../AGENTS.md)

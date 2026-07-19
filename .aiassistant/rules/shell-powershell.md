@@ -1,3 +1,7 @@
+---
+apply: always
+---
+
 # Shell and PowerShell rules
 
 Apply to Bash, POSIX shell, and PowerShell scripts.

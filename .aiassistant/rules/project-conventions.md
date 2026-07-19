@@ -1,3 +1,7 @@
+---
+apply: always
+---
+
 # Project conventions
 
 - Treat `AGENTS.md` as the binding instruction file for coding agents.

@@ -14,6 +14,16 @@ Use a specialist context only for significant risk or an explicit requirement.
 Trivial work uses the reduced path in `AGENTS.md`: no temporary work directory, only
 the relevant checks, and no planner/implementer/reviewer split unless risk demands it.
 
+## Default baseline
+
+- Use `trivial` only for mechanical, behavior-neutral changes.
+- Use `normal` for ordinary fixes, documentation updates with policy impact, and bounded behavior changes.
+- Use `significant` for initial project work, public APIs, migrations, security/privacy-sensitive work, broad ambiguity, or subsystem-level design.
+- When unsure between classes, choose the higher class.
+- Keep one active requirement per branch or worktree.
+- Do not start implementation until required specifications, ADRs, and task files are ready.
+- Finish with `./.ai/tools/verify.sh`; never claim an unobserved pass.
+
 ## 1. Intake and classification
 
 The planner reads the requirement, configuration, context, applicable ADRs, and

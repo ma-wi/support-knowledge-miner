@@ -1,3 +1,7 @@
+---
+apply: always
+---
+
 # Python rules
 
 Apply to Python code and Python project configuration.

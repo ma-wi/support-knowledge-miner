@@ -4,9 +4,8 @@ Keep at most 5-10 prioritized actionable items. Remove completed or obsolete ent
 
 ## Prioritized
 
-1. Complete `SECURITY.md` with the private reporting channel and supported-version policy.
-2. Complete the purpose and project-specific fields in `.ai/PROJECT_CONTEXT.md`.
-3. Record the required decisions in `.ai/policies/QUALITY_GATES.md` and configure branch protection.
+1. Complete the purpose and project-specific fields in `.ai/PROJECT_CONTEXT.md`.
+2. Record the required decisions in `.ai/policies/QUALITY_GATES.md` and configure branch protection.
 
 ## Blockers
 

@@ -1,3 +1,7 @@
+---
+apply: always
+---
+
 # .NET and Visual Basic rules
 
 Apply to `.sln`, `.vbproj`, `.vb`, and related .NET files.
