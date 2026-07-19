@@ -1,0 +1,27 @@
+project:
+  name: "Support Knowledge Miner"
+
+stacks:
+  python:
+    enabled: true
+  react:
+    enabled: true
+    directory: "frontend"
+    package_manager: "npm"
+  bash:
+    enabled: true
+  dotnet:
+    enabled: false
+    solution: ""
+    test_project: ""
+
+engineering_knowledge:
+  enabled: true
+
+documentation:
+  budgets:
+    agents_md_lines: 940
+    project_context_lines: 950
+    current_plan_lines: 350
+    next_steps_items: 510
+    active_work_item_lines: 980

@@ -1,0 +1,6 @@
+# Exact coordinates, one per line. Examples:
+# npm:package-name
+# pypi:package-name
+# maven:group.id:artifact-id
+# cargo:crate-name
+# go:module/path

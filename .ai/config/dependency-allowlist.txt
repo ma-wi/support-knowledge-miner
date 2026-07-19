@@ -1,0 +1,2 @@
+# Used only when DEPENDENCY_ALLOWLIST_MODE=1.
+# Exact coordinates, one per line.
