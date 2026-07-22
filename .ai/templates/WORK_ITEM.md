@@ -40,7 +40,7 @@ Include only task-specific constraints. Do not duplicate repository-wide rules.
 - [ ] Focused tests
 - [ ] Relevant linting and static analysis
 - [ ] Security or dependency checks when applicable
-- [ ] Documentation assessment
+- [ ] Documentation assessment, including `README.md` and `.ai/PROJECT_CONTEXT.md`
 
 Exact commands:
 

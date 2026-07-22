@@ -56,7 +56,7 @@ Create separate files only for independently implementable, assignable, blockabl
 - Focused commands:
 - Full command: `./.ai/tools/verify.sh`
 - Specialist review required and why:
-- Durable documentation/ADR updates:
+- Durable documentation/ADR updates, including `README.md` and `.ai/PROJECT_CONTEXT.md` assessment:
 - Temporary artifacts to remove after review:
 
 ## Material deviations

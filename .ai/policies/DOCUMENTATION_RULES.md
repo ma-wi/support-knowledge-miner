@@ -40,6 +40,8 @@ Each fact should have one canonical location. Other files should link to it inst
 
 Review and update documentation after a completed meaningful change when it affects behavior, interfaces, configuration, architecture, security, operation, deployment, monitoring, supported environments, or contributor workflow. Do not edit documentation merely because a file was touched.
 
+For implementation work, `README.md` and `.ai/PROJECT_CONTEXT.md` are mandatory review targets after every implemented change. Update `README.md` for human-facing current truth such as purpose, setup, commands, usage, configuration, operations, and contributor workflow. Update `.ai/PROJECT_CONTEXT.md` for agent-facing current truth such as project purpose, stack, architecture map, repository conventions, quality commands, constraints, risks, and high-value references. When no relevant update is needed, record that explicit assessment in the active task or plan evidence.
+
 ## Capturing chat instructions
 
 Classify relevant user instructions before closeout. Persist only accepted requirements, durable rules, decisions, constraints, and actionable future work. Keep task-only instructions in the temporary work directory. When unsure, record an assumption or open question instead of silently making it permanent. Never store complete conversations.
