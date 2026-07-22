@@ -18,6 +18,12 @@ For local development, set `SKM_DATABASE_URL` to the matching PostgreSQL URL, fo
 export SKM_DATABASE_URL=postgresql://support_knowledge_miner:replace-with-local-dev-password@localhost:5432/support_knowledge_miner
 ```
 
+Before saving OpenAI provider API keys, generate and export a local provider credential encryption key. Keep the value outside source control and rotate it only with a plan to re-enter saved provider keys:
+
+```bash
+export SKM_PROVIDER_ENCRYPTION_KEY="$(uv run --locked python -c 'from backend.providers.secrets import generate_provider_secret_key; print(generate_provider_secret_key())')"
+```
+
 Run the T001 PostgreSQL smoke test from the repository root:
 
 ```bash

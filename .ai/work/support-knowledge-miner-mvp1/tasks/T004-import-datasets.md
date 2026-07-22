@@ -1,6 +1,6 @@
 # Task T004: CSV/JSON import, dataset versions, and import logs
 
-- Status: verified
+- Status: reviewed
 - Parent requirement: support-knowledge-miner-mvp1
 - Plan: `.ai/work/support-knowledge-miner-mvp1/PLAN.md`
 - Depends on: T003

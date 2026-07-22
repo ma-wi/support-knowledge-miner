@@ -41,12 +41,12 @@ Implement the accepted MVP foundation for a local-first Support Knowledge Miner.
 
 | ID | Outcome | Status | Depends on | Task file |
 |---|---|---|---|---|
-| T001 | Local runtime, database, migrations, and baseline backend health | verified | none | `tasks/T001-local-runtime-db.md` |
-| T002 | Authentication, equal-permission user management, initial user seed, and audit actor foundation | verified | T001 | `tasks/T002-auth-users-audit.md` |
-| T003 | Project lifecycle and project isolation | verified | T001, T002 | `tasks/T003-project-lifecycle.md` |
-| T004 | CSV/JSON import, dataset versions, and import logs | verified | T003 | `tasks/T004-import-datasets.md` |
-| T005 | Global provider settings and project analysis profiles | ready | T002, T003 | `tasks/T005-providers-profiles.md` |
-| T006 | Analysis-run job scaffold, embeddings/vector persistence seam, and run monitor | ready | T004, T005 | `tasks/T006-analysis-run-foundation.md` |
+| T001 | Local runtime, database, migrations, and baseline backend health | reviewed | none | `tasks/T001-local-runtime-db.md` |
+| T002 | Authentication, equal-permission user management, initial user seed, and audit actor foundation | reviewed | T001 | `tasks/T002-auth-users-audit.md` |
+| T003 | Project lifecycle and project isolation | reviewed | T001, T002 | `tasks/T003-project-lifecycle.md` |
+| T004 | CSV/JSON import, dataset versions, and import logs | reviewed | T003 | `tasks/T004-import-datasets.md` |
+| T005 | Global provider settings and project analysis profiles | reviewed | T002, T003 | `tasks/T005-providers-profiles.md` |
+| T006 | Analysis-run job scaffold, embeddings/vector persistence seam, and run monitor | reviewed | T004, T005 | `tasks/T006-analysis-run-foundation.md` |
 | T007 | Clustering foundation, cluster explorer, and source traceability | ready | T006 | `tasks/T007-cluster-explorer.md` |
 | T008 | Candidate curation foundation and candidate editor | ready | T007 | `tasks/T008-candidate-curation.md` |
 | T009 | Candidate/source CSV export and export history | ready | T008 | `tasks/T009-exports.md` |

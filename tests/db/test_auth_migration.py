@@ -13,6 +13,8 @@ def test_auth_migration_is_ordered_after_foundation() -> None:
         "0002_auth_users_audit.sql",
         "0003_projects.sql",
         "0004_import_datasets.sql",
+        "0005_providers_profiles.sql",
+        "0006_analysis_runs.sql",
     ]
 
 

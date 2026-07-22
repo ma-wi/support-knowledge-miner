@@ -1,11 +1,11 @@
 # Task T005: Global provider settings and project analysis profiles
 
-- Status: ready
+- Status: reviewed
 - Parent requirement: support-knowledge-miner-mvp1
 - Plan: `.ai/work/support-knowledge-miner-mvp1/PLAN.md`
 - Depends on: T002, T003
 - Owner/agent: implementer
-- Last updated: 2026-07-19
+- Last updated: 2026-07-22
 
 ## Objective
 
@@ -42,10 +42,10 @@ Implement global OpenAI/vLLM provider settings and project-scoped analysis profi
 
 ## Acceptance criteria
 
-- [ ] Spec AC-8: Global provider settings support OpenAI API-key entry/replacement and vLLM endpoint/model discovery or manual model list.
-- [ ] Spec AC-9: Project can contain multiple analysis profiles, each selecting a globally configured model with independent thresholds/parameters.
-- [ ] Spec AC-10: Stored OpenAI API keys cannot be retrieved in plaintext through normal read interfaces.
-- [ ] Spec AC-31: UI supports global provider settings behavior.
+- [x] Spec AC-8: Global provider settings support OpenAI API-key entry/replacement and vLLM endpoint/model discovery or manual model list.
+- [x] Spec AC-9: Project can contain multiple analysis profiles, each selecting a globally configured model with independent thresholds/parameters.
+- [x] Spec AC-10: Stored OpenAI API keys cannot be retrieved in plaintext through normal read interfaces.
+- [x] Spec AC-31: UI supports global provider settings behavior.
 
 ## Implementation constraints
 
@@ -62,10 +62,10 @@ Implement global OpenAI/vLLM provider settings and project-scoped analysis profi
 
 ## Verification
 
-- [ ] Focused tests
-- [ ] Relevant linting and static analysis
-- [ ] Security or dependency checks when applicable
-- [ ] Documentation assessment
+- [x] Focused tests
+- [x] Relevant linting and static analysis
+- [x] Security or dependency checks when applicable
+- [x] Documentation assessment
 
 Exact commands:
 
@@ -80,6 +80,23 @@ python .ai/tools/check-docs.py
 
 - API-key handling requires security-focused review.
 - Provider network calls must be explicit and bounded.
+- Direct dependency: `cryptography>=48,<49` is used for Fernet authenticated encryption of stored provider credentials because Python's standard library does not provide a vetted symmetric encryption primitive. It is a widely maintained PyCA package under Apache-2.0/BSD licensing with locked hashes in `uv.lock`; `pip-audit` passed after upgrading to `48.0.1` for GHSA-537c-gmf6-5ccf. Replacement strategy if it becomes unsuitable: move provider credentials to an OS/local secret store adapter and remove encrypted database storage.
 
 ## Result
 
+- Added global provider persistence for OpenAI and vLLM, including OpenAI API-key set/replace/remove with write-only API responses and vLLM endpoint/manual-model configuration.
+- Added authenticated provider API endpoints for listing configuration summaries, upserting provider settings, and bounded provider checks.
+- Added project-scoped analysis profiles that select configured provider/model pairs and persist thresholds, algorithm settings, and prompt identifiers.
+- Added UI workflows for global provider settings and project analysis-profile creation, including explicit OpenAI cloud-use labeling.
+- Added migration/API/UI/smoke coverage for provider settings, secret non-readback, model selection, profile persistence, and cloud/local profile distinction.
+- Remediated review P1 by encrypting OpenAI API keys with Fernet before database storage. Saving provider credentials now requires `SKM_PROVIDER_ENCRYPTION_KEY`; read APIs/UI remain write-only and regression tests fail if the submitted key is stored verbatim.
+- Remediated review P2 by removing copied agent prompt transcript content from `README.md`; maintained documentation no longer ships temporary workflow/chat text.
+- Added local configuration documentation for generating the provider credential encryption key without committing it.
+- Verification observed on 2026-07-22:
+  `./.ai/tools/format.sh --check`,
+  `./.ai/tools/lint.sh`,
+  `./.ai/tools/test.sh`,
+  `./.ai/tools/security.sh`,
+  `python .ai/tools/check-docs.py`,
+  `deployment/docker/scripts/smoke-providers-profiles.sh`,
+  `./.ai/tools/verify.sh`.

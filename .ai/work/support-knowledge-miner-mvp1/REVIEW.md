@@ -252,3 +252,241 @@ No blocking or material findings remain for T003.
 
 - `deployment/docker/scripts/smoke-projects.sh` now retries initial migration connection after `pg_isready`, which is a pragmatic local-startup hardening and does not broaden scope.
 - T003 is approved for transition from `verified` to `reviewed`.
+
+---
+
+# Review: support-knowledge-miner-mvp1 T004 import datasets
+
+- Reviewer: Codex
+- Date: 2026-07-22
+- Scope reviewed: T004 CSV/JSON import, dataset versions, import logs, import UI workflow, migration, fixtures/tests, and local smoke verification. T005-T010 remain `ready` and were not reviewed as implemented behavior.
+- Verdict: APPROVE
+
+## Findings
+
+No blocking or material findings found for T004.
+
+## Coverage Reviewed
+
+- AC-3/AC-4: CSV and JSON imports create project-scoped dataset versions and persisted message pairs.
+- AC-5: Missing CSV headers, malformed/non-list JSON failures produce failed import logs without dataset versions.
+- AC-6: Invalid records are skipped with persisted row/object locations and reasons; duplicate `ticketid` + `messagegroupid` records are accepted.
+- AC-7: Zero-valid-record imports fail clearly and create no dataset version.
+- AC-32: The authenticated UI shows total/imported/skipped counts, failure reason, dataset version ID, and persisted log detail access.
+
+## Evidence
+
+- `backend/imports/service.py` validates source type, bounds imported content to 5 MiB, parses CSV/JSON, persists import logs/skipped entries, creates dataset versions only when valid records exist, and scopes log/list/detail queries by `project_id`.
+- `backend/db/migrations/0004_import_datasets.sql` adds project-scoped `import_logs`, `dataset_versions`, `message_pairs`, and `import_log_entries` tables with constraints and indexes.
+- `tests/imports/test_import_service.py`, `tests/api/test_import_api_integration.py`, `frontend/src/App.test.tsx`, and `deployment/docker/scripts/smoke-imports.sh` cover parser, API, UI, migration/smoke seams relevant to T004.
+
+## Verification Observed
+
+- `./.ai/tools/format.sh --check`: PASS
+- `./.ai/tools/lint.sh`: PASS
+- `./.ai/tools/test.sh`: PASS (`33` Python tests, `6` frontend tests)
+- `./.ai/tools/check-dependencies.sh`: PASS, including `pip-audit` and `npm audit --audit-level=high`
+- `./.ai/tools/security.sh`: PASS
+- `./.ai/tools/build.sh`: PASS
+- `./.ai/tools/verify.sh`: PASS, including work-state, docs, setup, format, lint, tests, dependency policy/scans, security, and build
+- `bash -x deployment/docker/scripts/smoke-imports.sh`: PASS (`imports_smoke=ok`) after an initial non-diagnostic `deployment/docker/scripts/smoke-imports.sh` run exited with code 1 and no output; traced rerun did not reproduce the failure.
+
+## Notes
+
+- Residual non-blocking risk: concurrent imports into the same project compute `version_number` with `MAX(version_number) + 1`; the unique constraint protects integrity, but a simultaneous import could fail instead of retrying. This is acceptable for the current local MVP slice, but should be hardened before relying on concurrent multi-user imports.
+- T004 is approved for transition from `verified` to `reviewed`.
+
+---
+
+# Review: support-knowledge-miner-mvp1 T004/T005 provider-profile implementation
+
+- Reviewer: Codex
+- Date: 2026-07-22
+- Scope reviewed: T004 regression surface and T005 global provider settings, OpenAI/vLLM configuration, analysis profiles, API/UI behavior, migration, tests, and local smoke verification.
+- Verdict: REQUEST_CHANGES
+
+## Findings
+
+### P1: OpenAI API keys are stored as plaintext-readable database values
+
+- Location: `backend/db/migrations/0005_providers_profiles.sql:4`; `backend/providers/service.py:211`
+- Evidence: The provider migration creates `provider_configurations.api_key_secret text`, and `ProviderService.upsert_configuration()` writes `clean_api_key` directly into that field. Repository search found no encryption, local secret-store integration, key wrapping, or equivalent protection. The smoke script explicitly queries `api_key_secret` from the database, confirming that normal database read access can retrieve the stored value before removal. API/UI responses are redacted, but storage itself remains plaintext-readable.
+- Impact: This violates the accepted security requirement that OpenAI keys must not be stored in plaintext-readable form and the specification statement that API keys may be stored in a local secret mechanism or encrypted database field. A local database dump, admin query, or compromised DB credential would expose the cloud provider credential. Because this is a credential-handling requirement and security control, T005 cannot be approved while this remains.
+- Required change: Store OpenAI API keys in a local secret mechanism or encrypt them before database persistence using an established cryptographic library/protocol and a key that is not stored alongside the ciphertext in the same table. Keep normal read APIs/UI write-only. Add tests that fail if the submitted API key is stored verbatim in `provider_configurations` and that still verify set/replace/remove plus no API/UI readback.
+
+## Non-Blocking Notes
+
+- T004 import behavior was spot-checked for regression through tests, full verification, and `deployment/docker/scripts/smoke-imports.sh`; no new T004 findings were found.
+- T005 API/UI redaction is implemented for normal read interfaces, and profile creation is project-scoped with explicit OpenAI cloud labeling. The blocking issue is secret-at-rest protection, not response redaction.
+- Provider checks are bounded for vLLM via `PROVIDER_CHECK_TIMEOUT_SECONDS`; mandatory tests do not require live OpenAI, which matches the accepted test boundary.
+
+## Verification Observed
+
+- `./.ai/tools/lint.sh`: PASS
+- `./.ai/tools/test.sh`: PASS (`38` Python tests, `7` frontend tests)
+- `./.ai/tools/security.sh`: PASS
+- `./.ai/tools/verify.sh`: PASS, including work-state, docs, setup, format, lint, tests, dependency policy/scans, security, and build
+- `deployment/docker/scripts/smoke-imports.sh`: PASS (`imports_smoke=ok`)
+- `deployment/docker/scripts/smoke-providers-profiles.sh`: PASS (`providers_profiles_smoke=ok`)
+
+## Status
+
+- T004 remains `reviewed`.
+- T005 is returned from `verified` to `in-progress` for remediation of the P1 finding.
+
+---
+
+# Re-review: support-knowledge-miner-mvp1 T004/T005
+
+- Reviewer: Codex
+- Date: 2026-07-22
+- Scope reviewed: Repeat review of T004 import datasets and T005 provider/profile implementation after the earlier interrupted check. Reviewed durable specification, ADR-0002/0003/0004, active plan/task files, current diff, backend API/service code, migrations, frontend workflow/tests, local smoke scripts, security guidance, and full verification.
+- Verdict: REQUEST_CHANGES
+
+## Findings
+
+### P1: OpenAI API keys are still stored as plaintext-readable database values
+
+- Location: `backend/db/migrations/0005_providers_profiles.sql:4`; `backend/providers/service.py:211`
+- Evidence: The provider migration still defines `provider_configurations.api_key_secret text`. `ProviderService.upsert_configuration()` still passes `clean_api_key` directly into that column on insert/update. No encryption, external local secret store, key wrapping, or equivalent protection exists in the current dependency/configuration surface. API/UI responses redact the key, but database reads can recover the stored credential while configured.
+- Impact: This violates the accepted T005/security requirement that OpenAI API keys must not be stored in plaintext-readable form and the specification allowance that keys may be stored in a local secret mechanism or encrypted database field. A local database dump, broad DB read privilege, or compromised database credential would expose the cloud provider credential. Because this is credential handling, T005 cannot be approved.
+- Required change: Store OpenAI API keys in a local secret mechanism or encrypt them before database persistence using an established cryptographic library/protocol and a key not stored alongside the ciphertext in the same table. Preserve write-only API/UI behavior. Add regression coverage that fails if the submitted API key is stored verbatim in `provider_configurations`, while still verifying set/replace/remove and no normal API/UI readback.
+
+## T004 Result
+
+No blocking or material findings were found for T004 in this repeat review. Import parser/service/API/UI behavior remains covered for valid CSV/JSON imports, file-level failures, invalid-record skip logs, zero-valid-record failure behavior, duplicate identifiers, project-scoped log/detail access, and UI count/log visibility.
+
+## T005 Notes
+
+- API and UI responses do not expose the OpenAI key through normal read interfaces.
+- Project-scoped analysis profiles select configured provider/model pairs and mark OpenAI as cloud usage.
+- Provider checks are bounded by `PROVIDER_CHECK_TIMEOUT_SECONDS`; mandatory tests do not require live OpenAI calls.
+- These positives do not remediate the secret-at-rest violation above.
+
+## Verification Observed
+
+- `./.ai/tools/lint.sh`: PASS
+- `./.ai/tools/test.sh`: PASS (`38` Python tests, `7` frontend tests)
+- `./.ai/tools/security.sh`: PASS
+- `deployment/docker/scripts/smoke-imports.sh`: PASS (`imports_smoke=ok`)
+- `deployment/docker/scripts/smoke-providers-profiles.sh`: PASS (`providers_profiles_smoke=ok`)
+- `./.ai/tools/verify.sh`: PASS, including work-state, documentation, setup, format, lint, tests, dependency policy/scans, security, and build
+
+## Status
+
+- T004 remains `reviewed`.
+- T005 remains `in-progress` / not approvable until the P1 secret-at-rest finding is remediated and re-reviewed.
+
+---
+
+# Re-review: support-knowledge-miner-mvp1 T005
+
+- Reviewer: Codex
+- Date: 2026-07-22
+- Scope reviewed: T005 global provider settings, OpenAI/vLLM configuration, analysis profiles, provider credential storage remediation, API/UI redaction behavior, migration/tests, dependency/security policy impact for `cryptography`, local provider/profile smoke script, maintained documentation touched by the current diff, and full verification.
+- Verdict: REQUEST_CHANGES
+
+## Findings
+
+### P2: README contains copied agent prompts instead of maintained project documentation
+
+- Location: `README.md:41`
+- Evidence: The current README diff appends a `# Prompts` section containing prior German agent instructions such as "Lese zuerst die AGENTS.md..." and review/planning prompts. This is chat/workflow transcript material, not stable project setup, behavior, configuration, architecture, or support documentation.
+- Impact: This violates the repository documentation rule to document current truth, durable rationale, and actionable next steps, not chats, tool logs, or work diaries. The README is also included in the Python build artifact observed during `./.ai/tools/verify.sh`, so this transient review/planning text would ship with the package metadata/source distribution if accepted.
+- Required change: Remove the prompt transcript section from `README.md` or replace it with durable project documentation relevant to T005/configuration. Keep prompts and temporary review instructions out of maintained docs.
+
+## Remediation Verification
+
+- The prior P1 secret-at-rest finding is remediated for newly saved OpenAI API keys. `ProviderService.upsert_configuration()` now calls `encrypt_provider_secret()` before writing `provider_configurations.api_key_secret`, storage requires `SKM_PROVIDER_ENCRYPTION_KEY`, and regression coverage asserts the submitted key is not stored verbatim.
+- Normal provider read/write API responses still expose only `api_key_set`, not the submitted API key.
+- The T005 smoke script now verifies that stored OpenAI credentials differ from the submitted value, carry the `fernet:` envelope prefix, and are removed from storage when requested.
+
+## Verification Observed
+
+- `./.ai/tools/format.sh --check`: PASS
+- `./.ai/tools/lint.sh`: PASS
+- `./.ai/tools/test.sh`: PASS (`40` Python tests, `7` frontend tests)
+- `./.ai/tools/check-dependencies.sh`: PASS, including dependency policy, `pip-audit`, and `npm audit --audit-level=high`
+- `./.ai/tools/security.sh`: PASS
+- `python .ai/tools/check-docs.py`: PASS
+- `deployment/docker/scripts/smoke-providers-profiles.sh`: PASS (`providers_profiles_smoke=ok`)
+- `./.ai/tools/verify.sh`: PASS, including work-state, documentation, setup, format, lint, tests, dependency policy/scans, security, and build
+
+## Status
+
+- T005 is returned from `verified` to `in-progress` for remediation of the P2 documentation finding.
+- After the README prompt transcript is removed or replaced with durable documentation, T005 can be re-reviewed; no remaining blocking provider/profile behavior issue was found in this pass.
+
+---
+
+# Review: support-knowledge-miner-mvp1 T005/T006
+
+- Reviewer: Codex
+- Date: 2026-07-22
+- Scope reviewed: Combined review of T005 provider/profile implementation and T006 analysis-run foundation after T005 credential/documentation remediation. Reviewed AGENTS.md, CODE_REVIEWER role, project/workflow policy, security/dependency policy surfaces, durable requirement/specification, active plan/task files, provider/profile and analysis-run backend services, API routes, migrations, frontend workflows/tests, dependency changes, maintained documentation, and verification evidence.
+- Verdict: REQUEST_CHANGES
+
+## Findings
+
+### P2: Analysis runs are completed synchronously inside the start request, so queued/running background states are not observable
+
+- Location: `backend/analysis/service.py:207`; `backend/api/app.py:653`; `tests/analysis/test_analysis_service.py:183`
+- Evidence: `AnalysisService.start_run()` inserts the run as `queued`, then immediately calls `_execute_deterministic_scaffold(run_id)` before returning the POST response. `_execute_deterministic_scaffold()` transitions the row to `running` and then `completed` in the same request path. The API route returns only after `start_run()` completes, and the service test asserts the returned status is already `completed`. No background task, queue worker, scheduler seam, or observable pending/running handoff exists in the current code.
+- Impact: This does not satisfy the accepted T006 behavior that analysis jobs run as background jobs with observable status/progress/failure state, and it weakens AC-19/AC-33 because the run monitor cannot observe the required `queued`/`running` lifecycle for normal started runs. A longer future scaffold would also block the request thread instead of returning promptly with a persisted job state.
+- Required change: Split run creation from execution. The start endpoint should persist and return a queued or running run promptly, then execute the deterministic scaffold through an explicit background-job seam suitable for local MVP use. Add service/API tests that prove a newly started run is observable before terminal completion and that list/read endpoints can distinguish queued/running/completed/failed states. Keep failed-run diagnostics persisted.
+
+## Non-Blocking Notes
+
+- T005 credential-at-rest remediation is acceptable in this pass: newly saved OpenAI API keys are encrypted with Fernet before database storage, storing credentials requires `SKM_PROVIDER_ENCRYPTION_KEY`, normal provider API/UI responses remain write-only, and regression/smoke coverage checks non-verbatim storage plus removal.
+- The new direct dependency `cryptography>=48,<49` is justified in the T005 task file for authenticated credential encryption, is locked to `48.0.1` in `uv.lock`, and passed dependency/security gates. No remaining dependency blocker was found.
+- Untracked `__pycache__` files are present under `backend/` and `tests/`; remove them before commit/review handoff hygiene. They are not the cause of this `REQUEST_CHANGES` verdict.
+
+## Verification Observed
+
+- `./.ai/tools/test.sh`: PASS (`44` Python tests, `7` frontend tests)
+- `./.ai/tools/lint.sh`: PASS
+- `./.ai/tools/security.sh`: PASS
+- `./.ai/tools/check-dependencies.sh`: PASS, including `pip-audit` and `npm audit --audit-level=high`
+- `python .ai/tools/check-docs.py`: PASS
+- `./.ai/tools/verify.sh`: PASS, including work-state, documentation, setup, format, lint, tests, dependency policy/scans, security, and build
+
+## Status
+
+- T005 is approved for transition from `verified` to `reviewed`.
+- T006 is returned from `verified` to `in-progress` for remediation of the P2 background-job observability finding.
+
+---
+
+# Re-review: support-knowledge-miner-mvp1 T006
+
+- Reviewer: Codex
+- Date: 2026-07-22
+- Scope reviewed: T006 remediation for the prior P2 background-job observability finding, including analysis service execution seam, API enqueue behavior, service/API tests, run monitor surface, work-state consistency, security/dependency surfaces, and full verification. T005 remains reviewed from the prior pass.
+- Verdict: APPROVE
+
+## Findings
+
+No blocking or material findings remain for T006.
+
+## Prior Finding Rechecked
+
+### P2: Analysis runs are completed synchronously inside the start request, so queued/running background states are not observable
+
+- Previous status: REQUEST_CHANGES
+- Current status: resolved
+- Evidence: `AnalysisService.start_run()` now persists and returns a `queued` run without executing the deterministic scaffold. The API route calls `analysis_service.enqueue_run(run.id)` after creating the run, and `execute_queued_run()` performs the queued-to-running-to-terminal transition separately. Service tests verify `start_run()` returns `queued` before embeddings are written, then explicit execution completes the run. API tests verify the start response is `queued`, enqueue is called, and list/read contracts distinguish `queued`, `running`, `completed`, and `failed` states with failed-run error metadata.
+
+## Verification Observed
+
+- `./.ai/tools/test.sh`: PASS (`44` Python tests, `7` frontend tests)
+- `./.ai/tools/lint.sh`: PASS
+- `./.ai/tools/security.sh`: PASS
+- `./.ai/tools/check-dependencies.sh`: PASS, including `pip-audit` and `npm audit --audit-level=high`
+- `python .ai/tools/check-work-state.py`: PASS
+- `python .ai/tools/check-docs.py`: PASS
+- `./.ai/tools/verify.sh`: PASS, including work-state, documentation, setup, format, lint, tests, dependency policy/scans, security, and build
+
+## Notes
+
+- The local background runner is intentionally minimal for the MVP scaffold. It is acceptable for T006 because the persistent run state is now observable and execution is isolated behind an explicit seam, but later production-grade queue semantics remain out of scope for this task.
+- T006 is approved for transition from `verified` to `reviewed`.

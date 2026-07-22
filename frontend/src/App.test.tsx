@@ -51,6 +51,56 @@ const importLog = {
   started_at: "2026-07-22T00:00:00Z",
   completed_at: "2026-07-22T00:00:00Z",
 };
+const openAiProvider = {
+  provider: "openai",
+  endpoint_url: null,
+  manual_models: ["gpt-4.1-mini"],
+  api_key_set: true,
+  updated_at: "2026-07-22T00:00:00Z",
+};
+const vllmProvider = {
+  provider: "vllm",
+  endpoint_url: "http://localhost:8000",
+  manual_models: ["local-embed"],
+  api_key_set: false,
+  updated_at: "2026-07-22T00:00:00Z",
+};
+const analysisProfile = {
+  id: "profile-1",
+  project_id: "project-alpha",
+  name: "Local profile",
+  provider: "vllm",
+  model: "local-embed",
+  is_cloud_provider: false,
+  thresholds: { similarity: 0.78 },
+  algorithm_settings: { algorithm: "hdbscan" },
+  prompt_identifier: "faq-v1",
+  prompt_template: null,
+  created_at: "2026-07-22T00:00:00Z",
+  updated_at: "2026-07-22T00:00:00Z",
+};
+const analysisRun = {
+  id: "run-1",
+  project_id: "project-alpha",
+  dataset_version_id: "dataset-1",
+  analysis_profile_id: "profile-1",
+  status: "queued",
+  progress: 0,
+  profile_snapshot: {
+    name: "Local profile",
+    provider: "vllm",
+    model: "local-embed",
+  },
+  provider: "vllm",
+  model: "local-embed",
+  parameters: { mode: "fixture" },
+  error_message: null,
+  diagnostics: {},
+  started_at: null,
+  completed_at: null,
+  created_at: "2026-07-22T00:00:00Z",
+  updated_at: "2026-07-22T00:00:01Z",
+};
 
 afterEach(() => {
   cleanup();
@@ -236,6 +286,12 @@ test("allows signed-in users to create open rename and delete projects with conf
     if (path === "/api/projects/project-beta/imports" && method === "GET") {
       return jsonResponse([]);
     }
+    if (
+      path === "/api/projects/project-beta/analysis-runs" &&
+      method === "GET"
+    ) {
+      return jsonResponse([]);
+    }
     if (path === "/api/projects/project-beta" && method === "PATCH") {
       expect(String(init?.body)).toContain("Beta renamed");
       return jsonResponse({ ...betaProject, name: "Beta renamed" });
@@ -331,6 +387,12 @@ test("imports a selected CSV file and shows persisted log details", async () => 
     if (path === "/api/projects/project-alpha/imports" && method === "GET") {
       return jsonResponse([]);
     }
+    if (
+      path === "/api/projects/project-alpha/analysis-runs" &&
+      method === "GET"
+    ) {
+      return jsonResponse([]);
+    }
     if (path === "/api/projects/project-alpha/imports" && method === "POST") {
       expect(new Headers(init?.headers).get("Authorization")).toBe(
         "Bearer api-token",
@@ -410,4 +472,159 @@ test("imports a selected CSV file and shows persisted log details", async () => 
 
   await user.click(screen.getByRole("button", { name: "Logdetails anzeigen" }));
   expect(await screen.findByText("Import-Log geladen.")).toBeInTheDocument();
+});
+
+test("configures providers and creates a project analysis profile", async () => {
+  const user = userEvent.setup();
+  mockFetch((input, init) => {
+    const path = String(input);
+    const method = init?.method ?? "GET";
+    if (path === "/api/auth/sign-in" && method === "POST") {
+      return jsonResponse({ access_token: "api-token", user: owner });
+    }
+    if (path === "/api/users" && method === "GET") {
+      return jsonResponse([owner]);
+    }
+    if (path === "/api/projects" && method === "GET") {
+      return jsonResponse([alphaProject]);
+    }
+    if (path === "/api/providers" && method === "GET") {
+      return jsonResponse([]);
+    }
+    if (path === "/api/providers/openai" && method === "PUT") {
+      expect(new Headers(init?.headers).get("Authorization")).toBe(
+        "Bearer api-token",
+      );
+      expect(String(init?.body)).toContain("sk-test-secret");
+      return jsonResponse(openAiProvider);
+    }
+    if (path === "/api/providers/vllm" && method === "PUT") {
+      expect(String(init?.body)).toContain("http://localhost:8000");
+      return jsonResponse(vllmProvider);
+    }
+    if (path === "/api/projects/project-alpha" && method === "GET") {
+      return jsonResponse(alphaProject);
+    }
+    if (path === "/api/projects/project-alpha/imports" && method === "GET") {
+      return jsonResponse([importLog]);
+    }
+    if (
+      path === "/api/projects/project-alpha/analysis-profiles" &&
+      method === "GET"
+    ) {
+      return jsonResponse([]);
+    }
+    if (
+      path === "/api/projects/project-alpha/analysis-profiles" &&
+      method === "POST"
+    ) {
+      expect(String(init?.body)).toContain("local-embed");
+      return jsonResponse(analysisProfile, { status: 201 });
+    }
+    if (
+      path === "/api/projects/project-alpha/analysis-runs" &&
+      method === "GET"
+    ) {
+      return jsonResponse([]);
+    }
+    if (
+      path === "/api/projects/project-alpha/analysis-runs" &&
+      method === "POST"
+    ) {
+      expect(String(init?.body)).toContain("dataset-1");
+      expect(String(init?.body)).toContain("profile-1");
+      return jsonResponse(analysisRun, { status: 201 });
+    }
+    throw new Error(`unexpected request ${method} ${path}`);
+  });
+  render(<App />);
+
+  await signIn(user);
+
+  const openAiForm = await screen.findByRole("form", {
+    name: "OpenAI Provider konfigurieren",
+  });
+  await user.type(
+    within(openAiForm).getByLabelText("Neuer OpenAI API-Key"),
+    "sk-test-secret",
+  );
+  await user.type(
+    within(openAiForm).getByLabelText("OpenAI Modelle"),
+    "gpt-4.1-mini",
+  );
+  await user.click(
+    within(openAiForm).getByRole("button", { name: "OpenAI speichern" }),
+  );
+
+  expect(await screen.findByText("API-Key gesetzt")).toBeInTheDocument();
+  expect(screen.queryByText("sk-test-secret")).not.toBeInTheDocument();
+
+  const vllmForm = screen.getByRole("form", {
+    name: "vLLM Provider konfigurieren",
+  });
+  await user.type(
+    within(vllmForm).getByLabelText("Endpoint URL"),
+    "http://localhost:8000",
+  );
+  await user.type(
+    within(vllmForm).getByLabelText("vLLM Modelle"),
+    "local-embed",
+  );
+  await user.click(
+    within(vllmForm).getByRole("button", { name: "vLLM speichern" }),
+  );
+
+  const projectList = await screen.findByRole("region", {
+    name: "Bestehende Projekte",
+  });
+  const alphaCard = within(projectList).getByText("Alpha").closest("article");
+  if (alphaCard === null) {
+    throw new Error("alpha project card missing");
+  }
+  await user.click(
+    within(alphaCard).getByRole("button", { name: "Projekt oeffnen" }),
+  );
+
+  const profileForm = await screen.findByRole("form", {
+    name: "Analyseprofil erstellen",
+  });
+  await user.type(
+    within(profileForm).getByLabelText("Profilname"),
+    "Local profile",
+  );
+  await user.type(within(profileForm).getByLabelText("Modell"), "local-embed");
+  await user.type(
+    within(profileForm).getByLabelText("Similarity Threshold"),
+    "0.78",
+  );
+  await user.type(within(profileForm).getByLabelText("Algorithmus"), "hdbscan");
+  await user.type(within(profileForm).getByLabelText("Prompt-ID"), "faq-v1");
+  await user.click(
+    within(profileForm).getByRole("button", { name: "Profil speichern" }),
+  );
+
+  expect(await screen.findByText("Local profile")).toBeInTheDocument();
+  expect(screen.getByText("vllm/local-embed")).toBeInTheDocument();
+  expect(screen.getByText(/"similarity":0.78/)).toBeInTheDocument();
+
+  const runForm = await screen.findByRole("form", {
+    name: "Analyse starten",
+  });
+  await user.type(within(runForm).getByLabelText("Run-Modus"), "fixture");
+  await user.click(
+    within(runForm).getByRole("button", { name: "Analyse starten" }),
+  );
+
+  const runsRegion = await screen.findByRole("region", {
+    name: "Analyse Runs",
+  });
+  expect(await within(runsRegion).findByText("queued")).toBeInTheDocument();
+  expect(within(runsRegion).getByText("0%")).toBeInTheDocument();
+  expect(
+    within(runsRegion).getByText("Provider/Modell: vllm/local-embed"),
+  ).toBeInTheDocument();
+  expect(
+    within(runsRegion).getByText(/Dataset-Version: dataset-1/),
+  ).toBeInTheDocument();
+  expect(within(runsRegion).getByText(/Diagnose: {}/)).toBeInTheDocument();
 });

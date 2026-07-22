@@ -11,6 +11,13 @@ from fastapi import Depends, FastAPI, HTTPException, Response, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, ConfigDict, Field
 
+from backend.analysis import (
+    AnalysisError,
+    AnalysisRun,
+    AnalysisRunInput,
+    AnalysisService,
+    EmbeddingRecord,
+)
 from backend.auth import AuthService, CurrentUser
 from backend.auth.service import AuthenticationError
 from backend.config import DatabaseSettings
@@ -20,6 +27,15 @@ from backend.imports import (
     ImportLogEntry,
     ImportResult,
     ImportService,
+)
+from backend.providers import (
+    AnalysisProfile,
+    AnalysisProfileInput,
+    ProviderCheckResult,
+    ProviderConfiguration,
+    ProviderError,
+    ProviderService,
+    ProviderSettingsInput,
 )
 from backend.projects import ProjectError, ProjectService, PublicProject
 from backend.users import CreateUserInput, UpdateUserInput, UserService
@@ -141,6 +157,99 @@ class ImportResultResponse(BaseModel):
     skipped_entries: list[ImportLogEntryResponse]
 
 
+class ProviderSettingsRequest(BaseModel):
+    endpoint_url: str | None = None
+    manual_models: list[str] = Field(default_factory=list)
+    api_key: str | None = None
+    remove_api_key: bool = False
+
+
+class ProviderConfigurationResponse(BaseModel):
+    provider: str
+    endpoint_url: str | None
+    manual_models: list[str]
+    api_key_set: bool
+    updated_at: datetime
+
+
+class ProviderCheckResponse(BaseModel):
+    provider: str
+    ok: bool
+    models: list[str]
+    message: str
+
+
+class AnalysisProfileRequest(BaseModel):
+    name: str = Field(min_length=1)
+    provider: str = Field(min_length=1)
+    model: str = Field(min_length=1)
+    thresholds: dict[str, object] = Field(default_factory=dict)
+    algorithm_settings: dict[str, object] = Field(default_factory=dict)
+    prompt_identifier: str | None = None
+    prompt_template: str | None = None
+
+
+class AnalysisProfileResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    project_id: UUID
+    name: str
+    provider: str
+    model: str
+    is_cloud_provider: bool
+    thresholds: dict[str, object]
+    algorithm_settings: dict[str, object]
+    prompt_identifier: str | None
+    prompt_template: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class AnalysisRunRequest(BaseModel):
+    dataset_version_id: UUID
+    analysis_profile_id: UUID
+    parameters: dict[str, object] = Field(default_factory=dict)
+
+
+class AnalysisRunResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    project_id: UUID
+    dataset_version_id: UUID
+    analysis_profile_id: UUID
+    status: str
+    progress: int
+    profile_snapshot: dict[str, object]
+    provider: str
+    model: str
+    parameters: dict[str, object]
+    error_message: str | None
+    diagnostics: dict[str, object]
+    started_at: datetime | None
+    completed_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class EmbeddingRecordResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    project_id: UUID
+    analysis_run_id: UUID
+    dataset_version_id: UUID
+    analysis_profile_id: UUID
+    source_object_type: str
+    source_object_id: UUID
+    text_variant: str
+    model: str
+    dimensions: int
+    metadata: dict[str, object]
+    created_at: datetime
+
+
 def _user_response(user: PublicUser) -> UserResponse:
     return UserResponse.model_validate(user)
 
@@ -175,6 +284,51 @@ def _import_result_response(result: ImportResult) -> ImportResultResponse:
     )
 
 
+def _provider_response(
+    configuration: ProviderConfiguration,
+) -> ProviderConfigurationResponse:
+    return ProviderConfigurationResponse(
+        provider=configuration.provider,
+        endpoint_url=configuration.endpoint_url,
+        manual_models=configuration.manual_models,
+        api_key_set=configuration.api_key_set,
+        updated_at=configuration.updated_at,
+    )
+
+
+def _provider_check_response(result: ProviderCheckResult) -> ProviderCheckResponse:
+    return ProviderCheckResponse(
+        provider=result.provider,
+        ok=result.ok,
+        models=result.models,
+        message=result.message,
+    )
+
+
+def _analysis_profile_response(profile: AnalysisProfile) -> AnalysisProfileResponse:
+    return AnalysisProfileResponse.model_validate(profile)
+
+
+def _analysis_run_response(run: AnalysisRun) -> AnalysisRunResponse:
+    return AnalysisRunResponse.model_validate(run)
+
+
+def _embedding_response(record: EmbeddingRecord) -> EmbeddingRecordResponse:
+    return EmbeddingRecordResponse.model_validate(record)
+
+
+def _analysis_profile_input(payload: AnalysisProfileRequest) -> AnalysisProfileInput:
+    return AnalysisProfileInput(
+        name=payload.name,
+        provider=payload.provider,
+        model=payload.model,
+        thresholds=payload.thresholds,
+        algorithm_settings=payload.algorithm_settings,
+        prompt_identifier=payload.prompt_identifier,
+        prompt_template=payload.prompt_template,
+    )
+
+
 def create_app(
     settings: DatabaseSettings | None = None,
     *,
@@ -182,11 +336,15 @@ def create_app(
     user_service: UserService | None = None,
     project_service: ProjectService | None = None,
     import_service: ImportService | None = None,
+    provider_service: ProviderService | None = None,
+    analysis_service: AnalysisService | None = None,
 ) -> FastAPI:
     auth_service = auth_service or AuthService(settings)
     user_service = user_service or UserService(settings)
     project_service = project_service or ProjectService(settings)
     import_service = import_service or ImportService(settings)
+    provider_service = provider_service or ProviderService(settings)
+    analysis_service = analysis_service or AnalysisService(settings)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -370,6 +528,186 @@ def create_app(
         return [
             _import_entry_response(entry)
             for entry in import_service.get_log_entries(project_id, import_log_id)
+        ]
+
+    @app.get("/api/providers", response_model=list[ProviderConfigurationResponse])
+    def list_providers(
+        _: CurrentUser = Depends(current_user),
+    ) -> list[ProviderConfigurationResponse]:
+        return [
+            _provider_response(configuration)
+            for configuration in provider_service.list_configurations()
+        ]
+
+    @app.put(
+        "/api/providers/{provider}",
+        response_model=ProviderConfigurationResponse,
+    )
+    def upsert_provider(
+        provider: str,
+        payload: ProviderSettingsRequest,
+        actor: CurrentUser = Depends(current_user),
+    ) -> ProviderConfigurationResponse:
+        try:
+            configuration = provider_service.upsert_configuration(
+                ProviderSettingsInput(
+                    provider=provider,
+                    endpoint_url=payload.endpoint_url,
+                    manual_models=payload.manual_models,
+                    api_key=payload.api_key,
+                    remove_api_key=payload.remove_api_key,
+                ),
+                actor_user_id=actor.id,
+            )
+        except ProviderError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+            ) from exc
+        return _provider_response(configuration)
+
+    @app.post(
+        "/api/providers/{provider}/check",
+        response_model=ProviderCheckResponse,
+    )
+    def check_provider(
+        provider: str,
+        _: CurrentUser = Depends(current_user),
+    ) -> ProviderCheckResponse:
+        try:
+            result = provider_service.check_provider(provider)
+        except ProviderError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+            ) from exc
+        return _provider_check_response(result)
+
+    @app.get(
+        "/api/projects/{project_id}/analysis-profiles",
+        response_model=list[AnalysisProfileResponse],
+    )
+    def list_analysis_profiles(
+        project_id: UUID,
+        _: CurrentUser = Depends(current_user),
+    ) -> list[AnalysisProfileResponse]:
+        return [
+            _analysis_profile_response(profile)
+            for profile in provider_service.list_profiles(project_id)
+        ]
+
+    @app.post(
+        "/api/projects/{project_id}/analysis-profiles",
+        response_model=AnalysisProfileResponse,
+        status_code=status.HTTP_201_CREATED,
+    )
+    def create_analysis_profile(
+        project_id: UUID,
+        payload: AnalysisProfileRequest,
+        actor: CurrentUser = Depends(current_user),
+    ) -> AnalysisProfileResponse:
+        try:
+            profile = provider_service.create_profile(
+                project_id,
+                _analysis_profile_input(payload),
+                actor_user_id=actor.id,
+            )
+        except ProviderError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+            ) from exc
+        return _analysis_profile_response(profile)
+
+    @app.patch(
+        "/api/projects/{project_id}/analysis-profiles/{profile_id}",
+        response_model=AnalysisProfileResponse,
+    )
+    def update_analysis_profile(
+        project_id: UUID,
+        profile_id: UUID,
+        payload: AnalysisProfileRequest,
+        actor: CurrentUser = Depends(current_user),
+    ) -> AnalysisProfileResponse:
+        try:
+            profile = provider_service.update_profile(
+                project_id,
+                profile_id,
+                _analysis_profile_input(payload),
+                actor_user_id=actor.id,
+            )
+        except ProviderError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+            ) from exc
+        return _analysis_profile_response(profile)
+
+    @app.post(
+        "/api/projects/{project_id}/analysis-runs",
+        response_model=AnalysisRunResponse,
+        status_code=status.HTTP_201_CREATED,
+    )
+    def start_analysis_run(
+        project_id: UUID,
+        payload: AnalysisRunRequest,
+        actor: CurrentUser = Depends(current_user),
+    ) -> AnalysisRunResponse:
+        try:
+            run = analysis_service.start_run(
+                project_id,
+                AnalysisRunInput(
+                    dataset_version_id=payload.dataset_version_id,
+                    analysis_profile_id=payload.analysis_profile_id,
+                    parameters=payload.parameters,
+                ),
+                actor_user_id=actor.id,
+            )
+        except AnalysisError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+            ) from exc
+        analysis_service.enqueue_run(run.id)
+        return _analysis_run_response(run)
+
+    @app.get(
+        "/api/projects/{project_id}/analysis-runs",
+        response_model=list[AnalysisRunResponse],
+    )
+    def list_analysis_runs(
+        project_id: UUID,
+        _: CurrentUser = Depends(current_user),
+    ) -> list[AnalysisRunResponse]:
+        return [
+            _analysis_run_response(run)
+            for run in analysis_service.list_runs(project_id)
+        ]
+
+    @app.get(
+        "/api/projects/{project_id}/analysis-runs/{run_id}",
+        response_model=AnalysisRunResponse,
+    )
+    def get_analysis_run(
+        project_id: UUID,
+        run_id: UUID,
+        _: CurrentUser = Depends(current_user),
+    ) -> AnalysisRunResponse:
+        run = analysis_service.get_run(project_id, run_id)
+        if run is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="analysis run not found",
+            )
+        return _analysis_run_response(run)
+
+    @app.get(
+        "/api/projects/{project_id}/analysis-runs/{run_id}/embeddings",
+        response_model=list[EmbeddingRecordResponse],
+    )
+    def list_analysis_run_embeddings(
+        project_id: UUID,
+        run_id: UUID,
+        _: CurrentUser = Depends(current_user),
+    ) -> list[EmbeddingRecordResponse]:
+        return [
+            _embedding_response(record)
+            for record in analysis_service.list_embeddings(project_id, run_id)
         ]
 
     @app.get("/api/users", response_model=list[UserResponse])

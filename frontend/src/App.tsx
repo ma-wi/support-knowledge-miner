@@ -63,6 +63,86 @@ type ImportLog = {
   datasetVersionId: string | null;
 };
 
+type ApiProviderConfiguration = {
+  provider: string;
+  endpoint_url: string | null;
+  manual_models: string[];
+  api_key_set: boolean;
+  updated_at: string;
+};
+
+type ProviderConfiguration = {
+  provider: string;
+  endpointUrl: string | null;
+  manualModels: string[];
+  apiKeySet: boolean;
+  updatedAt: string;
+};
+
+type ApiAnalysisProfile = {
+  id: string;
+  project_id: string;
+  name: string;
+  provider: string;
+  model: string;
+  is_cloud_provider: boolean;
+  thresholds: Record<string, unknown>;
+  algorithm_settings: Record<string, unknown>;
+  prompt_identifier: string | null;
+  prompt_template: string | null;
+};
+
+type AnalysisProfile = {
+  id: string;
+  projectId: string;
+  name: string;
+  provider: string;
+  model: string;
+  isCloudProvider: boolean;
+  thresholds: Record<string, unknown>;
+  algorithmSettings: Record<string, unknown>;
+  promptIdentifier: string | null;
+  promptTemplate: string | null;
+};
+
+type ApiAnalysisRun = {
+  id: string;
+  project_id: string;
+  dataset_version_id: string;
+  analysis_profile_id: string;
+  status: string;
+  progress: number;
+  profile_snapshot: Record<string, unknown>;
+  provider: string;
+  model: string;
+  parameters: Record<string, unknown>;
+  error_message: string | null;
+  diagnostics: Record<string, unknown>;
+  started_at: string | null;
+  completed_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+type AnalysisRun = {
+  id: string;
+  projectId: string;
+  datasetVersionId: string;
+  analysisProfileId: string;
+  status: string;
+  progress: number;
+  profileSnapshot: Record<string, unknown>;
+  provider: string;
+  model: string;
+  parameters: Record<string, unknown>;
+  errorMessage: string | null;
+  diagnostics: Record<string, unknown>;
+  startedAt: string | null;
+  completedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
 type Session = {
   token: string;
   user: User;
@@ -101,6 +181,61 @@ function toImportLog(log: ApiImportLog): ImportLog {
     skippedRecords: log.skipped_records,
     datasetVersionId: log.dataset_version_id,
   };
+}
+
+function toProviderConfiguration(
+  configuration: ApiProviderConfiguration,
+): ProviderConfiguration {
+  return {
+    provider: configuration.provider,
+    endpointUrl: configuration.endpoint_url,
+    manualModels: configuration.manual_models,
+    apiKeySet: configuration.api_key_set,
+    updatedAt: configuration.updated_at,
+  };
+}
+
+function toAnalysisProfile(profile: ApiAnalysisProfile): AnalysisProfile {
+  return {
+    id: profile.id,
+    projectId: profile.project_id,
+    name: profile.name,
+    provider: profile.provider,
+    model: profile.model,
+    isCloudProvider: profile.is_cloud_provider,
+    thresholds: profile.thresholds,
+    algorithmSettings: profile.algorithm_settings,
+    promptIdentifier: profile.prompt_identifier,
+    promptTemplate: profile.prompt_template,
+  };
+}
+
+function toAnalysisRun(run: ApiAnalysisRun): AnalysisRun {
+  return {
+    id: run.id,
+    projectId: run.project_id,
+    datasetVersionId: run.dataset_version_id,
+    analysisProfileId: run.analysis_profile_id,
+    status: run.status,
+    progress: run.progress,
+    profileSnapshot: run.profile_snapshot,
+    provider: run.provider,
+    model: run.model,
+    parameters: run.parameters,
+    errorMessage: run.error_message,
+    diagnostics: run.diagnostics,
+    startedAt: run.started_at,
+    completedAt: run.completed_at,
+    createdAt: run.created_at,
+    updatedAt: run.updated_at,
+  };
+}
+
+function parseModels(value: FormDataEntryValue | null): string[] {
+  return String(value ?? "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
 }
 
 async function apiRequest<T>(
@@ -146,6 +281,11 @@ function App() {
   const [importLogEntries, setImportLogEntries] = useState<ApiImportLogEntry[]>(
     [],
   );
+  const [providers, setProviders] = useState<ProviderConfiguration[]>([]);
+  const [analysisProfiles, setAnalysisProfiles] = useState<AnalysisProfile[]>(
+    [],
+  );
+  const [analysisRuns, setAnalysisRuns] = useState<AnalysisRun[]>([]);
   const [message, setMessage] = useState("");
   const [passwordNotice, setPasswordNotice] = useState("");
   const [isLoading, setIsLoading] = useState(false);
@@ -168,6 +308,30 @@ function App() {
       { token },
     );
     setImportLogs(apiLogs.map(toImportLog));
+  }
+
+  async function loadProviders(token: string) {
+    const apiProviders = await apiRequest<ApiProviderConfiguration[]>(
+      "/api/providers",
+      { token },
+    );
+    setProviders(apiProviders.map(toProviderConfiguration));
+  }
+
+  async function loadAnalysisProfiles(token: string, projectId: string) {
+    const apiProfiles = await apiRequest<ApiAnalysisProfile[]>(
+      `/api/projects/${projectId}/analysis-profiles`,
+      { token },
+    );
+    setAnalysisProfiles(apiProfiles.map(toAnalysisProfile));
+  }
+
+  async function loadAnalysisRuns(token: string, projectId: string) {
+    const apiRuns = await apiRequest<ApiAnalysisRun[]>(
+      `/api/projects/${projectId}/analysis-runs`,
+      { token },
+    );
+    setAnalysisRuns(apiRuns.map(toAnalysisRun));
   }
 
   async function signIn(event: FormEvent<HTMLFormElement>) {
@@ -194,6 +358,7 @@ function App() {
         loadUsers(nextSession.token),
         loadProjects(nextSession.token),
       ]);
+      await loadProviders(nextSession.token).catch(() => setProviders([]));
       setMessage("Angemeldet. Geschuetzte Workflows sind verfuegbar.");
     } catch {
       setSession(null);
@@ -202,6 +367,9 @@ function App() {
       setCurrentProject(null);
       setImportLogs([]);
       setImportLogEntries([]);
+      setProviders([]);
+      setAnalysisProfiles([]);
+      setAnalysisRuns([]);
       setMessage(
         "Anmeldung fehlgeschlagen oder Backend nicht erreichbar. Bitte Zugangsdaten und lokalen Dienst pruefen.",
       );
@@ -230,6 +398,8 @@ function App() {
       setCurrentProject(project);
       setImportLogs([]);
       setImportLogEntries([]);
+      setAnalysisProfiles([]);
+      setAnalysisRuns([]);
       formElement.reset();
       setMessage("Projekt erstellt und geoeffnet.");
     } catch {
@@ -254,6 +424,12 @@ function App() {
       );
       setCurrentProject(toProject(opened));
       await loadImportLogs(session.token, projectId);
+      await loadAnalysisProfiles(session.token, projectId).catch(() =>
+        setAnalysisProfiles([]),
+      );
+      await loadAnalysisRuns(session.token, projectId).catch(() =>
+        setAnalysisRuns([]),
+      );
       setImportLogEntries([]);
       setMessage("Projekt geoeffnet.");
     } catch {
@@ -311,6 +487,8 @@ function App() {
         setCurrentProject(null);
         setImportLogs([]);
         setImportLogEntries([]);
+        setAnalysisProfiles([]);
+        setAnalysisRuns([]);
       }
       setMessage("Projekt geloescht.");
     } catch {
@@ -499,6 +677,137 @@ function App() {
     }
   }
 
+  async function configureProvider(
+    event: FormEvent<HTMLFormElement>,
+    provider: "openai" | "vllm",
+  ) {
+    event.preventDefault();
+    if (session === null) {
+      return;
+    }
+    const formElement = event.currentTarget;
+    const form = new FormData(formElement);
+    const payload: Record<string, unknown> = {
+      manual_models: parseModels(form.get("manualModels")),
+    };
+    if (provider === "openai") {
+      const apiKey = String(form.get("apiKey") ?? "");
+      payload.api_key = apiKey || null;
+      payload.remove_api_key = form.get("removeApiKey") === "on";
+    } else {
+      payload.endpoint_url = String(form.get("endpointUrl") ?? "").trim();
+    }
+    try {
+      const updated = await apiRequest<ApiProviderConfiguration>(
+        `/api/providers/${provider}`,
+        {
+          method: "PUT",
+          token: session.token,
+          body: JSON.stringify(payload),
+        },
+      );
+      setProviders((existing) => [
+        toProviderConfiguration(updated),
+        ...existing.filter((item) => item.provider !== provider),
+      ]);
+      formElement.reset();
+      setMessage(
+        provider === "openai"
+          ? "OpenAI Provider gespeichert. API-Key bleibt write-only."
+          : "vLLM Provider gespeichert.",
+      );
+    } catch {
+      setMessage("Provider-Konfiguration konnte nicht gespeichert werden.");
+    }
+  }
+
+  async function createAnalysisProfile(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (session === null || currentProject === null) {
+      return;
+    }
+    const formElement = event.currentTarget;
+    const form = new FormData(formElement);
+    const similarity = Number.parseFloat(String(form.get("similarity") ?? ""));
+    const thresholds = Number.isFinite(similarity) ? { similarity } : {};
+    try {
+      const created = await apiRequest<ApiAnalysisProfile>(
+        `/api/projects/${currentProject.id}/analysis-profiles`,
+        {
+          method: "POST",
+          token: session.token,
+          body: JSON.stringify({
+            name: String(form.get("profileName") ?? "").trim(),
+            provider: String(form.get("provider") ?? ""),
+            model: String(form.get("model") ?? "").trim(),
+            thresholds,
+            algorithm_settings: {
+              algorithm:
+                String(form.get("algorithm") ?? "").trim() || "default",
+            },
+            prompt_identifier:
+              String(form.get("promptIdentifier") ?? "").trim() || null,
+          }),
+        },
+      );
+      setAnalysisProfiles((existing) => [
+        toAnalysisProfile(created),
+        ...existing,
+      ]);
+      formElement.reset();
+      setMessage("Analyseprofil gespeichert.");
+    } catch {
+      setMessage(
+        "Analyseprofil konnte nicht gespeichert werden. Provider und Modell pruefen.",
+      );
+    }
+  }
+
+  async function startAnalysisRun(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (session === null || currentProject === null) {
+      return;
+    }
+    const formElement = event.currentTarget;
+    const form = new FormData(formElement);
+    const datasetVersionId = String(form.get("datasetVersionId") ?? "");
+    const analysisProfileId = String(form.get("analysisProfileId") ?? "");
+    const mode = String(form.get("runMode") ?? "").trim() || "fixture";
+    try {
+      const created = await apiRequest<ApiAnalysisRun>(
+        `/api/projects/${currentProject.id}/analysis-runs`,
+        {
+          method: "POST",
+          token: session.token,
+          body: JSON.stringify({
+            dataset_version_id: datasetVersionId,
+            analysis_profile_id: analysisProfileId,
+            parameters: { mode },
+          }),
+        },
+      );
+      setAnalysisRuns((existing) => [toAnalysisRun(created), ...existing]);
+      formElement.reset();
+      setMessage(
+        `Analyse gestartet: ${created.status}, Fortschritt ${created.progress}%.`,
+      );
+    } catch {
+      setMessage(
+        "Analyse konnte nicht gestartet werden. Dataset-Version und Profil pruefen.",
+      );
+    }
+  }
+
+  const configuredModelHint =
+    providers
+      .flatMap((provider) =>
+        provider.manualModels.map((model) => `${provider.provider}:${model}`),
+      )
+      .join(", ") || "Noch keine Modelle konfiguriert.";
+  const runnableDatasetLogs = importLogs.filter(
+    (log) => log.datasetVersionId !== null,
+  );
+
   if (session === null) {
     return (
       <main className="auth-shell">
@@ -574,77 +883,340 @@ function App() {
         )}
       </section>
 
-      {currentProject && (
-        <section className="panel-grid">
-          <form
-            className="panel stack"
-            onSubmit={importFile}
-            aria-label="Import starten"
-          >
-            <p className="eyebrow">T004 Import</p>
-            <h2>CSV/JSON importieren</h2>
-            <p className="hint">
-              Erwartete Felder: ticketid, messagegroupid, message, answer.
-              Ungueltige Datensaetze werden uebersprungen und protokolliert.
-            </p>
-            <label>
-              Importdatei
-              <input name="importFile" type="file" accept=".csv,.json" />
-            </label>
-            <button type="submit" disabled={isLoading}>
-              Import starten
-            </button>
-          </form>
+      <section className="panel-grid">
+        <form
+          className="panel stack"
+          onSubmit={(event) => configureProvider(event, "openai")}
+          aria-label="OpenAI Provider konfigurieren"
+        >
+          <p className="eyebrow">T005 Provider</p>
+          <h2>OpenAI konfigurieren</h2>
+          <p className="hint">
+            API-Key wird nur geschrieben oder geloescht und nie angezeigt.
+            OpenAI-Profile sind als Cloud-Nutzung markiert.
+          </p>
+          <label>
+            Neuer OpenAI API-Key
+            <input
+              name="apiKey"
+              type="password"
+              autoComplete="off"
+              placeholder="sk-..."
+            />
+          </label>
+          <label>
+            OpenAI Modelle
+            <input
+              name="manualModels"
+              placeholder="text-embedding-3-small, gpt-4.1-mini"
+            />
+          </label>
+          <label className="inline-check">
+            <input name="removeApiKey" type="checkbox" />
+            Gespeicherten API-Key entfernen
+          </label>
+          <button type="submit">OpenAI speichern</button>
+        </form>
 
-          <section className="panel" aria-label="Importprotokolle">
-            <h2>Importprotokolle</h2>
-            <div className="user-list">
-              {importLogs.length === 0 && (
-                <p className="hint">Noch keine Imports fuer dieses Projekt.</p>
-              )}
-              {importLogs.map((log) => (
-                <article className="user-card" key={log.id}>
-                  <div className="user-heading">
-                    <strong>{log.sourceName}</strong>
-                    <span>{log.status}</span>
-                  </div>
+        <form
+          className="panel stack"
+          onSubmit={(event) => configureProvider(event, "vllm")}
+          aria-label="vLLM Provider konfigurieren"
+        >
+          <p className="eyebrow">Lokal</p>
+          <h2>vLLM konfigurieren</h2>
+          <p className="hint">
+            Lokale vLLM-Endpoints bleiben explizit und koennen mehrere Modelle
+            bereitstellen.
+          </p>
+          <label>
+            Endpoint URL
+            <input name="endpointUrl" placeholder="http://localhost:8000" />
+          </label>
+          <label>
+            vLLM Modelle
+            <input name="manualModels" placeholder="local-embed, local-chat" />
+          </label>
+          <button type="submit">vLLM speichern</button>
+        </form>
+
+        <section className="panel" aria-label="Provider Konfigurationen">
+          <h2>Provider Konfigurationen</h2>
+          <div className="user-list">
+            {providers.length === 0 && (
+              <p className="hint">Noch keine Provider konfiguriert.</p>
+            )}
+            {providers.map((provider) => (
+              <article className="user-card" key={provider.provider}>
+                <div className="user-heading">
+                  <strong>{provider.provider}</strong>
+                  {provider.provider === "openai" && (
+                    <span>
+                      {provider.apiKeySet ? "API-Key gesetzt" : "Kein API-Key"}
+                    </span>
+                  )}
+                </div>
+                {provider.endpointUrl && (
+                  <p className="hint">Endpoint: {provider.endpointUrl}</p>
+                )}
+                <p className="hint">
+                  Modelle:{" "}
+                  {provider.manualModels.length
+                    ? provider.manualModels.join(", ")
+                    : "keine"}
+                </p>
+              </article>
+            ))}
+          </div>
+        </section>
+      </section>
+
+      {currentProject && (
+        <>
+          <section className="panel-grid">
+            <form
+              className="panel stack"
+              onSubmit={createAnalysisProfile}
+              aria-label="Analyseprofil erstellen"
+            >
+              <p className="eyebrow">T005 Profile</p>
+              <h2>Analyseprofil erstellen</h2>
+              <p className="hint">
+                Konfigurierte Modelle: {configuredModelHint}
+              </p>
+              <label>
+                Profilname
+                <input name="profileName" />
+              </label>
+              <label>
+                Provider
+                <select name="provider" defaultValue="vllm">
+                  <option value="vllm">vLLM lokal</option>
+                  <option value="openai">OpenAI Cloud</option>
+                </select>
+              </label>
+              <label>
+                Modell
+                <input name="model" placeholder="local-embed" />
+              </label>
+              <label>
+                Similarity Threshold
+                <input name="similarity" placeholder="0.78" />
+              </label>
+              <label>
+                Algorithmus
+                <input name="algorithm" placeholder="hdbscan" />
+              </label>
+              <label>
+                Prompt-ID
+                <input name="promptIdentifier" placeholder="faq-v1" />
+              </label>
+              <button type="submit">Profil speichern</button>
+            </form>
+
+            <section className="panel" aria-label="Analyseprofile">
+              <h2>Analyseprofile</h2>
+              <div className="user-list">
+                {analysisProfiles.length === 0 && (
                   <p className="hint">
-                    Total: {log.totalRecords}; importiert: {log.validRecords};
-                    uebersprungen: {log.skippedRecords}
+                    Noch keine Analyseprofile fuer dieses Projekt.
                   </p>
-                  {log.failureReason && (
-                    <p className="error">{log.failureReason}</p>
-                  )}
-                  {log.datasetVersionId && (
+                )}
+                {analysisProfiles.map((profile) => (
+                  <article className="user-card" key={profile.id}>
+                    <div className="user-heading">
+                      <strong>{profile.name}</strong>
+                      <span>
+                        {profile.provider}/{profile.model}
+                      </span>
+                    </div>
+                    {profile.isCloudProvider && (
+                      <p className="status warning">
+                        Cloud-Nutzung: OpenAI Profil sendet spaetere
+                        Analyseinhalte an den konfigurierten Cloud-Provider.
+                      </p>
+                    )}
                     <p className="hint">
-                      Dataset-Version: {log.datasetVersionId}
+                      Thresholds: {JSON.stringify(profile.thresholds)}
                     </p>
-                  )}
-                  <button
-                    type="button"
-                    className="secondary"
-                    onClick={() => inspectImportLog(log.id)}
-                  >
-                    Logdetails anzeigen
-                  </button>
-                </article>
-              ))}
-            </div>
-            {importLogEntries.length > 0 && (
-              <div className="log-detail" aria-label="Import Logdetails">
-                <h2>Validierungsdetails</h2>
-                {importLogEntries.map((entry) => (
-                  <p
-                    className="hint"
-                    key={`${entry.source_location}-${entry.reason}`}
-                  >
-                    {entry.source_location}: {entry.reason}
-                  </p>
+                    <p className="hint">
+                      Algorithmus: {JSON.stringify(profile.algorithmSettings)}
+                    </p>
+                    {profile.promptIdentifier && (
+                      <p className="hint">Prompt: {profile.promptIdentifier}</p>
+                    )}
+                  </article>
                 ))}
               </div>
-            )}
+            </section>
           </section>
-        </section>
+
+          <section className="panel-grid">
+            <form
+              className="panel stack"
+              onSubmit={startAnalysisRun}
+              aria-label="Analyse starten"
+            >
+              <p className="eyebrow">T006 Run Monitor</p>
+              <h2>Analyse starten</h2>
+              <p className="hint">
+                Lokale Fixture-Workflows koennen ohne OpenAI abgeschlossen
+                werden. OpenAI-Profile bleiben als Cloud-Nutzung sichtbar.
+              </p>
+              <label>
+                Dataset-Version
+                <select name="datasetVersionId">
+                  {runnableDatasetLogs.map((log) => (
+                    <option
+                      key={log.datasetVersionId ?? log.id}
+                      value={log.datasetVersionId ?? ""}
+                    >
+                      {log.sourceName} / {log.datasetVersionId}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Analyseprofil
+                <select name="analysisProfileId">
+                  {analysisProfiles.map((profile) => (
+                    <option key={profile.id} value={profile.id}>
+                      {profile.name} ({profile.provider}/{profile.model})
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Run-Modus
+                <input name="runMode" placeholder="fixture" />
+              </label>
+              <button
+                type="submit"
+                disabled={
+                  runnableDatasetLogs.length === 0 ||
+                  analysisProfiles.length === 0
+                }
+              >
+                Analyse starten
+              </button>
+            </form>
+
+            <section className="panel" aria-label="Analyse Runs">
+              <h2>Analyse Runs</h2>
+              <div className="user-list">
+                {analysisRuns.length === 0 && (
+                  <p className="hint">
+                    Noch keine Analyse-Runs fuer dieses Projekt.
+                  </p>
+                )}
+                {analysisRuns.map((run) => (
+                  <article className="user-card" key={run.id}>
+                    <div className="user-heading">
+                      <strong>{run.status}</strong>
+                      <span>{run.progress}%</span>
+                    </div>
+                    <p className="hint">
+                      Provider/Modell: {run.provider}/{run.model}
+                    </p>
+                    <p className="hint">
+                      Dataset-Version: {run.datasetVersionId}
+                    </p>
+                    <p className="hint">
+                      Profil-Snapshot:{" "}
+                      {String(
+                        run.profileSnapshot.name ?? run.analysisProfileId,
+                      )}
+                    </p>
+                    <p className="hint">
+                      Erstellt: {run.createdAt}; gestartet:{" "}
+                      {run.startedAt ?? "noch nicht"}; abgeschlossen:{" "}
+                      {run.completedAt ?? "noch nicht"}
+                    </p>
+                    {run.errorMessage && (
+                      <p className="error">{run.errorMessage}</p>
+                    )}
+                    <p className="hint">
+                      Diagnose: {JSON.stringify(run.diagnostics)}
+                    </p>
+                  </article>
+                ))}
+              </div>
+            </section>
+          </section>
+
+          <section className="panel-grid">
+            <form
+              className="panel stack"
+              onSubmit={importFile}
+              aria-label="Import starten"
+            >
+              <p className="eyebrow">T004 Import</p>
+              <h2>CSV/JSON importieren</h2>
+              <p className="hint">
+                Erwartete Felder: ticketid, messagegroupid, message, answer.
+                Ungueltige Datensaetze werden uebersprungen und protokolliert.
+              </p>
+              <label>
+                Importdatei
+                <input name="importFile" type="file" accept=".csv,.json" />
+              </label>
+              <button type="submit" disabled={isLoading}>
+                Import starten
+              </button>
+            </form>
+
+            <section className="panel" aria-label="Importprotokolle">
+              <h2>Importprotokolle</h2>
+              <div className="user-list">
+                {importLogs.length === 0 && (
+                  <p className="hint">
+                    Noch keine Imports fuer dieses Projekt.
+                  </p>
+                )}
+                {importLogs.map((log) => (
+                  <article className="user-card" key={log.id}>
+                    <div className="user-heading">
+                      <strong>{log.sourceName}</strong>
+                      <span>{log.status}</span>
+                    </div>
+                    <p className="hint">
+                      Total: {log.totalRecords}; importiert: {log.validRecords};
+                      uebersprungen: {log.skippedRecords}
+                    </p>
+                    {log.failureReason && (
+                      <p className="error">{log.failureReason}</p>
+                    )}
+                    {log.datasetVersionId && (
+                      <p className="hint">
+                        Dataset-Version: {log.datasetVersionId}
+                      </p>
+                    )}
+                    <button
+                      type="button"
+                      className="secondary"
+                      onClick={() => inspectImportLog(log.id)}
+                    >
+                      Logdetails anzeigen
+                    </button>
+                  </article>
+                ))}
+              </div>
+              {importLogEntries.length > 0 && (
+                <div className="log-detail" aria-label="Import Logdetails">
+                  <h2>Validierungsdetails</h2>
+                  {importLogEntries.map((entry) => (
+                    <p
+                      className="hint"
+                      key={`${entry.source_location}-${entry.reason}`}
+                    >
+                      {entry.source_location}: {entry.reason}
+                    </p>
+                  ))}
+                </div>
+              )}
+            </section>
+          </section>
+        </>
       )}
 
       <section className="panel-grid">

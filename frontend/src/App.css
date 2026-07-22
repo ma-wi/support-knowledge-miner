@@ -30,7 +30,8 @@ body {
 }
 
 button,
-input {
+input,
+select {
   font: inherit;
 }
 
@@ -52,7 +53,8 @@ button:disabled {
   opacity: 0.55;
 }
 
-input {
+input,
+select {
   width: 100%;
   border: 1px solid var(--line);
   border-radius: 14px;
@@ -183,6 +185,16 @@ h2 {
   padding-top: 1rem;
 }
 
+.inline-check {
+  display: flex;
+  gap: 0.65rem;
+  align-items: center;
+}
+
+.inline-check input {
+  width: auto;
+}
+
 .user-heading {
   display: flex;
   gap: 0.75rem;
@@ -203,6 +215,11 @@ h2 {
 .status {
   padding: 0.85rem 1rem;
   color: var(--accent-strong);
+}
+
+.warning {
+  border-radius: 16px;
+  background: #fff1c7;
 }
 
 .error {

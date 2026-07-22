@@ -35,5 +35,3 @@ See `docs/architecture/overview.md` and `docs/architecture/decisions/`.
 ## Security
 
 See `SECURITY.md`.
-
-# support-knowledge-miner

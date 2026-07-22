@@ -5,6 +5,7 @@
 .DS_Store
 *.log
 *.tmp
+prompts.txt
 
 # or folders
 dist/
@@ -12,3 +13,4 @@ build/
 out/
 .idea/
 support_knowledge_miner.egg-info/
+

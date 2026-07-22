@@ -35,3 +35,5 @@ target/
 coverage/
 node_modules/
 support_knowledge_miner.egg-info
+
+prompts.txt
