@@ -2,12 +2,17 @@
 name = "support-knowledge-miner"
 version = "0.1.0"
 requires-python = ">=3.13"
-dependencies = []
+dependencies = [
+    "argon2-cffi>=25,<26",
+    "fastapi>=0.116,<1",
+    "psycopg[binary]>=3.2,<4",
+]
 
 [dependency-groups]
 dev = [
     "bandit==1.9.4",
     "build==1.5.0",
+    "httpx2>=2.7.0",
     "mypy==2.3.0",
     "pip-audit==2.10.1",
     "pytest==9.1.1",
@@ -16,4 +21,7 @@ dev = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["backend"]
+include = ["backend", "backend.*"]
+
+[tool.setuptools.package-data]
+"backend.db.migrations" = ["*.sql"]

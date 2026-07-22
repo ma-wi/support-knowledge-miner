@@ -4,10 +4,10 @@ Keep this document compact. It is a map for agents, not a duplicate of the sourc
 
 ## Purpose
 
-- Product or service:
-- Primary users:
-- Main outcome:
-- Explicit non-goals:
+- Product or service: Local-first Support Knowledge Miner for extracting and curating FAQ/support knowledge from historical paired support messages.
+- Primary users: Analyst/Kurator, a fachlich-technischer user who imports data, configures analysis profiles, reviews clusters, curates candidates, and exports results.
+- Main outcome: Independent projects persist imported CSV/JSON support pairs, analysis runs, embeddings, curation state, candidates, and exports with source traceability.
+- Explicit non-goals: No production access, no operational FAQ agent, no customer communication, no live ticket/shop/ERP integrations, and no server deployment in MVP 1.
 
 ## Technology stack
 
