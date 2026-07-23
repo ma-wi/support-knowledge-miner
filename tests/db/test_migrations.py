@@ -15,6 +15,9 @@ def test_migration_files_are_ordered() -> None:
         "0004_import_datasets.sql",
         "0005_providers_profiles.sql",
         "0006_analysis_runs.sql",
+        "0007_clusters.sql",
+        "0008_candidates.sql",
+        "0009_exports.sql",
     ]
 
 

@@ -25,6 +25,8 @@ instructions conflict.
 
 ## Start and classify
 
+Ignore always all files that are listed in `.aiignore` file. Do not read these files.
+
 Read `.ai/project.yaml`, the accepted requirement when present, otherwise the
 current user request, `.ai/PROJECT_CONTEXT.md`, the applicable role/conditional
 policies, and `.ai/policies/WORKFLOW.md`. Do not load all `.ai/` files by default.

@@ -5,7 +5,7 @@
 - Requirement: `docs/requirements/support-knowledge-miner-mvp1.md`
 - Durable specification: `docs/specifications/support-knowledge-miner-mvp1.md`
 - Work directory: `.ai/work/support-knowledge-miner-mvp1/`
-- Last updated: 2026-07-22
+- Last updated: 2026-07-23
 
 ## Outcome and implementation boundary
 
@@ -47,10 +47,10 @@ Implement the accepted MVP foundation for a local-first Support Knowledge Miner.
 | T004 | CSV/JSON import, dataset versions, and import logs | reviewed | T003 | `tasks/T004-import-datasets.md` |
 | T005 | Global provider settings and project analysis profiles | reviewed | T002, T003 | `tasks/T005-providers-profiles.md` |
 | T006 | Analysis-run job scaffold, embeddings/vector persistence seam, and run monitor | reviewed | T004, T005 | `tasks/T006-analysis-run-foundation.md` |
-| T007 | Clustering foundation, cluster explorer, and source traceability | ready | T006 | `tasks/T007-cluster-explorer.md` |
-| T008 | Candidate curation foundation and candidate editor | ready | T007 | `tasks/T008-candidate-curation.md` |
-| T009 | Candidate/source CSV export and export history | ready | T008 | `tasks/T009-exports.md` |
-| T010 | End-to-end UI shell, shared states, and fixture smoke coverage | ready | T002, T003, T004, T005 | `tasks/T010-ui-shell-smoke.md` |
+| T007 | Clustering foundation, cluster explorer, and source traceability | reviewed | T006 | `tasks/T007-cluster-explorer.md` |
+| T008 | Candidate curation foundation and candidate editor | reviewed | T007 | `tasks/T008-candidate-curation.md` |
+| T009 | Candidate/source CSV export and export history | reviewed | T008 | `tasks/T009-exports.md` |
+| T010 | End-to-end UI shell, shared states, and fixture smoke coverage | reviewed | T002, T003, T004, T005 | `tasks/T010-ui-shell-smoke.md` |
 
 ## Acceptance-criteria traceability
 

@@ -1,11 +1,11 @@
 # Task T007: Clustering foundation, cluster explorer, and source traceability
 
-- Status: ready
+- Status: reviewed
 - Parent requirement: support-knowledge-miner-mvp1
 - Plan: `.ai/work/support-knowledge-miner-mvp1/PLAN.md`
 - Depends on: T006
 - Owner/agent: implementer
-- Last updated: 2026-07-19
+- Last updated: 2026-07-22
 
 ## Objective
 
@@ -41,10 +41,10 @@ Implement the first clustering foundation with source traceability, outlier/unas
 
 ## Acceptance criteria
 
-- [ ] Spec AC-21: Clustering implementation avoids full pairwise all-record distance computation and exposes outliers/unassigned records.
-- [ ] Spec AC-22: Automatic values, manual overrides, and effective values are distinguishable for clusters.
-- [ ] Spec AC-24: Candidate/source traceability groundwork reaches original imported source fields for clusters.
-- [ ] Spec AC-34: Cluster explorer UI distinguishes automatic/manual/effective values and provides source drilldown.
+- [x] Spec AC-21: Clustering implementation avoids full pairwise all-record distance computation and exposes outliers/unassigned records.
+- [x] Spec AC-22: Automatic values, manual overrides, and effective values are distinguishable for clusters.
+- [x] Spec AC-24: Candidate/source traceability groundwork reaches original imported source fields for clusters.
+- [x] Spec AC-34: Cluster explorer UI distinguishes automatic/manual/effective values and provides source drilldown.
 
 ## Implementation constraints
 
@@ -60,10 +60,10 @@ Implement the first clustering foundation with source traceability, outlier/unas
 
 ## Verification
 
-- [ ] Focused tests
-- [ ] Relevant linting and static analysis
-- [ ] Security or dependency checks when applicable
-- [ ] Documentation assessment
+- [x] Focused tests
+- [x] Relevant linting and static analysis
+- [x] Security or dependency checks when applicable
+- [x] Documentation assessment
 
 Exact commands:
 
@@ -79,3 +79,15 @@ python .ai/tools/check-docs.py
 
 ## Result
 
+- Added cluster and cluster-membership persistence in `0007_clusters.sql`, linked to project, analysis run, dataset version, and original `message_pairs`.
+- Added `ClusterService` with idempotent generation for completed runs, a deterministic linear prefix scaffold that avoids pairwise all-record distance computation, outlier marking for singleton groups, manual override updates, and source traceability queries.
+- Added authenticated cluster API routes for generate/list/update/source drilldown.
+- Added Cluster Explorer UI to generate/load clusters, distinguish automatic/manual/effective fields, save manual overrides, show outlier status, and drill down to original `ticketid`, `messagegroupid`, `message`, and `answer`.
+- Added migration, service, API, and frontend smoke coverage for non-quadratic grouping seam, outliers, effective/manual separation, and source traceability.
+- Verification observed on 2026-07-22:
+  `./.ai/tools/format.sh --check`,
+  `./.ai/tools/lint.sh`,
+  `./.ai/tools/test.sh`,
+  `./.ai/tools/security.sh`,
+  `python .ai/tools/check-docs.py`,
+  `./.ai/tools/verify.sh`.

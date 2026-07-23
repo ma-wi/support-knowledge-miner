@@ -490,3 +490,303 @@ No blocking or material findings remain for T006.
 
 - The local background runner is intentionally minimal for the MVP scaffold. It is acceptable for T006 because the persistent run state is now observable and execution is isolated behind an explicit seam, but later production-grade queue semantics remain out of scope for this task.
 - T006 is approved for transition from `verified` to `reviewed`.
+
+---
+
+# Review: support-knowledge-miner-mvp1 T007
+
+- Reviewer: Codex
+- Date: 2026-07-22
+- Scope reviewed: T007 clustering foundation, cluster persistence, non-quadratic deterministic scaffold, outlier/unassigned representation, automatic/manual/effective cluster values, cluster API, cluster explorer UI, source traceability, migration/tests, work-state consistency, security/dependency surfaces, and full verification.
+- Verdict: APPROVE
+
+## Findings
+
+No blocking or material findings were found for T007.
+
+## Acceptance Criteria Trace
+
+- AC-21: `ClusterService.generate_for_run()` groups message pairs in a single pass using a deterministic prefix scaffold and records `metadata.non_quadratic`; singleton groups are marked `outlier`.
+- AC-22: Cluster records persist automatic fields separately from manual overrides, and service/API responses derive effective values without overwriting automatic values.
+- AC-24: Cluster memberships link clusters to original `message_pairs`, and source drilldown returns original `ticketid`, `messagegroupid`, `message`, and `answer`.
+- AC-34: The UI exposes Cluster Explorer actions, shows Auto/Manual/Effective values distinctly, marks outliers, supports manual override updates, and drills down to source records.
+
+## Verification Observed
+
+- `./.ai/tools/test.sh`: PASS (`48` Python tests, `7` frontend tests)
+- `./.ai/tools/lint.sh`: PASS
+- `./.ai/tools/security.sh`: PASS
+- `./.ai/tools/check-dependencies.sh`: PASS, including `pip-audit` and `npm audit --audit-level=high`
+- `python .ai/tools/check-work-state.py`: PASS
+- `python .ai/tools/check-docs.py`: PASS
+- `./.ai/tools/verify.sh`: PASS, including work-state, documentation, setup, format, lint, tests, dependency policy/scans, security, and build
+
+## Notes
+
+- The clustering quality is intentionally a deterministic scaffold, not a final semantic clustering algorithm. That is acceptable for T007 because the accepted scope requires the persistence/traceability/UI seam and prohibits full pairwise all-record computation, while final tuning remains out of scope.
+- T007 is approved for transition from `verified` to `reviewed`.
+
+---
+
+# Review: support-knowledge-miner-mvp1 T008
+
+- Reviewer: Codex
+- Date: 2026-07-22
+- Scope reviewed: T008 candidate persistence and curation foundation, candidate/source assignment traceability, candidate API, Candidate Editor UI, migration/tests, work-state consistency, security/dependency surfaces, and full verification.
+- Verdict: REQUEST_CHANGES
+
+## Findings
+
+### P2: Candidate Editor silently converts untouched generated multi-value fields into empty manual overrides
+
+- Location: `frontend/src/App.tsx:1232`, `frontend/src/App.tsx:1256`, `frontend/src/App.tsx:1259`, `frontend/src/App.tsx:1260`, `frontend/src/App.tsx:1911`, `frontend/src/App.tsx:1920`, `backend/candidates/service.py:201`, `backend/candidates/service.py:208`, `backend/candidates/service.py:215`
+- Evidence: the editor renders manual alternative questions and external data dependencies from `candidate.manual... ?? ""`, so a candidate with generated alternatives/dependencies but no manual override shows blank manual fields. On any save, `updateCandidate()` always serializes `manual_alternative_questions` from that blank textarea as `[]`, always serializes `manual_parameters` as `{}`, and serializes `manual_external_data_dependencies` as `[]`. The backend treats every non-NULL manual list/object as an intentional manual value and selects it for the effective value.
+- Impact: saving an unrelated edit such as status, title, or notes changes candidate curation state by replacing generated effective alternatives/dependencies/parameters with empty manual overrides. That breaks the T008 requirement to keep generated/manual/effective candidate values meaningfully separate, and it risks dropping generated candidate evidence from later curation/export flows without an explicit curator action.
+- Required change: preserve the distinction between "no manual override", "explicitly cleared manual override", and "manual override value". For example, the UI can omit these fields or send `null` when no manual override is intended, and the API/service should have regression coverage for a candidate with generated alternatives/dependencies/parameters where saving only status/notes leaves the effective generated values intact unless the user explicitly clears them.
+
+## Acceptance Criteria Trace
+
+- AC-22: Not satisfied because untouched generated multi-value candidate fields can be replaced by empty manual overrides during a normal editor save.
+- AC-23: Not satisfied for the same curation-state preservation path; manual/generated state can be mutated unintentionally before reopening or later-run checks observe it.
+- AC-24: Source traceability to original imported fields is implemented and covered.
+- AC-29: Candidate Editor workflow is present, but its save behavior needs the P2 remediation above.
+
+## Verification Observed
+
+- `./.ai/tools/test.sh`: PASS (`54` Python tests, `7` frontend tests)
+- `./.ai/tools/lint.sh`: PASS
+- `./.ai/tools/security.sh`: PASS
+- `./.ai/tools/check-dependencies.sh`: PASS, including `pip-audit` and `npm audit --audit-level=high`
+- `python .ai/tools/check-work-state.py`: PASS
+- `python .ai/tools/check-docs.py`: PASS
+- `./.ai/tools/verify.sh`: PASS, including work-state, documentation, setup, format, lint, tests, dependency policy/scans, security, and build
+
+## Status
+
+- T008 is returned from `verified` to `in-progress` for remediation of the P2 Candidate Editor override finding.
+
+---
+
+# Re-review: support-knowledge-miner-mvp1 T008
+
+- Reviewer: Codex
+- Date: 2026-07-23
+- Scope reviewed: T008 remediation for the prior P2 multi-value override finding, plus the candidate service/API, Candidate Editor UI, migration/tests, accepted criteria, work-state consistency, security/dependency surfaces, and focused/full verification.
+- Verdict: REQUEST_CHANGES
+
+## Findings
+
+### P2: Partial candidate updates erase existing manual curation
+
+- Location: `backend/api/app.py:987`; `backend/api/app.py:994`; `backend/candidates/service.py:447`; `backend/candidates/service.py:465`; `tests/candidates/test_candidate_service.py:336`
+- Evidence: `CandidateUpdateRequest` defaults every omitted field to `None`, the route copies all of those values into `CandidateManualUpdate`, and `CandidateService.update_candidate()` writes every manual column directly. It does not distinguish an omitted PATCH field from an explicit `null` used to clear an override. Reviewer reproduction first stored `manual_title='Curated title'` and `manual_parameters={'account_id': 'required'}`, then sent a notes-only service update; both existing manual values became `None`. The new status-only regression starts from a candidate with no manual multi-value overrides, so it cannot detect this data loss.
+- Impact: API clients performing a normal partial update can silently remove unrelated reviewed curation. This contradicts PATCH semantics, the task's primary API/service seam, and AC-23's durability requirement.
+- Required change: preserve omitted fields while retaining an explicit way to clear an override. Carry field-presence information from the request boundary into the service/update query, and add API/service regression coverage that starts with existing scalar and structured manual values, patches only status or notes, and proves all unrelated manual/effective values remain intact. Also cover explicit clearing separately.
+
+### P2: Candidate Editor omits parameters and does not distinguish all generated/manual/effective fields
+
+- Location: `frontend/src/App.tsx:1820`; `frontend/src/App.tsx:1834`; `frontend/src/App.tsx:1919`; `frontend/src/App.tsx:1928`; `docs/specifications/support-knowledge-miner-mvp1.md:264`
+- Evidence: the Candidate Editor displays Auto/Manual/Effective only for title/category/status. Question, answer, and alternative questions show only effective values plus an unlabeled manual editor; dependencies have only a manual textarea; candidate parameters have no display or input at all. Nevertheless the API model carries `auto_parameters`, `manual_parameters`, and `effective_parameters`, and UI-09 explicitly requires parameters and external dependencies where applicable plus distinguishable generated/manual values.
+- Impact: a curator cannot inspect or edit parameter metadata and cannot reliably tell whether several visible values are generated or manually overridden. AC-22 and the accepted UI-09 portion of AC-29 are therefore incomplete.
+- Required change: expose parameters and external dependencies in the Candidate Editor and visibly distinguish automatic, manual, and effective values for the curated candidate fields. Add component coverage for a parameterized candidate, including editing/saving parameters and retaining generated values when no override is made.
+
+## Prior Finding Rechecked
+
+### P2: Candidate Editor silently converts untouched generated multi-value fields into empty manual overrides
+
+- Previous status: REQUEST_CHANGES
+- Current status: resolved for the originally reported UI path
+- Evidence: the editor now sends `null` for untouched generated alternative questions, parameters, and external dependencies, while an existing manual list can still be cleared to an empty list. The frontend regression asserts the null payload, and the service regression confirms generated effective multi-value fields survive when no manual override exists.
+
+## Verification Observed
+
+- `./.ai/tools/test.sh`: PASS (`55` Python tests, `8` frontend tests)
+- `./.ai/tools/lint.sh`: PASS
+- `./.ai/tools/security.sh`: PASS
+- `./.ai/tools/check-dependencies.sh`: PASS, including `pip-audit` and `npm audit --audit-level=high`
+- `python .ai/tools/check-work-state.py`: PASS before the review status transition
+- `python .ai/tools/check-docs.py`: PASS before the review status transition
+- `./.ai/tools/verify.sh`: PASS, including work-state, documentation, setup, format, lint, tests, dependency policy/scans, security, and build
+- Reviewer reproduction of notes-only update after existing manual curation: FAIL as expected; `manual_title` and `manual_parameters` changed from populated values to `None`.
+
+## Status
+
+- T008 is returned from `verified` to `in-progress` for remediation of both P2 findings.
+
+---
+
+# Re-review: support-knowledge-miner-mvp1 T008 remediation
+
+- Reviewer: Codex
+- Date: 2026-07-23
+- Scope reviewed: T008 remediation for PATCH field-presence handling, candidate multi-value override preservation, Candidate Editor parameter/dependency visibility, candidate service/API contracts, UI regression coverage, work-state consistency, security/dependency surfaces, and full verification.
+- Verdict: APPROVE
+
+## Findings
+
+No blocking or material findings were found.
+
+## Prior Findings Rechecked
+
+### P2: Partial candidate updates erase existing manual curation
+
+- Previous status: REQUEST_CHANGES
+- Current status: resolved
+- Evidence: `CandidateUpdateRequest.model_fields_set` is now passed into `CandidateManualUpdate.fields_to_update`, and `CandidateService.update_candidate()` updates only fields explicitly present in that set. Service and API regressions cover status-only/manual-status-only PATCH requests preserving existing scalar and structured manual values, plus explicit null clearing for selected overrides.
+
+### P2: Candidate Editor omits parameters and does not distinguish all generated/manual/effective fields
+
+- Previous status: REQUEST_CHANGES
+- Current status: resolved
+- Evidence: The Candidate Editor now renders Auto/Manual/Effective values for question, answer, alternative questions, parameters, and external data dependencies. It exposes `Parameter JSON` editing and keeps generated multi-value values intact when no manual override exists. Frontend coverage asserts parameter editing and generated parameter/dependency preservation.
+
+### P2: Candidate Editor silently converts untouched generated multi-value fields into empty manual overrides
+
+- Previous status: resolved in the prior re-review for the originally reported UI path
+- Current status: still resolved
+- Evidence: The UI keeps `null` for untouched generated alternative questions, parameters, and external data dependencies; existing manual list/object clears remain explicit as empty arrays/objects.
+
+## Acceptance Criteria Trace
+
+- AC-22: Satisfied for candidates. Automatic, manual, and effective candidate values are persisted separately, exposed by the API, and visibly distinguished in the Candidate Editor.
+- AC-23: Satisfied for T008 scope. Manual curation persists through service/API reads and is preserved by later analysis-run creation and unrelated PATCH updates.
+- AC-24: Satisfied. Candidate source assignments link back to original imported `ticketid`, `messagegroupid`, `message`, and `answer`, with service/API/UI coverage.
+- AC-29: Satisfied for the Candidate Editor workflow implemented in T008.
+
+## Verification Observed
+
+- `./.ai/tools/test.sh`: PASS with Python `58 passed`; frontend `8 passed`.
+- `./.ai/tools/lint.sh`: PASS.
+- `python .ai/tools/check-docs.py`: PASS.
+- `python .ai/tools/check-work-state.py`: PASS before the review status transition.
+- `./.ai/tools/verify.sh`: PASS, including work-state, documentation, setup, format, lint, tests, dependency policy/scans, security, and build.
+
+## Notes
+
+- Ignored Python bytecode/cache files exist in the local worktree under generated cache directories. They are covered by `.gitignore` and are not a T008 approval blocker.
+
+## Status
+
+- T008 is approved for transition from `verified` to `reviewed`.
+
+---
+
+# Review: support-knowledge-miner-mvp1 T009
+
+- Reviewer: Codex
+- Date: 2026-07-23
+- Scope reviewed: T009 candidate CSV export, source-assignment CSV export, export metadata persistence, export API/UI, original-text warnings, migration/tests, work-state consistency, security/privacy surfaces, and full verification.
+- Verdict: REQUEST_CHANGES
+
+## Findings
+
+### P2: Candidate exports can contain original source text while metadata and warning say they do not
+
+- Location: `backend/exports/service.py:141`; `backend/exports/service.py:157`; `backend/exports/service.py:170`; `backend/exports/service.py:293`; `backend/exports/service.py:294`; `backend/exports/service.py:295`; `backend/exports/service.py:315`; `backend/candidates/service.py:311`; `backend/candidates/service.py:314`; `backend/candidates/service.py:371`; `backend/candidates/service.py:372`; `frontend/src/App.tsx:1699`
+- Evidence: Candidate creation from a cluster stores the first source pair's original `mp.message` and `mp.answer` as `auto_canonical_question` and `auto_canonical_answer`. Candidate CSV export always writes `effective_canonical_question` and `effective_canonical_answer` to the CSV, regardless of `include_original_text`. The same request flag is stored directly as `export_logs.include_original_text`, returned as `contains_original_text`, and controls whether a warning is returned. In the UI the candidate checkbox only says original text should be "marked"; if the user leaves it unchecked, a cluster-derived candidate CSV can still contain source text but the export metadata says `include_original_text=false` and no warning is shown.
+- Impact: AC-27 and AC-35 are not satisfied for candidate exports. The export history and CSV `contains_original_text` field can falsely record that original/potentially identifying text was not included, which breaks the accepted privacy requirement and makes later export review/audit unreliable.
+- Required change: Make candidate export original-text semantics conservative and testable. Either suppress/redact candidate text fields when `include_original_text=false`, or treat candidate CSV rows that contain cluster-derived/source-derived canonical text as original-text exports by forcing/storing `include_original_text=true`, returning a warning, and writing `contains_original_text=true`. Add service/API/UI regression coverage for a candidate export requested with the checkbox unset where the candidate canonical question/answer originate from source text.
+
+## Acceptance Criteria Trace
+
+- AC-25: Candidate CSV headers match the accepted baseline columns.
+- AC-26: Source-assignment CSV headers match the accepted baseline columns, and source `customer_message`/`support_answer` are blank unless original text is requested.
+- AC-27: Not satisfied for candidate exports because persisted `include_original_text` can be false even when exported canonical candidate fields contain original source text.
+- AC-35: Not satisfied for the same candidate-export path because the UI/API can complete without an original-text warning while original/potentially identifying candidate text is present.
+
+## Verification Observed
+
+- `./.ai/tools/test.sh`: PASS with Python `65 passed`; frontend `8 passed`.
+- `./.ai/tools/lint.sh`: PASS.
+- `python .ai/tools/check-docs.py`: PASS.
+- `python .ai/tools/check-work-state.py`: PASS before the review status transition.
+- `./.ai/tools/verify.sh`: PASS, including work-state, documentation, setup, format, lint, tests, dependency policy/scans, security, and build.
+
+## Notes
+
+- The passing tests cover exact headers, source-assignment redaction, export metadata creation, authentication, and UI history. They do not cover the candidate-export false-negative original-text metadata case above.
+
+## Status
+
+- T009 is returned from `verified` to `in-progress` for remediation of the P2 candidate-export original-text metadata/warning finding.
+
+---
+
+# Re-review: support-knowledge-miner-mvp1 T009
+
+- Reviewer: Codex
+- Date: 2026-07-23
+- Scope reviewed: remediation for candidate export original-text metadata/warning semantics, export service/API/UI behavior, regression tests, task/work-state consistency, and full verification.
+- Verdict: APPROVE
+
+## Findings
+
+- No P0/P1/P2/P3 findings.
+
+## Remediation Trace
+
+### P2: Candidate exports can contain original source text while metadata and warning say they do not
+
+- Previous status: REQUEST_CHANGES
+- Current status: resolved
+- Evidence: `ExportService.export_candidates()` now derives `actual_include_original_text` from the request flag or from cluster/source-derived candidates, writes that value into CSV `contains_original_text`, persists it in `export_logs.include_original_text`, and returns the warning based on the actual value. The API returns the persisted log value rather than echoing the request. The UI stores and displays the returned metadata in export history and shows the warning returned by the backend.
+
+## Acceptance Criteria Trace
+
+- AC-25: Satisfied. Candidate CSV header order is covered by `tests/exports/test_export_service.py` against `CANDIDATE_CSV_COLUMNS`.
+- AC-26: Satisfied. Source-assignment CSV header order and original-text redaction behavior are covered by `tests/exports/test_export_service.py`.
+- AC-27: Satisfied. Export metadata is persisted with actual original-text inclusion, including a regression where a candidate export requested with `include_original_text=false` is persisted as `true` when candidate text is source-derived.
+- AC-35: Satisfied for T009 scope. The frontend exposes export actions/history and displays backend warnings/history for original-text exports, including the conservative candidate-export path.
+
+## Verification Observed
+
+- `./.ai/tools/verify.sh`: PASS. Observed gates: work-state, documentation, setup, format, lint/static analysis, tests, dependency policy/scans, security, and build.
+- Python tests: `67 passed`.
+- Frontend tests: `8 passed`.
+
+## Notes
+
+- Review did not access production resources.
+- `prompts.txt` is listed in `.aiignore`; it was not used as review evidence.
+
+## Status
+
+- T009 is approved for transition from `verified` to `reviewed`.
+
+---
+
+# Review: support-knowledge-miner-mvp1 T010
+
+- Reviewer: Codex
+- Date: 2026-07-23
+- Scope reviewed: T010 MVP UI shell/navigation, shared loading/empty/backend/provider/auth/validation states, protected-screen gating, local fixture smoke reachability, frontend tests, work-state consistency, and full verification.
+- Verdict: APPROVE
+
+## Findings
+
+- No P0/P1/P2/P3 findings.
+
+## Acceptance Criteria Trace
+
+- AC-29: Satisfied. The authenticated shell exposes sign-in, user management, provider settings, project home, profiles, import, run monitor, cluster explorer, candidate editor, and export workflows through navigation and rendered workflow sections.
+- AC-30: Satisfied. The protected shell is not rendered before successful API sign-in, and tests cover rejected credentials and backend-unavailable sign-in failures.
+- AC-31: Satisfied. Provider settings are reachable from the shell; OpenAI key replacement/removal remains write-only in UI responses, and vLLM endpoint/model configuration is covered.
+- AC-32: Satisfied. Import UI displays total/imported/skipped counts, dataset version, failure/validation details, and persisted import-log drilldown.
+- AC-33: Satisfied. Run monitor displays status/progress, provider/model, dataset version, timestamps, diagnostics, and errors.
+- AC-34: Satisfied. Cluster explorer displays automatic/manual/effective values and supports source-record drilldown.
+- AC-35: Satisfied. Export UI displays original-text warnings, export metadata/history, and last CSV output.
+
+## Verification Observed
+
+- `./.ai/tools/verify.sh`: PASS. Observed gates: work-state, documentation, setup, format, lint/static analysis, tests, dependency policy/scans, security, and build.
+- Python tests: `67 passed`.
+- Frontend tests: `9 passed`.
+
+## Notes
+
+- Review did not access production resources.
+- `prompts.txt` is listed in `.aiignore`; it was not used as review evidence.
+
+## Status
+
+- T010 is approved for transition from `verified` to `reviewed`.

@@ -147,6 +147,44 @@ h2 {
   padding: clamp(1.25rem, 4vw, 2.2rem);
 }
 
+.shell-nav,
+.state-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+}
+
+.shell-nav {
+  position: sticky;
+  top: 0.75rem;
+  z-index: 2;
+  border: 1px solid rgba(12, 107, 79, 0.2);
+  border-radius: 999px;
+  padding: 0.65rem;
+  background: rgba(255, 251, 240, 0.92);
+  box-shadow: 0 14px 44px rgba(29, 42, 31, 0.12);
+  backdrop-filter: blur(12px);
+}
+
+.shell-nav a,
+.state-pill {
+  border-radius: 999px;
+  padding: 0.55rem 0.85rem;
+  font-size: 0.86rem;
+}
+
+.shell-nav a {
+  color: var(--accent-strong);
+  text-decoration: none;
+  background: rgba(227, 238, 219, 0.7);
+}
+
+.shell-nav a:focus,
+.shell-nav a:hover {
+  outline: 2px solid rgba(12, 107, 79, 0.38);
+  outline-offset: 2px;
+}
+
 .secondary {
   color: var(--accent);
   background: #e3eedb;
@@ -220,6 +258,28 @@ h2 {
 .warning {
   border-radius: 16px;
   background: #fff1c7;
+}
+
+.state-board {
+  background:
+    linear-gradient(135deg, rgba(12, 107, 79, 0.1), transparent 42%),
+    rgba(255, 251, 240, 0.9);
+}
+
+.state-list {
+  margin-top: 1rem;
+}
+
+.state-pill {
+  border: 1px solid var(--line);
+  color: var(--muted);
+  background: rgba(255, 253, 246, 0.8);
+}
+
+.state-pill.active {
+  border-color: rgba(12, 107, 79, 0.35);
+  color: var(--accent-strong);
+  background: #e3eedb;
 }
 
 .error {

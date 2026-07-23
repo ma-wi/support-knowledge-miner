@@ -1,6 +1,6 @@
 # Task T010: End-to-end UI shell, shared states, and fixture smoke coverage
 
-- Status: ready
+- Status: reviewed
 - Parent requirement: support-knowledge-miner-mvp1
 - Plan: `.ai/work/support-knowledge-miner-mvp1/PLAN.md`
 - Depends on: T002, T003, T004, T005
@@ -39,13 +39,13 @@ Implement the cohesive MVP UI shell and shared loading/empty/error states, then 
 
 ## Acceptance criteria
 
-- [ ] Spec AC-29: UI exposes required screens or equivalent workflows.
-- [ ] Spec AC-30: UI prevents access to protected screens before sign-in.
-- [ ] Spec AC-31: Provider settings UI behavior is reachable in shell.
-- [ ] Spec AC-32: Import UI summary/log behavior is reachable in shell.
-- [ ] Spec AC-33: Run monitor UI state behavior is reachable in shell.
-- [ ] Spec AC-34: Cluster explorer UI route/state exists where feature task has implemented data.
-- [ ] Spec AC-35: Export UI route/state exists where feature task has implemented data.
+- [x] Spec AC-29: UI exposes required screens or equivalent workflows.
+- [x] Spec AC-30: UI prevents access to protected screens before sign-in.
+- [x] Spec AC-31: Provider settings UI behavior is reachable in shell.
+- [x] Spec AC-32: Import UI summary/log behavior is reachable in shell.
+- [x] Spec AC-33: Run monitor UI state behavior is reachable in shell.
+- [x] Spec AC-34: Cluster explorer UI route/state exists where feature task has implemented data.
+- [x] Spec AC-35: Export UI route/state exists where feature task has implemented data.
 
 ## Implementation constraints
 
@@ -61,10 +61,10 @@ Implement the cohesive MVP UI shell and shared loading/empty/error states, then 
 
 ## Verification
 
-- [ ] Focused tests
-- [ ] Relevant linting and static analysis
-- [ ] Security or dependency checks when applicable
-- [ ] Documentation assessment
+- [x] Focused tests
+- [x] Relevant linting and static analysis
+- [x] Security or dependency checks when applicable
+- [x] Documentation assessment
 
 Exact commands:
 
@@ -81,3 +81,34 @@ python .ai/tools/check-docs.py
 
 ## Result
 
+Implemented a cohesive frontend MVP shell with navigation anchors for project home,
+users, providers, profiles, import, runs, clusters, candidates, and exports. Added
+a shared state board covering loading, empty project, provider unavailable/not
+configured, missing project context, active/auth-expired guidance, and validation
+summary behavior. Extended frontend smoke coverage to assert the shell navigation
+and shared empty states after sign-in.
+
+Verification evidence:
+
+- `npm test`: passed, 9 frontend tests.
+- `npm run lint`: passed.
+- `npm run format:check`: passed.
+- `npm run build`: passed.
+- `python .ai/tools/check-docs.py`: passed.
+- `./.ai/tools/test.sh`: passed, 67 backend tests and 9 frontend tests.
+- `./.ai/tools/lint.sh`: passed.
+- `./.ai/tools/build.sh`: passed.
+- `./.ai/tools/verify.sh`: passed all gates including setup, format, lint,
+  tests, dependency policy, security, and build.
+
+Documentation assessment:
+
+- Reviewed `README.md` and `.ai/PROJECT_CONTEXT.md`; no durable documentation
+  update was needed because this task added frontend shell reachability and smoke
+  coverage without changing setup, commands, architecture boundaries, public API,
+  or operational behavior.
+
+Residual risks:
+
+- None identified for T010. Work is verified and ready for independent review.
+- Independent review approved on 2026-07-23; task advanced to `reviewed`.

@@ -20,7 +20,22 @@ from backend.analysis import (
 )
 from backend.auth import AuthService, CurrentUser
 from backend.auth.service import AuthenticationError
+from backend.candidates import (
+    Candidate,
+    CandidateError,
+    CandidateManualUpdate,
+    CandidateService,
+    CandidateSource,
+)
+from backend.clusters import (
+    Cluster,
+    ClusterError,
+    ClusterManualUpdate,
+    ClusterService,
+    ClusterSource,
+)
 from backend.config import DatabaseSettings
+from backend.exports import ExportError, ExportLog, ExportResult, ExportService
 from backend.imports import (
     ImportError,
     ImportLog,
@@ -250,6 +265,159 @@ class EmbeddingRecordResponse(BaseModel):
     created_at: datetime
 
 
+class ClusterResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    project_id: UUID
+    analysis_run_id: UUID
+    dataset_version_id: UUID
+    auto_title: str
+    manual_title: str | None
+    effective_title: str
+    auto_category: str | None
+    manual_category: str | None
+    effective_category: str | None
+    auto_status: str
+    manual_status: str | None
+    effective_status: str
+    score: float
+    is_outlier: bool
+    algorithm: str
+    member_count: int
+    metadata: dict[str, object]
+    created_at: datetime
+    updated_at: datetime
+
+
+class ClusterUpdateRequest(BaseModel):
+    manual_title: str | None = None
+    manual_category: str | None = None
+    manual_status: str | None = None
+
+
+class ClusterSourceResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    cluster_id: UUID
+    message_pair_id: UUID
+    ticketid: str
+    messagegroupid: str
+    message: str
+    answer: str
+    membership_score: float
+    is_outlier: bool
+    assignment_type: str
+
+
+class CandidateResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    project_id: UUID
+    dataset_version_id: UUID
+    analysis_run_id: UUID | None
+    source_cluster_id: UUID | None
+    candidate_type: str
+    auto_status: str
+    manual_status: str | None
+    effective_status: str
+    language: str
+    auto_category_path: str | None
+    manual_category_path: str | None
+    effective_category_path: str | None
+    auto_title: str
+    manual_title: str | None
+    effective_title: str
+    auto_canonical_question: str
+    manual_canonical_question: str | None
+    effective_canonical_question: str
+    auto_canonical_answer: str
+    manual_canonical_answer: str | None
+    effective_canonical_answer: str
+    auto_alternative_questions: list[str]
+    manual_alternative_questions: list[str] | None
+    effective_alternative_questions: list[str]
+    auto_parameters: dict[str, object]
+    manual_parameters: dict[str, object] | None
+    effective_parameters: dict[str, object]
+    auto_external_data_dependencies: list[str]
+    manual_external_data_dependencies: list[str] | None
+    effective_external_data_dependencies: list[str]
+    quality_score: float
+    faq_suitability_score: float
+    dynamicity_score: float
+    contradiction_score: float
+    source_pair_count: int
+    source_cluster_ids: list[UUID]
+    notes: str | None
+    metadata: dict[str, object]
+    created_at: datetime
+    updated_at: datetime
+
+
+class CandidateUpdateRequest(BaseModel):
+    candidate_type: str | None = None
+    manual_status: str | None = None
+    manual_category_path: str | None = None
+    manual_title: str | None = None
+    manual_canonical_question: str | None = None
+    manual_canonical_answer: str | None = None
+    manual_alternative_questions: list[str] | None = None
+    manual_parameters: dict[str, object] | None = None
+    manual_external_data_dependencies: list[str] | None = None
+    notes: str | None = None
+
+
+class CandidateSourceResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    candidate_id: UUID
+    cluster_id: UUID | None
+    message_pair_id: UUID
+    ticketid: str
+    messagegroupid: str
+    message: str
+    answer: str
+    message_segment_id: str | None
+    source_language: str
+    normalized_customer_message: str | None
+    normalized_support_answer: str | None
+    assignment_type: str
+    membership_score: float
+    is_multi_intent: bool
+    intent_label: str | None
+    dataset_version_id: UUID
+    analysis_run_id: UUID | None
+
+
+class ExportRequest(BaseModel):
+    include_original_text: bool = False
+
+
+class ExportLogResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    project_id: UUID
+    export_type: str
+    include_original_text: bool
+    filters: dict[str, object]
+    selection: dict[str, object]
+    dataset_version_id: UUID | None
+    analysis_run_id: UUID | None
+    output_filename: str
+    output_path: str | None
+    row_count: int
+    created_at: datetime
+
+
+class ExportResultResponse(BaseModel):
+    export: ExportLogResponse
+    csv_content: str
+    warning: str | None
+
+
 def _user_response(user: PublicUser) -> UserResponse:
     return UserResponse.model_validate(user)
 
@@ -317,6 +485,34 @@ def _embedding_response(record: EmbeddingRecord) -> EmbeddingRecordResponse:
     return EmbeddingRecordResponse.model_validate(record)
 
 
+def _cluster_response(cluster: Cluster) -> ClusterResponse:
+    return ClusterResponse.model_validate(cluster)
+
+
+def _cluster_source_response(source: ClusterSource) -> ClusterSourceResponse:
+    return ClusterSourceResponse.model_validate(source)
+
+
+def _candidate_response(candidate: Candidate) -> CandidateResponse:
+    return CandidateResponse.model_validate(candidate)
+
+
+def _candidate_source_response(source: CandidateSource) -> CandidateSourceResponse:
+    return CandidateSourceResponse.model_validate(source)
+
+
+def _export_log_response(log: ExportLog) -> ExportLogResponse:
+    return ExportLogResponse.model_validate(log)
+
+
+def _export_result_response(result: ExportResult) -> ExportResultResponse:
+    return ExportResultResponse(
+        export=_export_log_response(result.log),
+        csv_content=result.csv_content,
+        warning=result.warning,
+    )
+
+
 def _analysis_profile_input(payload: AnalysisProfileRequest) -> AnalysisProfileInput:
     return AnalysisProfileInput(
         name=payload.name,
@@ -338,6 +534,9 @@ def create_app(
     import_service: ImportService | None = None,
     provider_service: ProviderService | None = None,
     analysis_service: AnalysisService | None = None,
+    cluster_service: ClusterService | None = None,
+    candidate_service: CandidateService | None = None,
+    export_service: ExportService | None = None,
 ) -> FastAPI:
     auth_service = auth_service or AuthService(settings)
     user_service = user_service or UserService(settings)
@@ -345,6 +544,9 @@ def create_app(
     import_service = import_service or ImportService(settings)
     provider_service = provider_service or ProviderService(settings)
     analysis_service = analysis_service or AnalysisService(settings)
+    cluster_service = cluster_service or ClusterService(settings)
+    candidate_service = candidate_service or CandidateService(settings)
+    export_service = export_service or ExportService(settings)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -708,6 +910,221 @@ def create_app(
         return [
             _embedding_response(record)
             for record in analysis_service.list_embeddings(project_id, run_id)
+        ]
+
+    @app.post(
+        "/api/projects/{project_id}/analysis-runs/{run_id}/clusters/generate",
+        response_model=list[ClusterResponse],
+    )
+    def generate_clusters(
+        project_id: UUID,
+        run_id: UUID,
+        actor: CurrentUser = Depends(current_user),
+    ) -> list[ClusterResponse]:
+        try:
+            clusters = cluster_service.generate_for_run(
+                project_id, run_id, actor_user_id=actor.id
+            )
+        except ClusterError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+            ) from exc
+        return [_cluster_response(cluster) for cluster in clusters]
+
+    @app.get(
+        "/api/projects/{project_id}/analysis-runs/{run_id}/clusters",
+        response_model=list[ClusterResponse],
+    )
+    def list_clusters(
+        project_id: UUID,
+        run_id: UUID,
+        _: CurrentUser = Depends(current_user),
+    ) -> list[ClusterResponse]:
+        return [
+            _cluster_response(cluster)
+            for cluster in cluster_service.list_clusters(project_id, run_id)
+        ]
+
+    @app.patch(
+        "/api/projects/{project_id}/clusters/{cluster_id}",
+        response_model=ClusterResponse,
+    )
+    def update_cluster(
+        project_id: UUID,
+        cluster_id: UUID,
+        payload: ClusterUpdateRequest,
+        actor: CurrentUser = Depends(current_user),
+    ) -> ClusterResponse:
+        try:
+            cluster = cluster_service.update_cluster(
+                project_id,
+                cluster_id,
+                ClusterManualUpdate(
+                    manual_title=payload.manual_title,
+                    manual_category=payload.manual_category,
+                    manual_status=payload.manual_status,
+                ),
+                actor_user_id=actor.id,
+            )
+        except ClusterError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+            ) from exc
+        return _cluster_response(cluster)
+
+    @app.get(
+        "/api/projects/{project_id}/clusters/{cluster_id}/sources",
+        response_model=list[ClusterSourceResponse],
+    )
+    def list_cluster_sources(
+        project_id: UUID,
+        cluster_id: UUID,
+        _: CurrentUser = Depends(current_user),
+    ) -> list[ClusterSourceResponse]:
+        return [
+            _cluster_source_response(source)
+            for source in cluster_service.list_sources(project_id, cluster_id)
+        ]
+
+    @app.post(
+        "/api/projects/{project_id}/clusters/{cluster_id}/candidates",
+        response_model=CandidateResponse,
+        status_code=status.HTTP_201_CREATED,
+    )
+    def create_candidate_from_cluster(
+        project_id: UUID,
+        cluster_id: UUID,
+        actor: CurrentUser = Depends(current_user),
+    ) -> CandidateResponse:
+        try:
+            candidate = candidate_service.create_from_cluster(
+                project_id, cluster_id, actor_user_id=actor.id
+            )
+        except CandidateError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+            ) from exc
+        return _candidate_response(candidate)
+
+    @app.get(
+        "/api/projects/{project_id}/candidates",
+        response_model=list[CandidateResponse],
+    )
+    def list_candidates(
+        project_id: UUID,
+        _: CurrentUser = Depends(current_user),
+    ) -> list[CandidateResponse]:
+        return [
+            _candidate_response(candidate)
+            for candidate in candidate_service.list_candidates(project_id)
+        ]
+
+    @app.patch(
+        "/api/projects/{project_id}/candidates/{candidate_id}",
+        response_model=CandidateResponse,
+    )
+    def update_candidate(
+        project_id: UUID,
+        candidate_id: UUID,
+        payload: CandidateUpdateRequest,
+        actor: CurrentUser = Depends(current_user),
+    ) -> CandidateResponse:
+        fields_to_update = frozenset(payload.model_fields_set)
+        try:
+            candidate = candidate_service.update_candidate(
+                project_id,
+                candidate_id,
+                CandidateManualUpdate(
+                    candidate_type=payload.candidate_type,
+                    manual_status=payload.manual_status,
+                    manual_category_path=payload.manual_category_path,
+                    manual_title=payload.manual_title,
+                    manual_canonical_question=payload.manual_canonical_question,
+                    manual_canonical_answer=payload.manual_canonical_answer,
+                    manual_alternative_questions=payload.manual_alternative_questions,
+                    manual_parameters=payload.manual_parameters,
+                    manual_external_data_dependencies=(
+                        payload.manual_external_data_dependencies
+                    ),
+                    notes=payload.notes,
+                    fields_to_update=fields_to_update,
+                ),
+                actor_user_id=actor.id,
+            )
+        except CandidateError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+            ) from exc
+        return _candidate_response(candidate)
+
+    @app.get(
+        "/api/projects/{project_id}/candidates/{candidate_id}/sources",
+        response_model=list[CandidateSourceResponse],
+    )
+    def list_candidate_sources(
+        project_id: UUID,
+        candidate_id: UUID,
+        _: CurrentUser = Depends(current_user),
+    ) -> list[CandidateSourceResponse]:
+        return [
+            _candidate_source_response(source)
+            for source in candidate_service.list_sources(project_id, candidate_id)
+        ]
+
+    @app.post(
+        "/api/projects/{project_id}/exports/candidates",
+        response_model=ExportResultResponse,
+        status_code=status.HTTP_201_CREATED,
+    )
+    def export_candidates(
+        project_id: UUID,
+        payload: ExportRequest,
+        actor: CurrentUser = Depends(current_user),
+    ) -> ExportResultResponse:
+        try:
+            result = export_service.export_candidates(
+                project_id,
+                include_original_text=payload.include_original_text,
+                actor_user_id=actor.id,
+            )
+        except ExportError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+            ) from exc
+        return _export_result_response(result)
+
+    @app.post(
+        "/api/projects/{project_id}/exports/source-assignments",
+        response_model=ExportResultResponse,
+        status_code=status.HTTP_201_CREATED,
+    )
+    def export_source_assignments(
+        project_id: UUID,
+        payload: ExportRequest,
+        actor: CurrentUser = Depends(current_user),
+    ) -> ExportResultResponse:
+        try:
+            result = export_service.export_source_assignments(
+                project_id,
+                include_original_text=payload.include_original_text,
+                actor_user_id=actor.id,
+            )
+        except ExportError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+            ) from exc
+        return _export_result_response(result)
+
+    @app.get(
+        "/api/projects/{project_id}/exports",
+        response_model=list[ExportLogResponse],
+    )
+    def list_exports(
+        project_id: UUID,
+        _: CurrentUser = Depends(current_user),
+    ) -> list[ExportLogResponse]:
+        return [
+            _export_log_response(log) for log in export_service.list_exports(project_id)
         ]
 
     @app.get("/api/users", response_model=list[UserResponse])
