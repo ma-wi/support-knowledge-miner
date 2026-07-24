@@ -1,7 +1,7 @@
 # Canonical agent workflow
 
 This file owns lifecycle and status transitions; role files add only role-specific
-responsibilities. Use one active requirement per branch/worktree.
+responsibilities. Use one active requirement or change per branch/worktree.
 
 ```text
 planner → implementer → independent reviewer
@@ -20,7 +20,7 @@ the relevant checks, and no planner/implementer/reviewer split unless risk deman
 - Use `normal` for ordinary fixes, documentation updates with policy impact, and bounded behavior changes.
 - Use `significant` for initial project work, public APIs, migrations, security/privacy-sensitive work, broad ambiguity, or subsystem-level design.
 - When unsure between classes, choose the higher class.
-- Keep one active requirement per branch or worktree.
+- Keep one active requirement or change per branch or worktree.
 - Do not start implementation until required specifications, ADRs, and task files are ready.
 - Finish with `./.ai/tools/verify.sh`; never claim an unobserved pass.
 
@@ -33,13 +33,16 @@ relevant code/tests. Record the `trivial`, `normal`, or `significant` class defi
 ## 2. Discovery and durable specification
 
 For significant or materially unclear work, create
-`.ai/work/<requirement-id>/DISCOVERY.md` from
+`.ai/work/<requirement-or-change-id>/DISCOVERY.md` from
 `.ai/templates/FEATURE_DISCOVERY.md`. Resolve only decisions that can change outcome,
 scope, behavior, risk, architecture, or acceptance criteria, then obtain explicit
 shared-understanding confirmation.
 
-Store significant specifications at `docs/specifications/<requirement-id>.md`. They
-own observable behavior, scope, accepted decisions, criteria, and stable test seams.
+Store significant specifications as capability-based current-state documents at
+`docs/specifications/<capability-slug>.md`. They own observable behavior, scope,
+accepted decisions, criteria, and stable test seams for one durable capability.
+Incremental changes update affected capability specifications in place rather than
+creating change-specific specification chains.
 Agents propose requirements, specifications, and ADRs; a named authorized decision
 owner records acceptance. Dependent implementation waits for accepted ADRs and:
 
@@ -50,13 +53,21 @@ Ready for implementation: yes
 
 ## 3. Temporary planning
 
+When changing an existing capability, first follow
+`.ai/policies/INCREMENTAL_CHANGE_WORKFLOW.md`. Create accepted `CHANGE.md` and
+`IMPACT.md`, classify design impact, identify existing responsibility and superseded
+artifacts, then plan vertical work items and review batches.
+
 Normal/significant work uses:
 
 ```text
-.ai/work/<requirement-id>/
+.ai/work/<requirement-or-change-id>/
 ├── DISCOVERY.md           # only when needed
+├── CHANGE.md              # incremental changes only
+├── IMPACT.md              # incremental changes only
+├── DESIGN_DELTA.md        # incremental design class 2 or 3 only
 ├── PLAN.md
-└── tasks/                 # only independently implementable units
+└── tasks/                 # vertical independently verifiable units
 ```
 
 The plan links to durable inputs and records approach, sequence, affected areas,
@@ -66,7 +77,8 @@ risks, verification, migration/recovery, and documentation. Update
 ## 4. Implementation
 
 The implementer takes a `ready` task, marks it `in-progress`, and implements the
-smallest coherent behavior slice with tests. Record material deviations before
+smallest coherent behavior slice with tests. Incremental tasks must close their linked
+impact rows end-to-end and may not leave unexplained parallel or superseded behavior. Record material deviations before
 continuing. After code/tests are complete mark `implemented`; after focused checks
 pass mark `verified`.
 
@@ -78,9 +90,11 @@ skip fails. Record exact commands/results and environment limitations.
 
 ## 6. Independent review and remediation
 
-A fresh reviewer context compares requirement, specification, ADRs, plan, full diff,
-tests, verification, and affected documentation. Record findings in
-`.ai/work/<requirement-id>/REVIEW.md` or the pull request. The reviewer may advance
+A fresh reviewer context compares requirement, capability specifications, ADRs, plan,
+full diff, tests, verification, and affected documentation. For incremental work it
+also validates the desired end state, impact matrix, existing-responsibility decision,
+superseded artifacts, design classification, vertical slices, and review cadence. Record findings in
+`.ai/work/<requirement-or-change-id>/REVIEW.md` or the pull request. The reviewer may advance
 verified tasks to `reviewed`; findings return affected work to `in-progress` or
 `blocked`.
 

@@ -3,7 +3,7 @@
 .ai/config/project.env
 
 # IntelliJ IDEA: keep personal/local state out of Git.
-.idea/
+.idea/*
 .idea/vcs.xml
 .idea/workspace.xml
 .idea/shelf/
@@ -34,6 +34,3 @@ dist/
 target/
 coverage/
 node_modules/
-support_knowledge_miner.egg-info
-
-prompts.txt

@@ -34,6 +34,18 @@
 
 Remove this example when there are no findings.
 
+## Incremental-change assessment
+
+- Desired end state is coherent across all applicable layers: yes | no | not-applicable
+- Every relevant impact row is classified and evidenced: yes | no | not-applicable
+- Existing responsibility was adapted rather than unnecessarily duplicated: yes | no | not-applicable
+- Retained legacy behavior has an accepted removal plan: yes | no | not-applicable
+- Superseded artifacts were removed or explicitly tracked: yes | no | not-applicable
+- Capability specifications describe current truth: yes | no | not-applicable
+- Design classification and required evidence are valid: yes | no | not-applicable
+- Review batch was coherent and within policy: yes | no | not-applicable
+- Notes:
+
 ## Specification and test-seam assessment
 
 - Specification status and readiness were valid: yes | no | not-applicable

@@ -16,8 +16,13 @@ stacks:
     solution: ""
     test_project: ""
 
+incremental_changes:
+  default_review_cadence: "batch"
+  max_tasks_per_review_batch: 6
+  force_task_review_for: "migration public-api authentication authorization security dependency-change"
+
 engineering_knowledge:
-  enabled: true
+  enabled: false
 
 documentation:
   budgets:

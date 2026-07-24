@@ -1,23 +1,28 @@
-# Feature specification: <title>
+# Capability specification: <capability>
 
-Store accepted specifications at `docs/specifications/<requirement-id>.md` so they remain available after temporary implementation artifacts are removed.
+Store accepted current-state specifications at
+`docs/specifications/<capability-slug>.md`. Update this document in place when the
+capability changes; Git and pull requests retain history. Do not append a chronological
+change log or create a specification chain for each incremental request.
 
-- Requirement ID:
+- Capability ID or slug:
+- Source requirements or change requests:
 - Status: draft | needs-clarification | awaiting-confirmation | accepted | ready-for-implementation | superseded
-- Requirement source:
 - Discovery artifact, if used:
 - Decision owner:
 - Last updated:
 
-## Purpose
+## Purpose and responsibility
 
-Describe the problem, affected users or systems, and the observable outcome. Keep this stable and independent of temporary implementation details.
+Describe the durable responsibility, affected users or systems, and current observable
+outcome. Keep this independent of temporary implementation details.
 
-## Existing context and terminology
+## Current state and terminology
 
 - Applicable ADRs:
 - Existing domain terms and definitions:
-- Existing behavior or constraints:
+- Current accepted behavior or constraints:
+- Current owners across UI, contracts, backend, data, and integrations:
 - Terminology conflicts to resolve:
 
 Use established project and domain terminology. Do not introduce synonyms for existing concepts without a documented reason.
@@ -97,6 +102,13 @@ Examples: private helpers, internal component state, ORM details, or other imple
 -
 
 ### Rejected alternatives that matter later
+
+-
+
+## Superseded behavior and active deprecations
+
+List only accepted temporary compatibility behavior that still exists, including owner
+and removal criterion. Use `none` when the capability has no active deprecation.
 
 -
 

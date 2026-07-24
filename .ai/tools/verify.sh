@@ -29,6 +29,7 @@ run_gate() {
 }
 
 run_gate "work-state" "${SCRIPT_DIR}/check-work-state.py"
+run_gate "incremental change" "${SCRIPT_DIR}/check-change-impact.py"
 run_gate "documentation" "${SCRIPT_DIR}/check-docs.py"
 run_gate "setup" "${SCRIPT_DIR}/ci-setup.sh"
 run_gate "format" "${SCRIPT_DIR}/format.sh" --check

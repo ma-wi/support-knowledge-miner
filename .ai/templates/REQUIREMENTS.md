@@ -1,5 +1,9 @@
 # Requirement: <title>
 
+- Requirement ID:
+- Work type: new-capability | incremental-change
+- Affected capability specifications: `docs/specifications/<capability>.md` | not-known-yet | not-required
+
 ## Problem
 
 What user or business problem must be solved?

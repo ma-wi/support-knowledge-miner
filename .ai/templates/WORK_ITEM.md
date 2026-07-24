@@ -1,15 +1,18 @@
 # Task <task-id>: <title>
 
 - Status: draft | ready | in-progress | blocked | implemented | verified | reviewed | done
-- Parent requirement:
+- Parent requirement or change:
 - Plan:
+- Work type: new-capability | incremental-change
+- Review batch:
 - Depends on:
 - Owner/agent:
 - Last updated:
 
 ## Objective
 
-Describe one independently implementable and verifiable outcome.
+Describe one independently implementable and verifiable vertical outcome. For an
+incremental change, state which impact rows reach their desired end state.
 
 ## Scope
 
@@ -18,6 +21,13 @@ Describe one independently implementable and verifiable outcome.
 ### Out of scope
 
 ## Preconditions
+
+## Impact and responsibility
+
+- `IMPACT.md` rows closed:
+- Existing responsibility extended/replaced/deprecated/removed:
+- New or parallel artifacts and accepted justification:
+- Superseded artifacts assigned to this task:
 
 ## Affected files or components
 
@@ -29,7 +39,7 @@ Describe one independently implementable and verifiable outcome.
 
 Include only task-specific constraints. Do not duplicate repository-wide rules.
 
-## Applicable specification and test seam
+## Applicable capability specification and test seam
 
 - Specification criteria:
 - Primary observable boundary for this task:
@@ -48,8 +58,16 @@ Exact commands:
 # Add task-specific commands.
 ```
 
+## Design impact
+
+- Design class: 0 | 1 | 2 | 3 | not-applicable
+- Existing components/patterns reused:
+- Required visual or design evidence:
+
 ## Risks or blockers
 
 ## Result
 
-Complete only after implementation. Summarize the resulting state, evidence, deviations, and remaining risks. Do not write a chronological work diary.
+Complete only after implementation. Summarize the resulting state, closed impact
+rows, orphan-search evidence, removed or retained superseded artifacts, deviations,
+and remaining risks. Do not write a chronological work diary.

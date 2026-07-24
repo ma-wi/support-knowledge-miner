@@ -20,10 +20,10 @@ In German-language documentation, write German umlauts directly as `ä`, `ö`, a
 ## Canonical information classes
 
 - Binding rules: `AGENTS.md`, `.aiassistant/rules/`, quality and security policies.
-- Durable product behavior: accepted requirements and `docs/specifications/`.
+- Durable product behavior: accepted requirements and capability-based current-state documents in `docs/specifications/`.
 - Current project truth: `README.md`, `PROJECT_CONTEXT.md`, and architecture or operations documentation.
 - Durable rationale: ADRs.
-- Active temporary work: `.ai/work/<requirement-id>/`.
+- Active temporary work: `.ai/work/<requirement-or-change-id>/`.
 - Short-term follow-up: `NEXT_STEPS.md`; long-term work belongs in issues.
 - Historical chronology: Git, pull requests, releases, and user-visible changelog entries.
 
@@ -59,7 +59,9 @@ Budgets are configured under `documentation.budgets` in `.ai/project.yaml` and c
 
 ## Replacement and history
 
-Update current-state documents in place and remove obsolete statements. When a durable decision changes, mark the old ADR as superseded and create or link the replacement. Use Git, issues, pull requests, and releases for history instead of retaining completed task files or narrative logs.
+Update current-state documents in place and remove obsolete statements. Capability
+specifications are named by durable capability rather than change ID; incremental
+changes update them in place and must not append a chronological delta. When a durable decision changes, mark the old ADR as superseded and create or link the replacement. Use Git, issues, pull requests, and releases for history instead of retaining completed task files or narrative logs.
 
 ## Curation cadence
 

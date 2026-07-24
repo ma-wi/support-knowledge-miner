@@ -68,7 +68,9 @@ def main() -> int:
 
     errors: list[str] = []
     work_dir_value = extract_field(current_text, "Work directory")
-    spec_value = extract_field(current_text, "Specification")
+    spec_value = extract_field(current_text, "Specifications") or extract_field(
+        current_text, "Specification"
+    )
     plan_value = extract_field(current_text, "Plan")
     current_status = extract_field(current_text, "Status")
     if current_status not in VALID_PHASES:
@@ -82,31 +84,45 @@ def main() -> int:
         if work_dir is not None and not work_dir.is_dir():
             errors.append(f"Declared work directory does not exist: {work_dir_value}")
 
+    declared_specs: list[str] = []
     if spec_value and spec_value.lower() != "not-required":
-        spec = resolve_below(spec_value, SPEC_ROOT, "Durable specification", errors)
-        if spec is not None and not spec.is_file():
-            errors.append(f"Declared specification does not exist: {spec_value}")
-        elif spec is not None:
-            spec_text = spec.read_text(encoding="utf-8")
-            spec_status = extract_field(spec_text, "Status")
-            ready = extract_field(spec_text, "Ready for implementation")
-            implementation_phases = {
-                "planning",
-                "implementation",
-                "verification",
-                "review",
-                "remediation",
-                "closeout",
-            }
-            if current_status in implementation_phases:
-                if spec_status != "ready-for-implementation":
-                    errors.append(
-                        f"Specification must be ready-for-implementation during {current_status}; found '{spec_status}'"
-                    )
-                if ready != "yes":
-                    errors.append(
-                        f"Specification must declare 'Ready for implementation: yes' during {current_status}"
-                    )
+        declared_specs = [
+            item.strip().strip("`")
+            for item in spec_value.split(",")
+            if item.strip()
+        ]
+        for declared_spec in declared_specs:
+            spec = resolve_below(
+                declared_spec, SPEC_ROOT, "Durable specification", errors
+            )
+            if spec is not None and not spec.is_file():
+                errors.append(
+                    f"Declared specification does not exist: {declared_spec}"
+                )
+            elif spec is not None:
+                spec_text = spec.read_text(encoding="utf-8")
+                spec_status = extract_field(spec_text, "Status")
+                ready = extract_field(spec_text, "Ready for implementation")
+                implementation_phases = {
+                    "planning",
+                    "implementation",
+                    "verification",
+                    "review",
+                    "remediation",
+                    "closeout",
+                }
+                if current_status in implementation_phases:
+                    if spec_status != "ready-for-implementation":
+                        errors.append(
+                            "Specification must be ready-for-implementation during "
+                            f"{current_status}; found {spec_status!r} in {declared_spec}"
+                        )
+                    if ready != "yes":
+                        errors.append(
+                            "Specification must declare "
+                            "'Ready for implementation: yes' during "
+                            f"{current_status}: {declared_spec}"
+                        )
 
     if not plan_value:
         if current_status in PLAN_POINTER_PHASES:
@@ -127,9 +143,7 @@ def main() -> int:
                 )
             plan_text = plan.read_text(encoding="utf-8")
             change_class = extract_field(plan_text, "Change class")
-            if change_class == "significant" and (
-                not spec_value or spec_value.lower() == "not-required"
-            ):
+            if change_class == "significant" and not declared_specs:
                 errors.append("Significant work requires a durable specification.")
 
     task_files = (

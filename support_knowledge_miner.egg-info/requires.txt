@@ -1,0 +1,5 @@
+argon2-cffi<26,>=25
+cryptography<49,>=48
+fastapi<1,>=0.116
+psycopg[binary]<4,>=3.2
+uvicorn<1,>=0.38

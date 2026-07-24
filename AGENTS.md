@@ -25,8 +25,6 @@ instructions conflict.
 
 ## Start and classify
 
-Ignore always all files that are listed in `.aiignore` file. Do not read these files.
-
 Read `.ai/project.yaml`, the accepted requirement when present, otherwise the
 current user request, `.ai/PROJECT_CONTEXT.md`, the applicable role/conditional
 policies, and `.ai/policies/WORKFLOW.md`. Do not load all `.ai/` files by default.
@@ -43,19 +41,21 @@ Use the higher class when uncertain and record class plus rationale in the plan.
 
 ## Lifecycle and artifacts
 
-Use one active requirement per branch/worktree and follow the canonical lifecycle in
+Use one active requirement or change per branch/worktree and follow the canonical lifecycle in
 `.ai/policies/WORKFLOW.md`.
 
 - Durable input: `docs/requirements/<id>.md`.
-- Durable behavior/criteria: `docs/specifications/<id>.md`.
+- Durable current behavior/criteria: capability-based `docs/specifications/<capability-slug>.md`.
 - Durable architecture rationale: `docs/architecture/decisions/`.
-- Temporary active work: `.ai/work/<id>/`, referenced by `.ai/CURRENT_PLAN.md`.
+- Temporary active work: `.ai/work/<requirement-or-change-id>/`, referenced by `.ai/CURRENT_PLAN.md`.
 - Unresolved follow-up only: issues or `.ai/NEXT_STEPS.md`.
 
-Normal/significant work requires temporary planning artifacts. Significant
-implementation requires `Status: ready-for-implementation` and
-`Ready for implementation: yes`. Agents propose requirements, specifications, and
-ADRs; a named authorized decision owner accepts them. Planners never change
+Normal/significant work requires temporary planning artifacts. Changes to existing
+capabilities also require `CHANGE.md` and `IMPACT.md` under the active work directory
+and follow `.ai/policies/INCREMENTAL_CHANGE_WORKFLOW.md`. Significant implementation
+requires `Status: ready-for-implementation` and `Ready for implementation: yes`.
+Agents propose requirements, capability specifications, and ADRs; a named authorized
+decision owner accepts them. Planners never change
 implementation/source code. Implementers work only on `ready` tasks and stop at
 `verified` before review. Reviewers may advance verified work to `reviewed`; after approval the
 implementation context performs mechanical closeout and marks it `done`. Material
@@ -69,6 +69,12 @@ closeout changes return to review.
 - Cover relevant failures, boundaries, permissions, migration, and recovery.
 - Never weaken tests, lint, scanners, requiredness, or thresholds to obtain a pass.
 - Avoid unrelated cleanup, speculative abstraction, and unreviewed dependencies.
+- Before adding an endpoint, service, schema, component, table, or utility, identify
+  the existing owner of the responsibility and extend, replace, deprecate, or remove
+  it. Parallel implementations require an accepted compatibility need and removal plan.
+- For incremental changes, implement the accepted desired end state across every
+  applicable layer, update capability specifications in place, and remove or explicitly
+  track superseded artifacts.
 - Validate untrusted input and server-side authorization; prevent injection, path
   traversal, unsafe deserialization, and unbounded resource use.
 - Use established cryptographic libraries and protocols; never design custom
@@ -141,7 +147,8 @@ closeout, curate durable documentation before deleting temporary artifacts and r
 `CURRENT_PLAN.md`.
 
 - Lifecycle/status: `.ai/policies/WORKFLOW.md`
-- Roles: `.ai/roles/{PLANNER,IMPLEMENTER,CODE_REVIEWER}.md`
+- Incremental changes: `.ai/policies/INCREMENTAL_CHANGE_WORKFLOW.md`
+- Roles: `.ai/roles/{PLANNER,CHANGE_PLANNER,IMPLEMENTER,CODE_REVIEWER}.md`
 - Security/dependencies: `.ai/policies/{SECURITY_GUIDELINES,DEPENDENCY_POLICY}.md`
 - Documentation/quality: `.ai/policies/{DOCUMENTATION_RULES,QUALITY_GATES}.md`
 

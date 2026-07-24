@@ -59,6 +59,11 @@ CONFIG_SCHEMA = {
         "bash": {"enabled": None},
         "dotnet": {"enabled": None, "solution": None, "test_project": None},
     },
+    "incremental_changes": {
+        "default_review_cadence": None,
+        "max_tasks_per_review_batch": None,
+        "force_task_review_for": None,
+    },
     "engineering_knowledge": {"enabled": None},
     "documentation": {
         "budgets": {
@@ -86,11 +91,46 @@ def reject_unknown_keys(data: object, schema: object, path: str = "") -> None:
 def validate_config(data: dict) -> None:
     reject_unknown_keys(data, CONFIG_SCHEMA)
     react_managers = {"npm", "pnpm", "yarn"}
+    review_cadences = {"per-task", "batch", "feature"}
 
     react_manager = str(get(data, "stacks", "react", "package_manager", default="npm"))
     if react_manager not in react_managers:
         raise SystemExit(
             f"Unsupported stacks.react.package_manager: {react_manager}. Allowed: {sorted(react_managers)}"
+        )
+    review_cadence = str(
+        get(
+            data,
+            "incremental_changes",
+            "default_review_cadence",
+            default="batch",
+        )
+    )
+    if review_cadence not in review_cadences:
+        raise SystemExit(
+            "Unsupported incremental_changes.default_review_cadence: "
+            f"{review_cadence}. Allowed: {sorted(review_cadences)}"
+        )
+    max_batch = get(
+        data,
+        "incremental_changes",
+        "max_tasks_per_review_batch",
+        default=3,
+    )
+    if not isinstance(max_batch, int) or not 1 <= max_batch <= 10:
+        raise SystemExit(
+            "incremental_changes.max_tasks_per_review_batch must be an integer "
+            "between 1 and 10"
+        )
+    forced = get(
+        data,
+        "incremental_changes",
+        "force_task_review_for",
+        default="",
+    )
+    if not isinstance(forced, str):
+        raise SystemExit(
+            "incremental_changes.force_task_review_for must be a space-separated string"
         )
     for label, value, allow_dot in (
         (
