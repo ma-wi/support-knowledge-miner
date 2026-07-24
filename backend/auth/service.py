@@ -71,10 +71,10 @@ class AuthService:
         self._users = UserService(settings)
         self._audit = AuditService()
 
-    def sign_in(self, username: str, password: str) -> AuthToken:
-        stored = self._users.get_stored_user_by_username(username)
+    def sign_in(self, email: str, password: str) -> AuthToken:
+        stored = self._users.get_stored_user_by_username(email)
         if stored is None or not verify_password(password, stored.password_hash):
-            raise AuthenticationError("invalid username or password")
+            raise AuthenticationError("invalid email or password")
         token = secrets.token_urlsafe(32)
         token_hash = hash_session_token(token)
         session_id = uuid4()
@@ -145,16 +145,15 @@ class AuthService:
                     )
 
     def seed_initial_user_from_env(self) -> PublicUser | None:
-        username = os.environ.get("SKM_INITIAL_USERNAME")
         password = os.environ.get("SKM_INITIAL_PASSWORD")
         email = os.environ.get("SKM_INITIAL_EMAIL")
         first_name = os.environ.get("SKM_INITIAL_FIRST_NAME", "Initial")
         last_name = os.environ.get("SKM_INITIAL_LAST_NAME", "User")
-        if not username and not password and not email:
+        if not password and not email:
             return None
-        if not username or not password or not email:
+        if not password or not email:
             raise ValueError(
-                "SKM_INITIAL_USERNAME, SKM_INITIAL_PASSWORD, and SKM_INITIAL_EMAIL must be set together"
+                "SKM_INITIAL_PASSWORD and SKM_INITIAL_EMAIL must be set together"
             )
         with open_database_connection(self._settings) as connection:
             row = connection.execute("SELECT COUNT(*) AS count FROM users").fetchone()
@@ -163,7 +162,7 @@ class AuthService:
             return None
         return self._users.create_user(
             CreateUserInput(
-                username=username,
+                username=email,
                 first_name=first_name,
                 last_name=last_name,
                 email=email,

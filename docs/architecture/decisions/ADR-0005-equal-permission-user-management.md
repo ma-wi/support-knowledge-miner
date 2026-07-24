@@ -12,7 +12,7 @@ The MVP was initially scoped as a single local-user application. The Decision Ow
 
 ## Decision
 
-Implement simple authentication and equal-permission user management. Each user has username, first name, last name, email, and password hash. Passwords are never stored or returned as plaintext. All authenticated users have the same permissions. Any authenticated user may create another user, edit another user's username/name/email, set or change another user's password, and delete another user. A user may not delete themselves.
+Implement simple authentication and equal-permission user management. Each user has first name, last name, email, and password hash; the email address is the login identifier. Passwords are never stored or returned as plaintext. All authenticated users have the same permissions. Any authenticated user may create another user, edit another user's name/email, set or change another user's password, and delete another user. A user may not delete themselves.
 
 Create the initial user once through environment variables, local configuration, or database seed/migration. Persist acting user identity on auditable actions.
 

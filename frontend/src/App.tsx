@@ -1,10 +1,9 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import "./App.css";
 
 type ApiUser = {
   id: string;
-  username: string;
   first_name: string;
   last_name: string;
   email: string;
@@ -12,9 +11,7 @@ type ApiUser = {
 
 type User = {
   id: string;
-  username: string;
-  firstName: string;
-  lastName: string;
+  name: string;
   email: string;
 };
 
@@ -71,6 +68,13 @@ type ApiProviderConfiguration = {
   updated_at: string;
 };
 
+type ApiProviderCheck = {
+  provider: string;
+  ok: boolean;
+  models: string[];
+  message: string;
+};
+
 type ProviderConfiguration = {
   provider: string;
   endpointUrl: string | null;
@@ -78,6 +82,8 @@ type ProviderConfiguration = {
   apiKeySet: boolean;
   updatedAt: string;
 };
+
+type ConfigurableProvider = "openai" | "ollama" | "vllm";
 
 type ApiAnalysisProfile = {
   id: string;
@@ -368,14 +374,44 @@ type Session = {
   user: User;
 };
 
+type ActivePage = "projects" | "settings";
+type SettingsTab = "providers" | "users";
+type ProjectTab =
+  | "profiles"
+  | "import"
+  | "runs"
+  | "clusters"
+  | "candidates"
+  | "exports"
+  | "delete";
+
 const API_BASE = import.meta.env.VITE_SKM_API_BASE_URL ?? "";
+const INTERNAL_LAST_NAME_PLACEHOLDER = "-";
+
+function userNameFromApi(user: ApiUser): string {
+  return [user.first_name, user.last_name]
+    .filter((part) => part.trim() !== INTERNAL_LAST_NAME_PLACEHOLDER)
+    .join(" ")
+    .trim();
+}
+
+function splitUserName(name: string): {
+  first_name: string;
+  last_name: string;
+} {
+  const cleaned = name.trim();
+  const [firstName = "", ...remainingName] = cleaned.split(/\s+/);
+  const lastName = remainingName.join(" ").trim();
+  return {
+    first_name: firstName || cleaned,
+    last_name: lastName || INTERNAL_LAST_NAME_PLACEHOLDER,
+  };
+}
 
 function toUser(user: ApiUser): User {
   return {
     id: user.id,
-    username: user.username,
-    firstName: user.first_name,
-    lastName: user.last_name,
+    name: userNameFromApi(user),
     email: user.email,
   };
 }
@@ -600,7 +636,14 @@ async function apiRequest<T>(
   }
   const response = await fetch(`${API_BASE}${path}`, { ...options, headers });
   if (!response.ok) {
-    throw new Error(`request failed with status ${response.status}`);
+    let detail = "";
+    try {
+      const payload = (await response.json()) as { detail?: unknown };
+      detail = typeof payload.detail === "string" ? `: ${payload.detail}` : "";
+    } catch {
+      detail = "";
+    }
+    throw new Error(`request failed with status ${response.status}${detail}`);
   }
   if (response.status === 204) {
     return undefined as T;
@@ -645,6 +688,16 @@ function App() {
   const [message, setMessage] = useState("");
   const [passwordNotice, setPasswordNotice] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [activePage, setActivePage] = useState<ActivePage>("projects");
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>("providers");
+  const [projectTab, setProjectTab] = useState<ProjectTab>("profiles");
+  const [recentProjectIds, setRecentProjectIds] = useState<string[]>([]);
+  const [openAiDiscoveredModels, setOpenAiDiscoveredModels] = useState<
+    string[]
+  >([]);
+  const [openAiSelectedModels, setOpenAiSelectedModels] = useState<string[]>(
+    [],
+  );
 
   async function loadUsers(token: string) {
     const apiUsers = await apiRequest<ApiUser[]>("/api/users", { token });
@@ -671,7 +724,14 @@ function App() {
       "/api/providers",
       { token },
     );
-    setProviders(apiProviders.map(toProviderConfiguration));
+    const nextProviders = apiProviders.map(toProviderConfiguration);
+    setProviders(nextProviders);
+    const openAi = nextProviders.find(
+      (provider) => provider.provider === "openai",
+    );
+    if (openAi !== undefined) {
+      setOpenAiSelectedModels(openAi.manualModels);
+    }
   }
 
   async function loadAnalysisProfiles(token: string, projectId: string) {
@@ -719,7 +779,7 @@ function App() {
     setIsLoading(true);
     const formElement = event.currentTarget;
     const form = new FormData(formElement);
-    const username = String(form.get("username") ?? "").trim();
+    const email = String(form.get("email") ?? "").trim();
     const password = String(form.get("password") ?? "");
     try {
       const response = await apiRequest<{
@@ -727,7 +787,7 @@ function App() {
         user: ApiUser;
       }>("/api/auth/sign-in", {
         method: "POST",
-        body: JSON.stringify({ username, password }),
+        body: JSON.stringify({ email, password }),
       });
       const nextSession = {
         token: response.access_token,
@@ -739,7 +799,8 @@ function App() {
         loadProjects(nextSession.token),
       ]);
       await loadProviders(nextSession.token).catch(() => setProviders([]));
-      setMessage("Angemeldet. Geschuetzte Workflows sind verfuegbar.");
+      setActivePage("projects");
+      setMessage("Angemeldet. Geschützte Workflows sind verfügbar.");
     } catch {
       setSession(null);
       setUsers([]);
@@ -757,11 +818,55 @@ function App() {
       setExportLogs([]);
       setLastExportCsv("");
       setMessage(
-        "Anmeldung fehlgeschlagen oder Backend nicht erreichbar. Bitte Zugangsdaten und lokalen Dienst pruefen.",
+        "Anmeldung fehlgeschlagen oder Backend nicht erreichbar. Bitte Zugangsdaten und lokalen Dienst prüfen.",
       );
     } finally {
       setIsLoading(false);
     }
+  }
+
+  function signOut() {
+    setSession(null);
+    setUsers([]);
+    setProjects([]);
+    setCurrentProject(null);
+    setImportLogs([]);
+    setImportLogEntries([]);
+    setProviders([]);
+    setAnalysisProfiles([]);
+    setAnalysisRuns([]);
+    setClusters([]);
+    setClusterSources([]);
+    setCandidates([]);
+    setCandidateSources([]);
+    setExportLogs([]);
+    setLastExportCsv("");
+    setPasswordNotice("");
+    setOpenAiDiscoveredModels([]);
+    setOpenAiSelectedModels([]);
+    setRecentProjectIds([]);
+    setActivePage("projects");
+    setMessage("");
+  }
+
+  function openProvidersPage() {
+    setActivePage("settings");
+    setSettingsTab("providers");
+    const openAi = providers.find((provider) => provider.provider === "openai");
+    if (
+      session !== null &&
+      openAi?.apiKeySet &&
+      openAiDiscoveredModels.length === 0
+    ) {
+      void discoverOpenAiModels(openAi.manualModels, false);
+    }
+  }
+
+  function openProjectListPage() {
+    setActivePage("projects");
+    setCurrentProject(null);
+    setProjectTab("profiles");
+    setMessage("");
   }
 
   async function createProject(event: FormEvent<HTMLFormElement>) {
@@ -781,22 +886,13 @@ function App() {
       });
       const project = toProject(created);
       setProjects((existing) => [project, ...existing]);
-      setCurrentProject(project);
-      setImportLogs([]);
-      setImportLogEntries([]);
-      setAnalysisProfiles([]);
-      setAnalysisRuns([]);
-      setClusters([]);
-      setClusterSources([]);
-      setCandidates([]);
-      setCandidateSources([]);
-      setExportLogs([]);
-      setLastExportCsv("");
+      setCurrentProject(null);
+      setActivePage("projects");
       formElement.reset();
-      setMessage("Projekt erstellt und geoeffnet.");
+      setMessage("Projekt erstellt.");
     } catch {
       setMessage(
-        "Projekt konnte nicht erstellt werden. Bitte Namen und Backend pruefen.",
+        "Projekt konnte nicht erstellt werden. Bitte Namen und Backend prüfen.",
       );
     } finally {
       setIsLoading(false);
@@ -814,7 +910,10 @@ function App() {
           token: session.token,
         },
       );
-      setCurrentProject(toProject(opened));
+      const project = toProject(opened);
+      setCurrentProject(project);
+      setProjectTab("profiles");
+      rememberProjectAccess(project.id);
       await loadImportLogs(session.token, projectId);
       await loadAnalysisProfiles(session.token, projectId).catch(() =>
         setAnalysisProfiles([]),
@@ -833,9 +932,10 @@ function App() {
       setCandidateSources([]);
       setImportLogEntries([]);
       setLastExportCsv("");
-      setMessage("Projekt geoeffnet.");
+      setActivePage("projects");
+      setMessage("Projekt geöffnet.");
     } catch {
-      setMessage("Projekt konnte nicht geoeffnet werden.");
+      setMessage("Projekt konnte nicht geöffnet werden.");
     }
   }
 
@@ -887,6 +987,7 @@ function App() {
       );
       if (currentProject?.id === projectId) {
         setCurrentProject(null);
+        setProjectTab("profiles");
         setImportLogs([]);
         setImportLogEntries([]);
         setAnalysisProfiles([]);
@@ -898,10 +999,10 @@ function App() {
         setExportLogs([]);
         setLastExportCsv("");
       }
-      setMessage("Projekt geloescht.");
+      setMessage("Projekt gelöscht.");
     } catch {
       setMessage(
-        "Projekt konnte nicht geloescht werden. Namensbestaetigung pruefen.",
+        "Projekt konnte nicht gelöscht werden. Namensbestätigung prüfen.",
       );
     }
   }
@@ -914,19 +1015,17 @@ function App() {
     setIsLoading(true);
     const formElement = event.currentTarget;
     const form = new FormData(formElement);
-    const username = String(form.get("username") ?? "").trim();
-    const firstName = String(form.get("firstName") ?? "").trim();
-    const lastName = String(form.get("lastName") ?? "").trim();
+    const name = String(form.get("name") ?? "").trim();
     const email = String(form.get("email") ?? "").trim();
     const password = String(form.get("password") ?? "");
+    const splitName = splitUserName(name);
     try {
       const created = await apiRequest<ApiUser>("/api/users", {
         method: "POST",
         token: session.token,
         body: JSON.stringify({
-          username,
-          first_name: firstName,
-          last_name: lastName,
+          first_name: splitName.first_name,
+          last_name: splitName.last_name,
           email,
           password,
         }),
@@ -936,7 +1035,7 @@ function App() {
       setMessage("User angelegt. Passwortwert bleibt write-only.");
     } catch {
       setMessage(
-        "User konnte nicht angelegt werden. Bitte Eingaben und Backend pruefen.",
+        "User konnte nicht angelegt werden. Bitte Eingaben und Backend prüfen.",
       );
     } finally {
       setIsLoading(false);
@@ -965,9 +1064,7 @@ function App() {
         method: "PATCH",
         token: session.token,
         body: JSON.stringify({
-          username: updated.username,
-          first_name: updated.firstName,
-          last_name: updated.lastName,
+          ...splitUserName(updated.name),
           email: updated.email,
         }),
       });
@@ -1005,7 +1102,7 @@ function App() {
     }
     if (session.user.id === userId) {
       setMessage(
-        "Self-Delete ist gesperrt, damit kein lokaler Lockout entsteht.",
+        "Selbstlöschung ist gesperrt, damit kein lokaler Lockout entsteht.",
       );
       return;
     }
@@ -1015,9 +1112,9 @@ function App() {
         token: session.token,
       });
       setUsers((existing) => existing.filter((user) => user.id !== userId));
-      setMessage("User geloescht.");
+      setMessage("User gelöscht.");
     } catch {
-      setMessage("User konnte nicht geloescht werden.");
+      setMessage("User konnte nicht gelöscht werden.");
     }
   }
 
@@ -1033,7 +1130,7 @@ function App() {
         ? (input.files?.[0] ?? null)
         : new FormData(formElement).get("importFile");
     if (!(file instanceof File)) {
-      setMessage("Bitte CSV- oder JSON-Datei auswaehlen.");
+      setMessage("Bitte CSV- oder JSON-Datei auswählen.");
       return;
     }
     const sourceType = file.name.toLowerCase().endsWith(".json")
@@ -1057,12 +1154,12 @@ function App() {
       setImportLogs((existing) => [toImportLog(result.log), ...existing]);
       setImportLogEntries(result.skipped_entries);
       setMessage(
-        `Import abgeschlossen: ${result.log.valid_records} importiert, ${result.log.skipped_records} uebersprungen, ${result.log.total_records} gelesen.`,
+        `Import abgeschlossen: ${result.log.valid_records} importiert, ${result.log.skipped_records} übersprungen, ${result.log.total_records} gelesen.`,
       );
       formElement.reset();
     } catch {
       setMessage(
-        "Import fehlgeschlagen. Logeintrag und Validierungsdetails pruefen.",
+        "Import fehlgeschlagen. Logeintrag und Validierungsdetails prüfen.",
       );
     } finally {
       setIsLoading(false);
@@ -1087,7 +1184,7 @@ function App() {
 
   async function configureProvider(
     event: FormEvent<HTMLFormElement>,
-    provider: "openai" | "vllm",
+    provider: ConfigurableProvider,
   ) {
     event.preventDefault();
     if (session === null) {
@@ -1095,14 +1192,21 @@ function App() {
     }
     const formElement = event.currentTarget;
     const form = new FormData(formElement);
-    const payload: Record<string, unknown> = {
-      manual_models: parseModels(form.get("manualModels")),
-    };
+    const payload: Record<string, unknown> = {};
     if (provider === "openai") {
       const apiKey = String(form.get("apiKey") ?? "");
       payload.api_key = apiKey || null;
       payload.remove_api_key = form.get("removeApiKey") === "on";
+      payload.manual_models = openAiSelectedModels.length
+        ? openAiSelectedModels
+        : parseModels(form.get("manualModels"));
+    } else if (provider === "ollama") {
+      payload.manual_models =
+        providers.find((item) => item.provider === "ollama")?.manualModels ??
+        [];
+      payload.endpoint_url = String(form.get("endpointUrl") ?? "").trim();
     } else {
+      payload.manual_models = parseModels(form.get("manualModels"));
       payload.endpoint_url = String(form.get("endpointUrl") ?? "").trim();
     }
     try {
@@ -1118,14 +1222,189 @@ function App() {
         toProviderConfiguration(updated),
         ...existing.filter((item) => item.provider !== provider),
       ]);
-      formElement.reset();
-      setMessage(
-        provider === "openai"
-          ? "OpenAI Provider gespeichert. API-Key bleibt write-only."
-          : "vLLM Provider gespeichert.",
-      );
+      if (provider === "openai") {
+        const nextOpenAi = toProviderConfiguration(updated);
+        setOpenAiSelectedModels(nextOpenAi.manualModels);
+        formElement.reset();
+        if (nextOpenAi.apiKeySet) {
+          await discoverOpenAiModels(nextOpenAi.manualModels, true);
+        } else {
+          setMessage("OpenAI Provider gespeichert.");
+        }
+      } else {
+        formElement.reset();
+        setMessage(
+          provider === "ollama"
+            ? "Ollama Provider gespeichert."
+            : "vLLM Provider gespeichert.",
+        );
+      }
     } catch {
       setMessage("Provider-Konfiguration konnte nicht gespeichert werden.");
+    }
+  }
+
+  async function persistOpenAiModels(models: string[]) {
+    if (session === null) {
+      return;
+    }
+    const updated = await apiRequest<ApiProviderConfiguration>(
+      "/api/providers/openai",
+      {
+        method: "PUT",
+        token: session.token,
+        body: JSON.stringify({ manual_models: models }),
+      },
+    );
+    setProviders((existing) => [
+      toProviderConfiguration(updated),
+      ...existing.filter((item) => item.provider !== "openai"),
+    ]);
+  }
+
+  async function persistProviderModels(
+    provider: "ollama" | "vllm",
+    models: string[],
+  ) {
+    if (session === null) {
+      return;
+    }
+    const updated = await apiRequest<ApiProviderConfiguration>(
+      `/api/providers/${provider}`,
+      {
+        method: "PUT",
+        token: session.token,
+        body: JSON.stringify({
+          endpoint_url:
+            providers.find((item) => item.provider === provider)?.endpointUrl ??
+            null,
+          manual_models: models,
+        }),
+      },
+    );
+    setProviders((existing) => [
+      toProviderConfiguration(updated),
+      ...existing.filter((item) => item.provider !== provider),
+    ]);
+  }
+
+  async function discoverOpenAiModels(
+    fallbackModels = openAiSelectedModels,
+    persistDiscovered = false,
+  ) {
+    if (session === null) {
+      return;
+    }
+    try {
+      const result = await apiRequest<ApiProviderCheck>(
+        "/api/providers/openai/check",
+        {
+          method: "POST",
+          token: session.token,
+        },
+      );
+      const models = result.models.length ? result.models : fallbackModels;
+      setOpenAiDiscoveredModels(models);
+      setOpenAiSelectedModels((existing) =>
+        persistDiscovered || existing.length === 0 ? models : existing,
+      );
+      if (persistDiscovered && models.length > 0) {
+        await persistOpenAiModels(models);
+      }
+      if (result.ok && models.length > 0) {
+        setMessage(`${models.length} OpenAI Modell(e) abgerufen.`);
+      } else if (result.ok) {
+        setMessage("Keine OpenAI Modelle gefunden.");
+      } else {
+        setMessage(
+          result.message || "OpenAI Modelle konnten nicht abgerufen werden.",
+        );
+      }
+    } catch (error) {
+      setOpenAiDiscoveredModels(fallbackModels);
+      setMessage(
+        error instanceof Error
+          ? `OpenAI Modelle konnten nicht abgerufen werden: ${error.message}`
+          : "OpenAI Modelle konnten nicht abgerufen werden.",
+      );
+    }
+  }
+
+  function toggleOpenAiModel(model: string, checked: boolean) {
+    setOpenAiSelectedModels((existing) =>
+      checked
+        ? Array.from(new Set([...existing, model]))
+        : existing.filter((item) => item !== model),
+    );
+  }
+
+  async function discoverProviderModels(provider: "ollama" | "vllm") {
+    if (session === null) {
+      return;
+    }
+    const configured = providers.find((item) => item.provider === provider);
+    const fallbackModels = configured?.manualModels ?? [];
+    try {
+      const result = await apiRequest<ApiProviderCheck>(
+        `/api/providers/${provider}/check`,
+        {
+          method: "POST",
+          token: session.token,
+        },
+      );
+      const models = result.models.length ? result.models : fallbackModels;
+      if (models.length > 0) {
+        await persistProviderModels(provider, models);
+      }
+      if (result.ok && models.length > 0) {
+        setMessage(`${models.length} ${provider} Modell(e) abgerufen.`);
+      } else {
+        setMessage(result.message || `${provider} Modelle nicht gefunden.`);
+      }
+    } catch (error) {
+      setMessage(
+        error instanceof Error
+          ? `${provider} Modelle konnten nicht abgerufen werden: ${error.message}`
+          : `${provider} Modelle konnten nicht abgerufen werden.`,
+      );
+    }
+  }
+
+  async function pullOllamaModel(formElement: HTMLFormElement) {
+    if (session === null) {
+      return;
+    }
+    const form = new FormData(formElement);
+    const model = String(form.get("pullModel") ?? "").trim();
+    if (!model) {
+      setMessage("Ollama Modellname fehlt.");
+      return;
+    }
+    setIsLoading(true);
+    setMessage(`Ollama Modell ${model} wird heruntergeladen.`);
+    try {
+      const updated = await apiRequest<ApiProviderConfiguration>(
+        "/api/providers/ollama/pull",
+        {
+          method: "POST",
+          token: session.token,
+          body: JSON.stringify({ model }),
+        },
+      );
+      setProviders((existing) => [
+        toProviderConfiguration(updated),
+        ...existing.filter((item) => item.provider !== "ollama"),
+      ]);
+      formElement.reset();
+      setMessage(`Ollama Modell ${model} wurde hinzugefügt.`);
+    } catch (error) {
+      setMessage(
+        error instanceof Error
+          ? `Ollama Modell konnte nicht geladen werden: ${error.message}`
+          : "Ollama Modell konnte nicht geladen werden.",
+      );
+    } finally {
+      setIsLoading(false);
     }
   }
 
@@ -1166,7 +1445,7 @@ function App() {
       setMessage("Analyseprofil gespeichert.");
     } catch {
       setMessage(
-        "Analyseprofil konnte nicht gespeichert werden. Provider und Modell pruefen.",
+        "Analyseprofil konnte nicht gespeichert werden. Provider und Modell prüfen.",
       );
     }
   }
@@ -1201,7 +1480,7 @@ function App() {
       );
     } catch {
       setMessage(
-        "Analyse konnte nicht gestartet werden. Dataset-Version und Profil pruefen.",
+        "Analyse konnte nicht gestartet werden. Dataset-Version und Profil prüfen.",
       );
     }
   }
@@ -1219,7 +1498,7 @@ function App() {
       setClusterSources([]);
       setMessage("Cluster erzeugt und geladen.");
     } catch {
-      setMessage("Cluster konnten nicht erzeugt werden. Run-Status pruefen.");
+      setMessage("Cluster konnten nicht erzeugt werden. Run-Status prüfen.");
     }
   }
 
@@ -1437,9 +1716,49 @@ function App() {
         provider.manualModels.map((model) => `${provider.provider}:${model}`),
       )
       .join(", ") || "Noch keine Modelle konfiguriert.";
+  const openAiProvider = providers.find(
+    (provider) => provider.provider === "openai",
+  );
+  const vllmProvider = providers.find(
+    (provider) => provider.provider === "vllm",
+  );
+  const ollamaProvider = providers.find(
+    (provider) => provider.provider === "ollama",
+  );
+  const sidebarProjects = projects
+    .slice()
+    .sort((left, right) => {
+      const leftRecentIndex = recentProjectIds.indexOf(left.id);
+      const rightRecentIndex = recentProjectIds.indexOf(right.id);
+      if (leftRecentIndex !== -1 || rightRecentIndex !== -1) {
+        if (leftRecentIndex === -1) {
+          return 1;
+        }
+        if (rightRecentIndex === -1) {
+          return -1;
+        }
+        return leftRecentIndex - rightRecentIndex;
+      }
+      return right.updatedAt.localeCompare(left.updatedAt);
+    })
+    .slice(0, 10);
   const runnableDatasetLogs = importLogs.filter(
     (log) => log.datasetVersionId !== null,
   );
+
+  function rememberProjectAccess(projectId: string) {
+    setRecentProjectIds((existing) =>
+      [projectId, ...existing.filter((id) => id !== projectId)].slice(0, 10),
+    );
+  }
+
+  useEffect(() => {
+    if (!message) {
+      return undefined;
+    }
+    const timeout = window.setTimeout(() => setMessage(""), 3500);
+    return () => window.clearTimeout(timeout);
+  }, [message]);
 
   if (session === null) {
     return (
@@ -1448,14 +1767,14 @@ function App() {
           <p className="eyebrow">Support Knowledge Miner</p>
           <h1 id="signin-title">Lokaler Zugriff</h1>
           <p className="intro">
-            Geschuetzte Projekt-, Import- und Kurationsbereiche starten erst
-            nach erfolgreicher Backend-Anmeldung. Fehler nennen nie, ob
-            Benutzername oder Passwort falsch war.
+            Geschützte Projekt-, Import- und Kurationsbereiche starten erst nach
+            erfolgreicher Backend-Anmeldung. Fehler nennen nie, ob E-Mail oder
+            Passwort falsch war.
           </p>
           <form className="stack" onSubmit={signIn}>
             <label>
-              Benutzername
-              <input name="username" autoComplete="username" />
+              E-Mail
+              <input name="email" type="email" autoComplete="username" />
             </label>
             <label>
               Passwort
@@ -1466,7 +1785,7 @@ function App() {
               />
             </label>
             <button type="submit" disabled={isLoading}>
-              {isLoading ? "Pruefe Anmeldung" : "Anmelden"}
+              {isLoading ? "Prüfe Anmeldung" : "Anmelden"}
             </button>
           </form>
           {message && (
@@ -1483,1086 +1802,1365 @@ function App() {
     <main className="app-shell">
       <header className="topbar">
         <div>
-          <p className="eyebrow">T003 Project Home</p>
-          <h1>Projektverwaltung</h1>
+          <p className="eyebrow">Support Knowledge Miner</p>
+          <h1>
+            {activePage === "projects"
+              ? "Projekte & Analysen"
+              : "Einstellungen"}
+          </h1>
         </div>
-        <button
-          type="button"
-          className="secondary"
-          onClick={() => setSession(null)}
-        >
-          Abmelden
-        </button>
+        <div className="topbar-actions">
+          <span>{session.user.name}</span>
+          <button type="button" className="icon-button" onClick={signOut}>
+            Abmelden
+          </button>
+        </div>
       </header>
 
-      {message && (
-        <p role="status" className="status">
-          {message}
-        </p>
-      )}
+      <div className="workspace">
+        <aside className="sidebar">
+          <nav aria-label="Hauptnavigation">
+            <button
+              type="button"
+              className={`nav-item ${
+                activePage === "projects" && currentProject === null
+                  ? "active"
+                  : ""
+              }`}
+              onClick={openProjectListPage}
+            >
+              Projekte
+            </button>
+            <div className="sidebar-submenu" aria-label="Projektliste">
+              {sidebarProjects.map((project) => (
+                <button
+                  type="button"
+                  className={`nav-subitem ${
+                    activePage === "projects" &&
+                    currentProject?.id === project.id
+                      ? "active"
+                      : ""
+                  }`}
+                  key={project.id}
+                  onClick={() => void openProject(project.id)}
+                >
+                  {project.name}
+                </button>
+              ))}
+            </div>
+            <button
+              type="button"
+              className={`nav-item ${activePage === "settings" ? "active" : ""}`}
+              onClick={openProvidersPage}
+            >
+              Einstellungen
+            </button>
+          </nav>
+        </aside>
 
-      <nav className="shell-nav" aria-label="MVP Navigation">
-        <a href="#project-home">Projekt Home</a>
-        <a href="#users">User</a>
-        <a href="#providers">Provider</a>
-        <a href="#profiles">Profile</a>
-        <a href="#imports">Import</a>
-        <a href="#runs">Runs</a>
-        <a href="#clusters">Cluster</a>
-        <a href="#candidates">Candidates</a>
-        <a href="#exports">Export</a>
-      </nav>
-
-      <section
-        id="project-home"
-        className="panel project-summary"
-        aria-label="Aktuelles Projekt"
-      >
-        <p className="eyebrow">Aktuelles Projekt</p>
-        {currentProject ? (
-          <div>
-            <h2>{currentProject.name}</h2>
-            <p className="hint">
-              Status: {currentProject.lifecycleState}; zuletzt aktualisiert:{" "}
-              {currentProject.updatedAt}
+        <section className="content">
+          {message && (
+            <p role="status" className="feedback success">
+              {message}
             </p>
-          </div>
-        ) : (
-          <p className="hint">Noch kein Projekt geoeffnet.</p>
-        )}
-      </section>
+          )}
 
-      <section className="panel state-board" aria-label="Gemeinsame Zustaende">
-        <p className="eyebrow">Shared states</p>
-        <h2>Arbeitszustand</h2>
-        <div className="state-list">
-          <p className={isLoading ? "state-pill active" : "state-pill"}>
-            Loading: {isLoading ? "laufende Aktion" : "bereit"}
-          </p>
-          <p
-            className={
-              projects.length === 0 ? "state-pill active" : "state-pill"
-            }
-          >
-            Empty:{" "}
-            {projects.length === 0 ? "keine Projekte" : "Projekte geladen"}
-          </p>
-          <p
-            className={
-              providers.length === 0 ? "state-pill active" : "state-pill"
-            }
-          >
-            Provider:{" "}
-            {providers.length === 0
-              ? "noch nicht konfiguriert oder nicht erreichbar"
-              : "konfiguriert"}
-          </p>
-          <p
-            className={
-              currentProject === null ? "state-pill active" : "state-pill"
-            }
-          >
-            Projektkontext:{" "}
-            {currentProject === null
-              ? "kein Projekt geoeffnet"
-              : currentProject.name}
-          </p>
-          <p className="state-pill">
-            Auth: lokale Session aktiv; bei Ablauf bitte erneut anmelden.
-          </p>
-          <p className="state-pill">
-            Validierung: Formularfehler werden als zusammengefasste
-            Statusmeldung und, beim Import, als Logdetails angezeigt.
-          </p>
-        </div>
-      </section>
-
-      <section id="providers" className="panel-grid">
-        <form
-          className="panel stack"
-          onSubmit={(event) => configureProvider(event, "openai")}
-          aria-label="OpenAI Provider konfigurieren"
-        >
-          <p className="eyebrow">T005 Provider</p>
-          <h2>OpenAI konfigurieren</h2>
-          <p className="hint">
-            API-Key wird nur geschrieben oder geloescht und nie angezeigt.
-            OpenAI-Profile sind als Cloud-Nutzung markiert.
-          </p>
-          <label>
-            Neuer OpenAI API-Key
-            <input
-              name="apiKey"
-              type="password"
-              autoComplete="off"
-              placeholder="sk-..."
-            />
-          </label>
-          <label>
-            OpenAI Modelle
-            <input
-              name="manualModels"
-              placeholder="text-embedding-3-small, gpt-4.1-mini"
-            />
-          </label>
-          <label className="inline-check">
-            <input name="removeApiKey" type="checkbox" />
-            Gespeicherten API-Key entfernen
-          </label>
-          <button type="submit">OpenAI speichern</button>
-        </form>
-
-        <form
-          className="panel stack"
-          onSubmit={(event) => configureProvider(event, "vllm")}
-          aria-label="vLLM Provider konfigurieren"
-        >
-          <p className="eyebrow">Lokal</p>
-          <h2>vLLM konfigurieren</h2>
-          <p className="hint">
-            Lokale vLLM-Endpoints bleiben explizit und koennen mehrere Modelle
-            bereitstellen.
-          </p>
-          <label>
-            Endpoint URL
-            <input name="endpointUrl" placeholder="http://localhost:8000" />
-          </label>
-          <label>
-            vLLM Modelle
-            <input name="manualModels" placeholder="local-embed, local-chat" />
-          </label>
-          <button type="submit">vLLM speichern</button>
-        </form>
-
-        <section className="panel" aria-label="Provider Konfigurationen">
-          <h2>Provider Konfigurationen</h2>
-          <div className="user-list">
-            {providers.length === 0 && (
-              <p className="hint">Noch keine Provider konfiguriert.</p>
-            )}
-            {providers.map((provider) => (
-              <article className="user-card" key={provider.provider}>
-                <div className="user-heading">
-                  <strong>{provider.provider}</strong>
-                  {provider.provider === "openai" && (
-                    <span>
-                      {provider.apiKeySet ? "API-Key gesetzt" : "Kein API-Key"}
-                    </span>
-                  )}
-                </div>
-                {provider.endpointUrl && (
-                  <p className="hint">Endpoint: {provider.endpointUrl}</p>
-                )}
-                <p className="hint">
-                  Modelle:{" "}
-                  {provider.manualModels.length
-                    ? provider.manualModels.join(", ")
-                    : "keine"}
-                </p>
-              </article>
-            ))}
-          </div>
-        </section>
-      </section>
-
-      {currentProject && (
-        <>
-          <section id="profiles" className="panel-grid">
-            <form
-              className="panel stack"
-              onSubmit={createAnalysisProfile}
-              aria-label="Analyseprofil erstellen"
-            >
-              <p className="eyebrow">T005 Profile</p>
-              <h2>Analyseprofil erstellen</h2>
-              <p className="hint">
-                Konfigurierte Modelle: {configuredModelHint}
-              </p>
-              <label>
-                Profilname
-                <input name="profileName" />
-              </label>
-              <label>
-                Provider
-                <select name="provider" defaultValue="vllm">
-                  <option value="vllm">vLLM lokal</option>
-                  <option value="openai">OpenAI Cloud</option>
-                </select>
-              </label>
-              <label>
-                Modell
-                <input name="model" placeholder="local-embed" />
-              </label>
-              <label>
-                Similarity Threshold
-                <input name="similarity" placeholder="0.78" />
-              </label>
-              <label>
-                Algorithmus
-                <input name="algorithm" placeholder="hdbscan" />
-              </label>
-              <label>
-                Prompt-ID
-                <input name="promptIdentifier" placeholder="faq-v1" />
-              </label>
-              <button type="submit">Profil speichern</button>
-            </form>
-
-            <section className="panel" aria-label="Analyseprofile">
-              <h2>Analyseprofile</h2>
-              <div className="user-list">
-                {analysisProfiles.length === 0 && (
-                  <p className="hint">
-                    Noch keine Analyseprofile fuer dieses Projekt.
-                  </p>
-                )}
-                {analysisProfiles.map((profile) => (
-                  <article className="user-card" key={profile.id}>
-                    <div className="user-heading">
-                      <strong>{profile.name}</strong>
-                      <span>
-                        {profile.provider}/{profile.model}
-                      </span>
-                    </div>
-                    {profile.isCloudProvider && (
-                      <p className="status warning">
-                        Cloud-Nutzung: OpenAI Profil sendet spaetere
-                        Analyseinhalte an den konfigurierten Cloud-Provider.
-                      </p>
-                    )}
-                    <p className="hint">
-                      Thresholds: {JSON.stringify(profile.thresholds)}
-                    </p>
-                    <p className="hint">
-                      Algorithmus: {JSON.stringify(profile.algorithmSettings)}
-                    </p>
-                    {profile.promptIdentifier && (
-                      <p className="hint">Prompt: {profile.promptIdentifier}</p>
-                    )}
-                  </article>
-                ))}
-              </div>
-            </section>
-          </section>
-
-          <section id="exports" className="panel-grid">
-            <form
-              className="panel stack"
-              onSubmit={(event) => createExport(event, "candidates")}
-              aria-label="Candidate CSV exportieren"
-            >
-              <p className="eyebrow">T009 Export</p>
-              <h2>Candidate CSV exportieren</h2>
-              <p className="hint">
-                Export nutzt die akzeptierten Candidate-Baseline-Spalten und
-                persistiert Metadaten in der Projektdatenbank.
-              </p>
-              <label className="inline-check">
-                <input name="includeOriginalText" type="checkbox" />
-                Originaltext bewusst einschliessen
-              </label>
-              <p className="status warning">
-                Warnung: Candidate-Felder koennen aus Supporttexten abgeleitet
-                sein. Der Export wird dann auch ohne aktivierte Checkbox als
-                Originaltext-Export protokolliert.
-              </p>
-              <button type="submit">Candidate CSV exportieren</button>
-            </form>
-
-            <form
-              className="panel stack"
-              onSubmit={(event) => createExport(event, "source-assignments")}
-              aria-label="Source Assignment CSV exportieren"
-            >
-              <p className="eyebrow">Traceability</p>
-              <h2>Source-Assignment CSV exportieren</h2>
-              <p className="hint">
-                Ohne Toggle bleiben die Originalfelder customer_message und
-                support_answer leer; Traceability-IDs und normalisierte Felder
-                bleiben enthalten.
-              </p>
-              <label className="inline-check">
-                <input name="includeOriginalText" type="checkbox" />
-                Originaltext in customer_message/support_answer einschliessen
-              </label>
-              <p className="status warning">
-                Warnung: Originaltexte sind potentiell identifizierende Inhalte
-                und sollten nur bewusst exportiert werden.
-              </p>
-              <button type="submit">Source Assignment CSV exportieren</button>
-            </form>
-
-            <section className="panel" aria-label="Exporthistorie">
-              <h2>Exporthistorie</h2>
-              <div className="user-list">
-                {exportLogs.length === 0 && (
-                  <p className="hint">
-                    Noch keine Exporte fuer dieses Projekt.
-                  </p>
-                )}
-                {exportLogs.map((log) => (
-                  <article className="user-card" key={log.id}>
-                    <div className="user-heading">
-                      <strong>{log.outputFilename}</strong>
-                      <span>{log.exportType}</span>
-                    </div>
-                    <p className="hint">
-                      Zeilen: {log.rowCount}; Originaltext:{" "}
-                      {log.includeOriginalText ? "ja" : "nein"}
-                    </p>
-                    <p className="hint">
-                      Dataset-Version: {log.datasetVersionId ?? "-"}; Run:{" "}
-                      {log.analysisRunId ?? "-"}
-                    </p>
-                    <p className="hint">Erstellt: {log.createdAt}</p>
-                    {log.includeOriginalText && (
-                      <p className="status warning">
-                        Dieser Export wurde mit Originaltext erstellt.
-                      </p>
-                    )}
-                  </article>
-                ))}
-              </div>
-              {lastExportCsv && (
-                <pre className="log-detail" aria-label="Letzter CSV Export">
-                  {lastExportCsv}
-                </pre>
-              )}
-            </section>
-          </section>
-
-          <section id="runs" className="panel-grid">
-            <form
-              className="panel stack"
-              onSubmit={startAnalysisRun}
-              aria-label="Analyse starten"
-            >
-              <p className="eyebrow">T006 Run Monitor</p>
-              <h2>Analyse starten</h2>
-              <p className="hint">
-                Lokale Fixture-Workflows koennen ohne OpenAI abgeschlossen
-                werden. OpenAI-Profile bleiben als Cloud-Nutzung sichtbar.
-              </p>
-              <label>
-                Dataset-Version
-                <select name="datasetVersionId">
-                  {runnableDatasetLogs.map((log) => (
-                    <option
-                      key={log.datasetVersionId ?? log.id}
-                      value={log.datasetVersionId ?? ""}
-                    >
-                      {log.sourceName} / {log.datasetVersionId}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                Analyseprofil
-                <select name="analysisProfileId">
-                  {analysisProfiles.map((profile) => (
-                    <option key={profile.id} value={profile.id}>
-                      {profile.name} ({profile.provider}/{profile.model})
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                Run-Modus
-                <input name="runMode" placeholder="fixture" />
-              </label>
-              <button
-                type="submit"
-                disabled={
-                  runnableDatasetLogs.length === 0 ||
-                  analysisProfiles.length === 0
-                }
+          {activePage === "projects" && currentProject && (
+            <>
+              <section
+                id="project-home"
+                className="panel project-summary"
+                aria-label="Aktuelles Projekt"
               >
-                Analyse starten
-              </button>
-            </form>
-
-            <section className="panel" aria-label="Analyse Runs">
-              <h2>Analyse Runs</h2>
-              <div className="user-list">
-                {analysisRuns.length === 0 && (
+                <p className="eyebrow">Aktuelles Projekt</p>
+                <div>
+                  <h2>{currentProject.name}</h2>
                   <p className="hint">
-                    Noch keine Analyse-Runs fuer dieses Projekt.
+                    Status: {currentProject.lifecycleState}; zuletzt
+                    aktualisiert: {currentProject.updatedAt}
                   </p>
-                )}
-                {analysisRuns.map((run) => (
-                  <article className="user-card" key={run.id}>
-                    <div className="user-heading">
-                      <strong>{run.status}</strong>
-                      <span>{run.progress}%</span>
-                    </div>
-                    <p className="hint">
-                      Provider/Modell: {run.provider}/{run.model}
-                    </p>
-                    <p className="hint">
-                      Dataset-Version: {run.datasetVersionId}
-                    </p>
-                    <p className="hint">
-                      Profil-Snapshot:{" "}
-                      {String(
-                        run.profileSnapshot.name ?? run.analysisProfileId,
-                      )}
-                    </p>
-                    <p className="hint">
-                      Erstellt: {run.createdAt}; gestartet:{" "}
-                      {run.startedAt ?? "noch nicht"}; abgeschlossen:{" "}
-                      {run.completedAt ?? "noch nicht"}
-                    </p>
-                    {run.errorMessage && (
-                      <p className="error">{run.errorMessage}</p>
-                    )}
-                    <p className="hint">
-                      Diagnose: {JSON.stringify(run.diagnostics)}
-                    </p>
-                  </article>
+                </div>
+              </section>
+
+              <div
+                className="page-tabs"
+                role="tablist"
+                aria-label="Projektbereiche"
+              >
+                {(
+                  [
+                    ["profiles", "Profile"],
+                    ["import", "Import"],
+                    ["runs", "Runs"],
+                    ["clusters", "Cluster"],
+                    ["candidates", "Kandidaten"],
+                    ["exports", "Export"],
+                    ["delete", "Projekt löschen"],
+                  ] as const
+                ).map(([tab, label]) => (
+                  <button
+                    type="button"
+                    className={projectTab === tab ? "selected" : ""}
+                    key={tab}
+                    onClick={() => setProjectTab(tab)}
+                  >
+                    {label}
+                  </button>
                 ))}
               </div>
-            </section>
-          </section>
+            </>
+          )}
 
-          <section id="clusters" className="panel-grid">
-            <section className="panel" aria-label="Cluster Aktionen">
-              <p className="eyebrow">T007 Cluster Explorer</p>
-              <h2>Cluster erzeugen</h2>
-              <p className="hint">
-                Der MVP-Scaffold nutzt eine lineare deterministische Gruppierung
-                und markiert Einzelgruppen als Outlier.
-              </p>
-              <div className="user-list">
-                {analysisRuns.length === 0 && (
-                  <p className="hint">
-                    Noch keine Runs fuer Cluster vorhanden.
-                  </p>
-                )}
-                {analysisRuns.map((run) => (
-                  <article
-                    className="user-card"
-                    key={`cluster-action-${run.id}`}
-                  >
-                    <div className="user-heading">
-                      <strong>{run.status}</strong>
-                      <span>{run.model}</span>
+          {activePage === "settings" && (
+            <>
+              <div
+                className="page-tabs"
+                role="tablist"
+                aria-label="Einstellungen"
+              >
+                <button
+                  type="button"
+                  className={settingsTab === "providers" ? "selected" : ""}
+                  onClick={() => setSettingsTab("providers")}
+                >
+                  Embedding-Provider
+                </button>
+                <button
+                  type="button"
+                  className={settingsTab === "users" ? "selected" : ""}
+                  onClick={() => setSettingsTab("users")}
+                >
+                  Nutzer
+                </button>
+              </div>
+            </>
+          )}
+
+          {activePage === "settings" && settingsTab === "providers" && (
+            <section id="providers" className="provider-settings">
+              <section className="provider-grid">
+                <form
+                  className="panel provider-card stack"
+                  onSubmit={(event) => configureProvider(event, "openai")}
+                  aria-label="OpenAI Provider konfigurieren"
+                >
+                  <div className="panel-title">
+                    <div>
+                      <p className="eyebrow">Cloud</p>
+                      <h2>OpenAI</h2>
                     </div>
-                    <p className="hint">Run: {run.id}</p>
-                    <button
-                      type="button"
-                      className="secondary"
-                      disabled={run.status !== "completed"}
-                      onClick={() => generateClusters(run.id)}
+                    <span
+                      className={`provider-status ${
+                        openAiProvider?.apiKeySet ? "active" : "idle"
+                      }`}
                     >
-                      Cluster erzeugen
-                    </button>
+                      {openAiProvider?.apiKeySet
+                        ? "API-Key gesetzt"
+                        : "Nicht eingerichtet"}
+                    </span>
+                  </div>
+                  <p className="hint">
+                    Modelle werden über den gespeicherten oder neu eingegebenen
+                    API-Key abgerufen und danach für Analysen freigegeben.
+                  </p>
+                  <label className="provider-key-row">
+                    Neuer OpenAI API-Key
+                    <input
+                      name="apiKey"
+                      type="password"
+                      autoComplete="off"
+                      placeholder={
+                        openAiProvider?.apiKeySet
+                          ? "Neuen API-Key eintragen"
+                          : "sk-..."
+                      }
+                    />
+                  </label>
+                  <div className="form-actions">
+                    <button type="submit">OpenAI speichern</button>
                     <button
                       type="button"
                       className="secondary"
                       onClick={() =>
-                        session &&
-                        currentProject &&
-                        loadClusters(session.token, currentProject.id, run.id)
+                        discoverOpenAiModels(openAiSelectedModels, true)
                       }
                     >
-                      Cluster laden
+                      Modelle abrufen
                     </button>
-                  </article>
-                ))}
-              </div>
-            </section>
+                  </div>
+                  <div
+                    className="model-selection"
+                    aria-label="OpenAI Modell-Auswahl"
+                  >
+                    <span className="field-caption">Freigegebene Modelle</span>
+                    {(openAiDiscoveredModels.length
+                      ? openAiDiscoveredModels
+                      : openAiSelectedModels
+                    ).map((model) => (
+                      <label className="inline-check" key={model}>
+                        <input
+                          type="checkbox"
+                          checked={openAiSelectedModels.includes(model)}
+                          onChange={(event) =>
+                            toggleOpenAiModel(model, event.target.checked)
+                          }
+                        />
+                        {model}
+                      </label>
+                    ))}
+                    {openAiDiscoveredModels.length === 0 &&
+                      openAiSelectedModels.length === 0 && (
+                        <p className="hint">Noch keine Modelle abgerufen.</p>
+                      )}
+                  </div>
+                  <label className="inline-check">
+                    <input name="removeApiKey" type="checkbox" />
+                    Gespeicherten API-Key entfernen
+                  </label>
+                </form>
 
-            <section className="panel" aria-label="Cluster Explorer">
-              <h2>Cluster Explorer</h2>
-              <div className="user-list">
-                {clusters.length === 0 && (
-                  <p className="hint">Noch keine Cluster geladen.</p>
-                )}
-                {clusters.map((cluster) => (
-                  <article className="user-card" key={cluster.id}>
-                    <div className="user-heading">
-                      <strong>{cluster.effectiveTitle}</strong>
-                      <span>{cluster.isOutlier ? "Outlier" : "Cluster"}</span>
+                <form
+                  className="panel provider-card stack"
+                  onSubmit={(event) => configureProvider(event, "vllm")}
+                  aria-label="vLLM Provider konfigurieren"
+                >
+                  <div className="panel-title">
+                    <div>
+                      <p className="eyebrow">Lokal</p>
+                      <h2>vLLM</h2>
                     </div>
-                    <p className="hint">
-                      Auto: {cluster.autoTitle} / {cluster.autoCategory} /{" "}
-                      {cluster.autoStatus}
-                    </p>
-                    <p className="hint">
-                      Manual: {cluster.manualTitle ?? "-"} /{" "}
-                      {cluster.manualCategory ?? "-"} /{" "}
-                      {cluster.manualStatus ?? "-"}
-                    </p>
-                    <p className="hint">
-                      Effective: {cluster.effectiveTitle} /{" "}
-                      {cluster.effectiveCategory ?? "-"} /{" "}
-                      {cluster.effectiveStatus}
-                    </p>
-                    <p className="hint">
-                      Score: {cluster.score}; Quellen: {cluster.memberCount};
-                      Algorithmus: {cluster.algorithm}
-                    </p>
-                    <form
-                      className="stack"
-                      onSubmit={(event) => updateCluster(event, cluster.id)}
+                    <span
+                      className={`provider-status ${vllmProvider ? "active" : "idle"}`}
                     >
-                      <label>
-                        Manueller Titel
-                        <input
-                          name="manualTitle"
-                          defaultValue={cluster.manualTitle ?? ""}
-                        />
-                      </label>
-                      <label>
-                        Manuelle Kategorie
-                        <input
-                          name="manualCategory"
-                          defaultValue={cluster.manualCategory ?? ""}
-                        />
-                      </label>
-                      <label>
-                        Manueller Status
-                        <select
-                          name="manualStatus"
-                          defaultValue={cluster.manualStatus ?? ""}
-                        >
-                          <option value="">Kein Override</option>
-                          <option value="unreviewed">unreviewed</option>
-                          <option value="in_progress">in_progress</option>
-                          <option value="reviewed">reviewed</option>
-                          <option value="rejected">rejected</option>
-                          <option value="outlier">outlier</option>
-                        </select>
-                      </label>
-                      <button type="submit">Overrides speichern</button>
-                    </form>
-                    <button
-                      type="button"
-                      className="secondary"
-                      onClick={() => inspectClusterSources(cluster.id)}
-                    >
-                      Quellen anzeigen
-                    </button>
-                    <button
-                      type="button"
-                      className="secondary"
-                      onClick={() => createCandidateFromCluster(cluster.id)}
-                    >
-                      Candidate erstellen
-                    </button>
-                  </article>
-                ))}
-              </div>
-              {clusterSources.length > 0 && (
-                <section className="log-detail" aria-label="Cluster Quellen">
-                  <h2>Quellen</h2>
-                  {clusterSources.map((source) => (
-                    <article className="user-card" key={source.messagePairId}>
-                      <strong>
-                        {source.ticketid} / {source.messagegroupid}
-                      </strong>
-                      <p className="hint">Message: {source.message}</p>
-                      <p className="hint">Answer: {source.answer}</p>
-                      <p className="hint">
-                        Score: {source.membershipScore}; Assignment:{" "}
-                        {source.assignmentType}
-                      </p>
-                    </article>
-                  ))}
-                </section>
-              )}
-            </section>
-          </section>
-
-          <section
-            id="candidates"
-            className="panel"
-            aria-label="Candidate Editor"
-          >
-            <p className="eyebrow">T008 Candidate Curation</p>
-            <h2>Candidate Editor</h2>
-            <p className="hint">
-              Generierte Werte bleiben erhalten; manuelle Felder bestimmen die
-              effektiven Kurationswerte.
-            </p>
-            <div className="user-list">
-              {candidates.length === 0 && (
-                <p className="hint">
-                  Noch keine Candidates fuer dieses Projekt.
-                </p>
-              )}
-              {candidates.map((candidate) => (
-                <article className="user-card" key={candidate.id}>
-                  <div className="user-heading">
-                    <strong>{candidate.effectiveTitle}</strong>
-                    <span>
-                      {candidate.candidateType} / {candidate.effectiveStatus}
+                      {vllmProvider ? "Konfiguriert" : "Nicht eingerichtet"}
                     </span>
                   </div>
                   <p className="hint">
-                    Auto: {candidate.autoTitle} /{" "}
-                    {candidate.autoCategoryPath ?? "-"} / {candidate.autoStatus}
+                    vLLM bleibt für dedizierte, bereits gestartete lokale
+                    Endpoints mit expliziter Modellliste vorgesehen.
                   </p>
-                  <p className="hint">
-                    Manual: {candidate.manualTitle ?? "-"} /{" "}
-                    {candidate.manualCategoryPath ?? "-"} /{" "}
-                    {candidate.manualStatus ?? "-"}
-                  </p>
-                  <p className="hint">
-                    Effective: {candidate.effectiveTitle} /{" "}
-                    {candidate.effectiveCategoryPath ?? "-"} /{" "}
-                    {candidate.effectiveStatus}
-                  </p>
-                  <p className="hint">
-                    Frage Auto: {candidate.autoCanonicalQuestion}
-                  </p>
-                  <p className="hint">
-                    Frage Manual: {candidate.manualCanonicalQuestion ?? "-"}
-                  </p>
-                  <p className="hint">
-                    Frage Effective: {candidate.effectiveCanonicalQuestion}
-                  </p>
-                  <p className="hint">
-                    Antwort Auto: {candidate.autoCanonicalAnswer}
-                  </p>
-                  <p className="hint">
-                    Antwort Manual: {candidate.manualCanonicalAnswer ?? "-"}
-                  </p>
-                  <p className="hint">
-                    Antwort Effective: {candidate.effectiveCanonicalAnswer}
-                  </p>
-                  <p className="hint">
-                    Alternative Fragen Auto:{" "}
-                    {candidate.autoAlternativeQuestions.join("; ") || "-"}
-                  </p>
-                  <p className="hint">
-                    Alternative Fragen Manual:{" "}
-                    {candidate.manualAlternativeQuestions?.join("; ") ?? "-"}
-                  </p>
-                  <p className="hint">
-                    Alternative Fragen Effective:{" "}
-                    {candidate.effectiveAlternativeQuestions.join("; ") || "-"}
-                  </p>
-                  <p className="hint">
-                    Parameter Auto: {formatJsonObject(candidate.autoParameters)}
-                  </p>
-                  <p className="hint">
-                    Parameter Manual:{" "}
-                    {formatJsonObject(candidate.manualParameters)}
-                  </p>
-                  <p className="hint">
-                    Parameter Effective:{" "}
-                    {formatJsonObject(candidate.effectiveParameters)}
-                  </p>
-                  <p className="hint">
-                    Externe Datenabhaengigkeiten Auto:{" "}
-                    {candidate.autoExternalDataDependencies.join("; ") || "-"}
-                  </p>
-                  <p className="hint">
-                    Externe Datenabhaengigkeiten Manual:{" "}
-                    {candidate.manualExternalDataDependencies?.join("; ") ??
-                      "-"}
-                  </p>
-                  <p className="hint">
-                    Externe Datenabhaengigkeiten Effective:{" "}
-                    {candidate.effectiveExternalDataDependencies.join("; ") ||
-                      "-"}
-                  </p>
-                  <p className="hint">
-                    Quellen: {candidate.sourcePairCount}; Cluster:{" "}
-                    {candidate.sourceClusterIds.join(", ") || "-"}; Sprache:{" "}
-                    {candidate.language}
-                  </p>
-                  <p className="hint">
-                    Scores: quality {candidate.qualityScore}, FAQ{" "}
-                    {candidate.faqSuitabilityScore}, dynamic{" "}
-                    {candidate.dynamicityScore}, contradiction{" "}
-                    {candidate.contradictionScore}
-                  </p>
-                  <form
-                    className="stack"
-                    onSubmit={(event) => updateCandidate(event, candidate)}
-                  >
-                    <label>
-                      Candidate Typ
-                      <select
-                        name="candidateType"
-                        defaultValue={candidate.candidateType}
-                      >
-                        <option value="static_faq">static_faq</option>
-                        <option value="parameterized_faq">
-                          parameterized_faq
-                        </option>
-                        <option value="dynamic_case">dynamic_case</option>
-                        <option value="text_block">text_block</option>
-                        <option value="single_case">single_case</option>
-                        <option value="not_usable">not_usable</option>
-                      </select>
-                    </label>
-                    <label>
-                      Manueller Status
-                      <select
-                        name="manualStatus"
-                        defaultValue={candidate.manualStatus ?? ""}
-                      >
-                        <option value="">Kein Override</option>
-                        <option value="unreviewed">unreviewed</option>
-                        <option value="in_progress">in_progress</option>
-                        <option value="reviewed">reviewed</option>
-                        <option value="rejected">rejected</option>
-                        <option value="export_ready">export_ready</option>
-                      </select>
-                    </label>
-                    <label>
-                      Manuelle Kategorie
-                      <input
-                        name="manualCategoryPath"
-                        defaultValue={candidate.manualCategoryPath ?? ""}
-                      />
-                    </label>
-                    <label>
-                      Manueller Titel
-                      <input
-                        name="manualTitle"
-                        defaultValue={candidate.manualTitle ?? ""}
-                      />
-                    </label>
-                    <label>
-                      Manuelle Frage
-                      <textarea
-                        name="manualCanonicalQuestion"
-                        defaultValue={candidate.manualCanonicalQuestion ?? ""}
-                      />
-                    </label>
-                    <label>
-                      Manuelle Antwort
-                      <textarea
-                        name="manualCanonicalAnswer"
-                        defaultValue={candidate.manualCanonicalAnswer ?? ""}
-                      />
-                    </label>
-                    <label>
-                      Alternative Fragen, eine pro Zeile
-                      <textarea
-                        name="manualAlternativeQuestions"
-                        defaultValue={
-                          candidate.manualAlternativeQuestions?.join("\n") ?? ""
-                        }
-                      />
-                    </label>
-                    <label>
-                      Parameter JSON
-                      <textarea
-                        name="manualParameters"
-                        defaultValue={
-                          candidate.manualParameters === null
-                            ? ""
-                            : JSON.stringify(candidate.manualParameters)
-                        }
-                      />
-                    </label>
-                    <label>
-                      Externe Datenabhaengigkeiten, eine pro Zeile
-                      <textarea
-                        name="manualExternalDataDependencies"
-                        defaultValue={
-                          candidate.manualExternalDataDependencies?.join(
-                            "\n",
-                          ) ?? ""
-                        }
-                      />
-                    </label>
-                    <label>
-                      Notizen
-                      <textarea
-                        name="notes"
-                        defaultValue={candidate.notes ?? ""}
-                      />
-                    </label>
-                    <button type="submit">Candidate speichern</button>
-                  </form>
-                  <button
-                    type="button"
-                    className="secondary"
-                    onClick={() => inspectCandidateSources(candidate.id)}
-                  >
-                    Candidate Quellen anzeigen
-                  </button>
-                </article>
-              ))}
-            </div>
-            {candidateSources.length > 0 && (
-              <section className="log-detail" aria-label="Candidate Quellen">
-                <h2>Candidate Quellen</h2>
-                {candidateSources.map((source) => (
-                  <article className="user-card" key={source.messagePairId}>
-                    <strong>
-                      {source.ticketid} / {source.messagegroupid}
-                    </strong>
-                    <p className="hint">Message: {source.message}</p>
-                    <p className="hint">Answer: {source.answer}</p>
+                  <label>
+                    Endpoint URL
+                    <input
+                      name="endpointUrl"
+                      defaultValue={vllmProvider?.endpointUrl ?? ""}
+                      placeholder="http://localhost:8000"
+                    />
+                  </label>
+                  <label>
+                    vLLM Modelle
+                    <input
+                      name="manualModels"
+                      defaultValue={vllmProvider?.manualModels.join(", ") ?? ""}
+                      placeholder="local-embed, local-chat"
+                    />
+                  </label>
+                  <div className="provider-meta">
+                    <span className="field-caption">Aktuelle Modelle</span>
                     <p className="hint">
-                      Assignment: {source.assignmentType}; Score:{" "}
-                      {source.membershipScore}; Cluster:{" "}
-                      {source.clusterId ?? "-"}
+                      {vllmProvider?.manualModels.length
+                        ? vllmProvider.manualModels.join(", ")
+                        : "keine"}
                     </p>
-                  </article>
-                ))}
-              </section>
-            )}
-          </section>
-
-          <section id="imports" className="panel-grid">
-            <form
-              className="panel stack"
-              onSubmit={importFile}
-              aria-label="Import starten"
-            >
-              <p className="eyebrow">T004 Import</p>
-              <h2>CSV/JSON importieren</h2>
-              <p className="hint">
-                Erwartete Felder: ticketid, messagegroupid, message, answer.
-                Ungueltige Datensaetze werden uebersprungen und protokolliert.
-              </p>
-              <label>
-                Importdatei
-                <input name="importFile" type="file" accept=".csv,.json" />
-              </label>
-              <button type="submit" disabled={isLoading}>
-                Import starten
-              </button>
-            </form>
-
-            <section className="panel" aria-label="Importprotokolle">
-              <h2>Importprotokolle</h2>
-              <div className="user-list">
-                {importLogs.length === 0 && (
-                  <p className="hint">
-                    Noch keine Imports fuer dieses Projekt.
-                  </p>
-                )}
-                {importLogs.map((log) => (
-                  <article className="user-card" key={log.id}>
-                    <div className="user-heading">
-                      <strong>{log.sourceName}</strong>
-                      <span>{log.status}</span>
-                    </div>
-                    <p className="hint">
-                      Total: {log.totalRecords}; importiert: {log.validRecords};
-                      uebersprungen: {log.skippedRecords}
-                    </p>
-                    {log.failureReason && (
-                      <p className="error">{log.failureReason}</p>
-                    )}
-                    {log.datasetVersionId && (
-                      <p className="hint">
-                        Dataset-Version: {log.datasetVersionId}
-                      </p>
-                    )}
+                  </div>
+                  <div className="form-actions">
+                    <button type="submit">vLLM speichern</button>
                     <button
                       type="button"
                       className="secondary"
-                      onClick={() => inspectImportLog(log.id)}
+                      onClick={() => discoverProviderModels("vllm")}
                     >
-                      Logdetails anzeigen
+                      Modelle abrufen
                     </button>
-                  </article>
-                ))}
-              </div>
-              {importLogEntries.length > 0 && (
-                <div className="log-detail" aria-label="Import Logdetails">
-                  <h2>Validierungsdetails</h2>
-                  {importLogEntries.map((entry) => (
-                    <p
-                      className="hint"
-                      key={`${entry.source_location}-${entry.reason}`}
+                  </div>
+                </form>
+
+                <form
+                  className="panel provider-card stack"
+                  onSubmit={(event) => configureProvider(event, "ollama")}
+                  aria-label="Ollama Provider konfigurieren"
+                >
+                  <div className="panel-title">
+                    <div>
+                      <p className="eyebrow">Lokal</p>
+                      <h2>Ollama</h2>
+                    </div>
+                    <span
+                      className={`provider-status ${ollamaProvider ? "active" : "idle"}`}
                     >
-                      {entry.source_location}: {entry.reason}
+                      {ollamaProvider ? "Konfiguriert" : "Nicht eingerichtet"}
+                    </span>
+                  </div>
+                  <p className="hint">
+                    Ollama verwaltet lokale Modelle. Neue Modelle können hier
+                    heruntergeladen und danach direkt für Analysen verwendet
+                    werden.
+                  </p>
+                  <label>
+                    Endpoint URL
+                    <input
+                      name="endpointUrl"
+                      defaultValue={ollamaProvider?.endpointUrl ?? ""}
+                      placeholder="http://localhost:11434"
+                    />
+                  </label>
+                  <div className="provider-meta">
+                    <span className="field-caption">Installierte Modelle</span>
+                    <p className="hint">
+                      {ollamaProvider?.manualModels.length
+                        ? ollamaProvider.manualModels.join(", ")
+                        : "keine"}
                     </p>
-                  ))}
-                </div>
-              )}
+                  </div>
+                  <div className="form-actions">
+                    <button type="submit">Ollama speichern</button>
+                    <button
+                      type="button"
+                      className="secondary"
+                      onClick={() => discoverProviderModels("ollama")}
+                    >
+                      Modelle abrufen
+                    </button>
+                  </div>
+                  <div className="inline-form provider-pull-row">
+                    <label>
+                      Neues Ollama Modell
+                      <input name="pullModel" placeholder="nomic-embed-text" />
+                    </label>
+                    <button
+                      type="button"
+                      className="secondary"
+                      onClick={(event) => {
+                        const form = event.currentTarget.closest("form");
+                        if (form !== null) {
+                          void pullOllamaModel(form);
+                        }
+                      }}
+                    >
+                      Herunterladen und hinzufügen
+                    </button>
+                  </div>
+                </form>
+              </section>
             </section>
-          </section>
-        </>
-      )}
+          )}
 
-      <section className="panel-grid" aria-label="Project Home Aktionen">
-        <form
-          className="panel stack"
-          onSubmit={createProject}
-          aria-label="Projekt erstellen"
-        >
-          <h2>Projekt erstellen</h2>
-          <label>
-            Projektname
-            <input name="projectName" />
-          </label>
-          <button type="submit" disabled={isLoading}>
-            Projekt erstellen
-          </button>
-        </form>
+          {activePage === "projects" && (
+            <>
+              {currentProject && projectTab === "profiles" && (
+                <section id="profiles" className="panel-grid">
+                  <form
+                    className="panel stack"
+                    onSubmit={createAnalysisProfile}
+                    aria-label="Analyseprofil erstellen"
+                  >
+                    <p className="eyebrow">Profile</p>
+                    <h2>Analyseprofil erstellen</h2>
+                    <p className="hint">
+                      Konfigurierte Modelle: {configuredModelHint}
+                    </p>
+                    <label>
+                      Profilname
+                      <input name="profileName" />
+                    </label>
+                    <label>
+                      Provider
+                      <select name="provider" defaultValue="vllm">
+                        <option value="vllm">vLLM lokal</option>
+                        <option value="ollama">Ollama lokal</option>
+                        <option value="openai">OpenAI Cloud</option>
+                      </select>
+                    </label>
+                    <label>
+                      Modell
+                      <input name="model" placeholder="local-embed" />
+                    </label>
+                    <label>
+                      Similarity Threshold
+                      <input name="similarity" placeholder="0.78" />
+                    </label>
+                    <label>
+                      Algorithmus
+                      <input name="algorithm" placeholder="hdbscan" />
+                    </label>
+                    <label>
+                      Prompt-ID
+                      <input name="promptIdentifier" placeholder="faq-v1" />
+                    </label>
+                    <button type="submit">Profil speichern</button>
+                  </form>
 
-        <section className="panel" aria-label="Bestehende Projekte">
-          <h2>Bestehende Projekte</h2>
-          <div className="user-list">
-            {projects.length === 0 && (
-              <p className="hint">Noch keine Projekte vorhanden.</p>
-            )}
-            {projects.map((project) => (
-              <article className="user-card" key={project.id}>
-                <div className="user-heading">
-                  <strong>{project.name}</strong>
-                  {currentProject?.id === project.id && <span>Geoeffnet</span>}
+                  <section className="panel" aria-label="Analyseprofile">
+                    <h2>Analyseprofile</h2>
+                    <div className="user-list">
+                      {analysisProfiles.length === 0 && (
+                        <p className="hint">
+                          Noch keine Analyseprofile für dieses Projekt.
+                        </p>
+                      )}
+                      {analysisProfiles.map((profile) => (
+                        <article className="user-card" key={profile.id}>
+                          <div className="user-heading">
+                            <strong>{profile.name}</strong>
+                            <span>
+                              {profile.provider}/{profile.model}
+                            </span>
+                          </div>
+                          {profile.isCloudProvider && (
+                            <p className="status warning">
+                              Cloud-Nutzung: OpenAI Profil sendet spätere
+                              Analyseinhalte an den konfigurierten
+                              Cloud-Provider.
+                            </p>
+                          )}
+                          <p className="hint">
+                            Thresholds: {JSON.stringify(profile.thresholds)}
+                          </p>
+                          <p className="hint">
+                            Algorithmus:{" "}
+                            {JSON.stringify(profile.algorithmSettings)}
+                          </p>
+                          {profile.promptIdentifier && (
+                            <p className="hint">
+                              Prompt: {profile.promptIdentifier}
+                            </p>
+                          )}
+                        </article>
+                      ))}
+                    </div>
+                  </section>
+                </section>
+              )}
+
+              {projectTab === "exports" && (
+                <section id="exports" className="panel-grid">
+                  <form
+                    className="panel stack"
+                    onSubmit={(event) => createExport(event, "candidates")}
+                    aria-label="Candidate CSV exportieren"
+                  >
+                    <p className="eyebrow">Export</p>
+                    <h2>Candidate CSV exportieren</h2>
+                    <p className="hint">
+                      Export nutzt die akzeptierten Candidate-Baseline-Spalten
+                      und persistiert Metadaten in der Projektdatenbank.
+                    </p>
+                    <label className="inline-check">
+                      <input name="includeOriginalText" type="checkbox" />
+                      Originaltext bewusst einschliessen
+                    </label>
+                    <p className="status warning">
+                      Warnung: Candidate-Felder können aus Supporttexten
+                      abgeleitet sein. Der Export wird dann auch ohne aktivierte
+                      Checkbox als Originaltext-Export protokolliert.
+                    </p>
+                    <button type="submit">Candidate CSV exportieren</button>
+                  </form>
+
+                  <form
+                    className="panel stack"
+                    onSubmit={(event) =>
+                      createExport(event, "source-assignments")
+                    }
+                    aria-label="Source Assignment CSV exportieren"
+                  >
+                    <p className="eyebrow">Traceability</p>
+                    <h2>Source-Assignment CSV exportieren</h2>
+                    <p className="hint">
+                      Ohne Toggle bleiben die Originalfelder customer_message
+                      und support_answer leer; Traceability-IDs und
+                      normalisierte Felder bleiben enthalten.
+                    </p>
+                    <label className="inline-check">
+                      <input name="includeOriginalText" type="checkbox" />
+                      Originaltext in customer_message/support_answer
+                      einschliessen
+                    </label>
+                    <p className="status warning">
+                      Warnung: Originaltexte sind potentiell identifizierende
+                      Inhalte und sollten nur bewusst exportiert werden.
+                    </p>
+                    <button type="submit">
+                      Source Assignment CSV exportieren
+                    </button>
+                  </form>
+
+                  <section className="panel" aria-label="Exporthistorie">
+                    <h2>Exporthistorie</h2>
+                    <div className="user-list">
+                      {exportLogs.length === 0 && (
+                        <p className="hint">
+                          Noch keine Exporte für dieses Projekt.
+                        </p>
+                      )}
+                      {exportLogs.map((log) => (
+                        <article className="user-card" key={log.id}>
+                          <div className="user-heading">
+                            <strong>{log.outputFilename}</strong>
+                            <span>{log.exportType}</span>
+                          </div>
+                          <p className="hint">
+                            Zeilen: {log.rowCount}; Originaltext:{" "}
+                            {log.includeOriginalText ? "ja" : "nein"}
+                          </p>
+                          <p className="hint">
+                            Dataset-Version: {log.datasetVersionId ?? "-"}; Run:{" "}
+                            {log.analysisRunId ?? "-"}
+                          </p>
+                          <p className="hint">Erstellt: {log.createdAt}</p>
+                          {log.includeOriginalText && (
+                            <p className="status warning">
+                              Dieser Export wurde mit Originaltext erstellt.
+                            </p>
+                          )}
+                        </article>
+                      ))}
+                    </div>
+                    {lastExportCsv && (
+                      <pre
+                        className="log-detail"
+                        aria-label="Letzter CSV Export"
+                      >
+                        {lastExportCsv}
+                      </pre>
+                    )}
+                  </section>
+                </section>
+              )}
+
+              {projectTab === "runs" && (
+                <section id="runs" className="panel-grid">
+                  <form
+                    className="panel stack"
+                    onSubmit={startAnalysisRun}
+                    aria-label="Analyse starten"
+                  >
+                    <p className="eyebrow">Run Monitor</p>
+                    <h2>Analyse starten</h2>
+                    <p className="hint">
+                      Lokale Fixture-Workflows können ohne OpenAI abgeschlossen
+                      werden. OpenAI-Profile bleiben als Cloud-Nutzung sichtbar.
+                    </p>
+                    <label>
+                      Dataset-Version
+                      <select name="datasetVersionId">
+                        {runnableDatasetLogs.map((log) => (
+                          <option
+                            key={log.datasetVersionId ?? log.id}
+                            value={log.datasetVersionId ?? ""}
+                          >
+                            {log.sourceName} / {log.datasetVersionId}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      Analyseprofil
+                      <select name="analysisProfileId">
+                        {analysisProfiles.map((profile) => (
+                          <option key={profile.id} value={profile.id}>
+                            {profile.name} ({profile.provider}/{profile.model})
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      Run-Modus
+                      <input name="runMode" placeholder="fixture" />
+                    </label>
+                    <button
+                      type="submit"
+                      disabled={
+                        runnableDatasetLogs.length === 0 ||
+                        analysisProfiles.length === 0
+                      }
+                    >
+                      Analyse starten
+                    </button>
+                  </form>
+
+                  <section className="panel" aria-label="Analyse Runs">
+                    <h2>Analyse Runs</h2>
+                    <div className="user-list">
+                      {analysisRuns.length === 0 && (
+                        <p className="hint">
+                          Noch keine Analyse-Runs für dieses Projekt.
+                        </p>
+                      )}
+                      {analysisRuns.map((run) => (
+                        <article className="user-card" key={run.id}>
+                          <div className="user-heading">
+                            <strong>{run.status}</strong>
+                            <span>{run.progress}%</span>
+                          </div>
+                          <p className="hint">
+                            Provider/Modell: {run.provider}/{run.model}
+                          </p>
+                          <p className="hint">
+                            Dataset-Version: {run.datasetVersionId}
+                          </p>
+                          <p className="hint">
+                            Profil-Snapshot:{" "}
+                            {String(
+                              run.profileSnapshot.name ?? run.analysisProfileId,
+                            )}
+                          </p>
+                          <p className="hint">
+                            Erstellt: {run.createdAt}; gestartet:{" "}
+                            {run.startedAt ?? "noch nicht"}; abgeschlossen:{" "}
+                            {run.completedAt ?? "noch nicht"}
+                          </p>
+                          {run.errorMessage && (
+                            <p className="error">{run.errorMessage}</p>
+                          )}
+                          <p className="hint">
+                            Diagnose: {JSON.stringify(run.diagnostics)}
+                          </p>
+                        </article>
+                      ))}
+                    </div>
+                  </section>
+                </section>
+              )}
+
+              {projectTab === "clusters" && (
+                <section id="clusters" className="panel-grid">
+                  <section className="panel" aria-label="Cluster Aktionen">
+                    <p className="eyebrow">Cluster Explorer</p>
+                    <h2>Cluster erzeugen</h2>
+                    <p className="hint">
+                      Der MVP-Scaffold nutzt eine lineare deterministische
+                      Gruppierung und markiert Einzelgruppen als Outlier.
+                    </p>
+                    <div className="user-list">
+                      {analysisRuns.length === 0 && (
+                        <p className="hint">
+                          Noch keine Runs für Cluster vorhanden.
+                        </p>
+                      )}
+                      {analysisRuns.map((run) => (
+                        <article
+                          className="user-card"
+                          key={`cluster-action-${run.id}`}
+                        >
+                          <div className="user-heading">
+                            <strong>{run.status}</strong>
+                            <span>{run.model}</span>
+                          </div>
+                          <p className="hint">Run: {run.id}</p>
+                          <button
+                            type="button"
+                            className="secondary"
+                            disabled={run.status !== "completed"}
+                            onClick={() => generateClusters(run.id)}
+                          >
+                            Cluster erzeugen
+                          </button>
+                          <button
+                            type="button"
+                            className="secondary"
+                            onClick={() =>
+                              session &&
+                              currentProject &&
+                              loadClusters(
+                                session.token,
+                                currentProject.id,
+                                run.id,
+                              )
+                            }
+                          >
+                            Cluster laden
+                          </button>
+                        </article>
+                      ))}
+                    </div>
+                  </section>
+
+                  <section className="panel" aria-label="Cluster Explorer">
+                    <h2>Cluster Explorer</h2>
+                    <div className="user-list">
+                      {clusters.length === 0 && (
+                        <p className="hint">Noch keine Cluster geladen.</p>
+                      )}
+                      {clusters.map((cluster) => (
+                        <article className="user-card" key={cluster.id}>
+                          <div className="user-heading">
+                            <strong>{cluster.effectiveTitle}</strong>
+                            <span>
+                              {cluster.isOutlier ? "Outlier" : "Cluster"}
+                            </span>
+                          </div>
+                          <p className="hint">
+                            Auto: {cluster.autoTitle} / {cluster.autoCategory} /{" "}
+                            {cluster.autoStatus}
+                          </p>
+                          <p className="hint">
+                            Manual: {cluster.manualTitle ?? "-"} /{" "}
+                            {cluster.manualCategory ?? "-"} /{" "}
+                            {cluster.manualStatus ?? "-"}
+                          </p>
+                          <p className="hint">
+                            Effective: {cluster.effectiveTitle} /{" "}
+                            {cluster.effectiveCategory ?? "-"} /{" "}
+                            {cluster.effectiveStatus}
+                          </p>
+                          <p className="hint">
+                            Score: {cluster.score}; Quellen:{" "}
+                            {cluster.memberCount}; Algorithmus:{" "}
+                            {cluster.algorithm}
+                          </p>
+                          <form
+                            className="stack"
+                            onSubmit={(event) =>
+                              updateCluster(event, cluster.id)
+                            }
+                          >
+                            <label>
+                              Manueller Titel
+                              <input
+                                name="manualTitle"
+                                defaultValue={cluster.manualTitle ?? ""}
+                              />
+                            </label>
+                            <label>
+                              Manuelle Kategorie
+                              <input
+                                name="manualCategory"
+                                defaultValue={cluster.manualCategory ?? ""}
+                              />
+                            </label>
+                            <label>
+                              Manueller Status
+                              <select
+                                name="manualStatus"
+                                defaultValue={cluster.manualStatus ?? ""}
+                              >
+                                <option value="">Kein Override</option>
+                                <option value="unreviewed">unreviewed</option>
+                                <option value="in_progress">in_progress</option>
+                                <option value="reviewed">reviewed</option>
+                                <option value="rejected">rejected</option>
+                                <option value="outlier">outlier</option>
+                              </select>
+                            </label>
+                            <button type="submit">Overrides speichern</button>
+                          </form>
+                          <button
+                            type="button"
+                            className="secondary"
+                            onClick={() => inspectClusterSources(cluster.id)}
+                          >
+                            Quellen anzeigen
+                          </button>
+                          <button
+                            type="button"
+                            className="secondary"
+                            onClick={() =>
+                              createCandidateFromCluster(cluster.id)
+                            }
+                          >
+                            Candidate erstellen
+                          </button>
+                        </article>
+                      ))}
+                    </div>
+                    {clusterSources.length > 0 && (
+                      <section
+                        className="log-detail"
+                        aria-label="Cluster Quellen"
+                      >
+                        <h2>Quellen</h2>
+                        {clusterSources.map((source) => (
+                          <article
+                            className="user-card"
+                            key={source.messagePairId}
+                          >
+                            <strong>
+                              {source.ticketid} / {source.messagegroupid}
+                            </strong>
+                            <p className="hint">Message: {source.message}</p>
+                            <p className="hint">Answer: {source.answer}</p>
+                            <p className="hint">
+                              Score: {source.membershipScore}; Assignment:{" "}
+                              {source.assignmentType}
+                            </p>
+                          </article>
+                        ))}
+                      </section>
+                    )}
+                  </section>
+                </section>
+              )}
+
+              {projectTab === "candidates" && (
+                <section
+                  id="candidates"
+                  className="panel"
+                  aria-label="Candidate Editor"
+                >
+                  <p className="eyebrow">Candidate Curation</p>
+                  <h2>Candidate Editor</h2>
+                  <p className="hint">
+                    Generierte Werte bleiben erhalten; manuelle Felder bestimmen
+                    die effektiven Kurationswerte.
+                  </p>
+                  <div className="user-list">
+                    {candidates.length === 0 && (
+                      <p className="hint">
+                        Noch keine Candidates für dieses Projekt.
+                      </p>
+                    )}
+                    {candidates.map((candidate) => (
+                      <article className="user-card" key={candidate.id}>
+                        <div className="user-heading">
+                          <strong>{candidate.effectiveTitle}</strong>
+                          <span>
+                            {candidate.candidateType} /{" "}
+                            {candidate.effectiveStatus}
+                          </span>
+                        </div>
+                        <p className="hint">
+                          Auto: {candidate.autoTitle} /{" "}
+                          {candidate.autoCategoryPath ?? "-"} /{" "}
+                          {candidate.autoStatus}
+                        </p>
+                        <p className="hint">
+                          Manual: {candidate.manualTitle ?? "-"} /{" "}
+                          {candidate.manualCategoryPath ?? "-"} /{" "}
+                          {candidate.manualStatus ?? "-"}
+                        </p>
+                        <p className="hint">
+                          Effective: {candidate.effectiveTitle} /{" "}
+                          {candidate.effectiveCategoryPath ?? "-"} /{" "}
+                          {candidate.effectiveStatus}
+                        </p>
+                        <p className="hint">
+                          Frage Auto: {candidate.autoCanonicalQuestion}
+                        </p>
+                        <p className="hint">
+                          Frage Manual:{" "}
+                          {candidate.manualCanonicalQuestion ?? "-"}
+                        </p>
+                        <p className="hint">
+                          Frage Effective:{" "}
+                          {candidate.effectiveCanonicalQuestion}
+                        </p>
+                        <p className="hint">
+                          Antwort Auto: {candidate.autoCanonicalAnswer}
+                        </p>
+                        <p className="hint">
+                          Antwort Manual:{" "}
+                          {candidate.manualCanonicalAnswer ?? "-"}
+                        </p>
+                        <p className="hint">
+                          Antwort Effective:{" "}
+                          {candidate.effectiveCanonicalAnswer}
+                        </p>
+                        <p className="hint">
+                          Alternative Fragen Auto:{" "}
+                          {candidate.autoAlternativeQuestions.join("; ") || "-"}
+                        </p>
+                        <p className="hint">
+                          Alternative Fragen Manual:{" "}
+                          {candidate.manualAlternativeQuestions?.join("; ") ??
+                            "-"}
+                        </p>
+                        <p className="hint">
+                          Alternative Fragen Effective:{" "}
+                          {candidate.effectiveAlternativeQuestions.join("; ") ||
+                            "-"}
+                        </p>
+                        <p className="hint">
+                          Parameter Auto:{" "}
+                          {formatJsonObject(candidate.autoParameters)}
+                        </p>
+                        <p className="hint">
+                          Parameter Manual:{" "}
+                          {formatJsonObject(candidate.manualParameters)}
+                        </p>
+                        <p className="hint">
+                          Parameter Effective:{" "}
+                          {formatJsonObject(candidate.effectiveParameters)}
+                        </p>
+                        <p className="hint">
+                          Externe Datenabhängigkeiten Auto:{" "}
+                          {candidate.autoExternalDataDependencies.join("; ") ||
+                            "-"}
+                        </p>
+                        <p className="hint">
+                          Externe Datenabhängigkeiten Manual:{" "}
+                          {candidate.manualExternalDataDependencies?.join(
+                            "; ",
+                          ) ?? "-"}
+                        </p>
+                        <p className="hint">
+                          Externe Datenabhängigkeiten Effective:{" "}
+                          {candidate.effectiveExternalDataDependencies.join(
+                            "; ",
+                          ) || "-"}
+                        </p>
+                        <p className="hint">
+                          Quellen: {candidate.sourcePairCount}; Cluster:{" "}
+                          {candidate.sourceClusterIds.join(", ") || "-"};
+                          Sprache: {candidate.language}
+                        </p>
+                        <p className="hint">
+                          Scores: quality {candidate.qualityScore}, FAQ{" "}
+                          {candidate.faqSuitabilityScore}, dynamic{" "}
+                          {candidate.dynamicityScore}, contradiction{" "}
+                          {candidate.contradictionScore}
+                        </p>
+                        <form
+                          className="stack"
+                          onSubmit={(event) =>
+                            updateCandidate(event, candidate)
+                          }
+                        >
+                          <label>
+                            Candidate Typ
+                            <select
+                              name="candidateType"
+                              defaultValue={candidate.candidateType}
+                            >
+                              <option value="static_faq">static_faq</option>
+                              <option value="parameterized_faq">
+                                parameterized_faq
+                              </option>
+                              <option value="dynamic_case">dynamic_case</option>
+                              <option value="text_block">text_block</option>
+                              <option value="single_case">single_case</option>
+                              <option value="not_usable">not_usable</option>
+                            </select>
+                          </label>
+                          <label>
+                            Manueller Status
+                            <select
+                              name="manualStatus"
+                              defaultValue={candidate.manualStatus ?? ""}
+                            >
+                              <option value="">Kein Override</option>
+                              <option value="unreviewed">unreviewed</option>
+                              <option value="in_progress">in_progress</option>
+                              <option value="reviewed">reviewed</option>
+                              <option value="rejected">rejected</option>
+                              <option value="export_ready">export_ready</option>
+                            </select>
+                          </label>
+                          <label>
+                            Manuelle Kategorie
+                            <input
+                              name="manualCategoryPath"
+                              defaultValue={candidate.manualCategoryPath ?? ""}
+                            />
+                          </label>
+                          <label>
+                            Manueller Titel
+                            <input
+                              name="manualTitle"
+                              defaultValue={candidate.manualTitle ?? ""}
+                            />
+                          </label>
+                          <label>
+                            Manuelle Frage
+                            <textarea
+                              name="manualCanonicalQuestion"
+                              defaultValue={
+                                candidate.manualCanonicalQuestion ?? ""
+                              }
+                            />
+                          </label>
+                          <label>
+                            Manuelle Antwort
+                            <textarea
+                              name="manualCanonicalAnswer"
+                              defaultValue={
+                                candidate.manualCanonicalAnswer ?? ""
+                              }
+                            />
+                          </label>
+                          <label>
+                            Alternative Fragen, eine pro Zeile
+                            <textarea
+                              name="manualAlternativeQuestions"
+                              defaultValue={
+                                candidate.manualAlternativeQuestions?.join(
+                                  "\n",
+                                ) ?? ""
+                              }
+                            />
+                          </label>
+                          <label>
+                            Parameter JSON
+                            <textarea
+                              name="manualParameters"
+                              defaultValue={
+                                candidate.manualParameters === null
+                                  ? ""
+                                  : JSON.stringify(candidate.manualParameters)
+                              }
+                            />
+                          </label>
+                          <label>
+                            Externe Datenabhängigkeiten, eine pro Zeile
+                            <textarea
+                              name="manualExternalDataDependencies"
+                              defaultValue={
+                                candidate.manualExternalDataDependencies?.join(
+                                  "\n",
+                                ) ?? ""
+                              }
+                            />
+                          </label>
+                          <label>
+                            Notizen
+                            <textarea
+                              name="notes"
+                              defaultValue={candidate.notes ?? ""}
+                            />
+                          </label>
+                          <button type="submit">Candidate speichern</button>
+                        </form>
+                        <button
+                          type="button"
+                          className="secondary"
+                          onClick={() => inspectCandidateSources(candidate.id)}
+                        >
+                          Candidate Quellen anzeigen
+                        </button>
+                      </article>
+                    ))}
+                  </div>
+                  {candidateSources.length > 0 && (
+                    <section
+                      className="log-detail"
+                      aria-label="Candidate Quellen"
+                    >
+                      <h2>Candidate Quellen</h2>
+                      {candidateSources.map((source) => (
+                        <article
+                          className="user-card"
+                          key={source.messagePairId}
+                        >
+                          <strong>
+                            {source.ticketid} / {source.messagegroupid}
+                          </strong>
+                          <p className="hint">Message: {source.message}</p>
+                          <p className="hint">Answer: {source.answer}</p>
+                          <p className="hint">
+                            Assignment: {source.assignmentType}; Score:{" "}
+                            {source.membershipScore}; Cluster:{" "}
+                            {source.clusterId ?? "-"}
+                          </p>
+                        </article>
+                      ))}
+                    </section>
+                  )}
+                </section>
+              )}
+
+              {projectTab === "import" && (
+                <section id="imports" className="panel-grid">
+                  <form
+                    className="panel stack"
+                    onSubmit={importFile}
+                    aria-label="Import starten"
+                  >
+                    <p className="eyebrow">Import</p>
+                    <h2>CSV/JSON importieren</h2>
+                    <p className="hint">
+                      Erwartete Felder: ticketid, messagegroupid, message,
+                      answer. Ungültige Datensätze werden übersprungen und
+                      protokolliert.
+                    </p>
+                    <label>
+                      Importdatei
+                      <input
+                        name="importFile"
+                        type="file"
+                        accept=".csv,.json"
+                      />
+                    </label>
+                    <button type="submit" disabled={isLoading}>
+                      Import starten
+                    </button>
+                  </form>
+
+                  <section className="panel" aria-label="Importprotokolle">
+                    <h2>Importprotokolle</h2>
+                    <div className="user-list">
+                      {importLogs.length === 0 && (
+                        <p className="hint">
+                          Noch keine Imports für dieses Projekt.
+                        </p>
+                      )}
+                      {importLogs.map((log) => (
+                        <article className="user-card" key={log.id}>
+                          <div className="user-heading">
+                            <strong>{log.sourceName}</strong>
+                            <span>{log.status}</span>
+                          </div>
+                          <p className="hint">
+                            Total: {log.totalRecords}; importiert:{" "}
+                            {log.validRecords}; übersprungen:{" "}
+                            {log.skippedRecords}
+                          </p>
+                          {log.failureReason && (
+                            <p className="error">{log.failureReason}</p>
+                          )}
+                          {log.datasetVersionId && (
+                            <p className="hint">
+                              Dataset-Version: {log.datasetVersionId}
+                            </p>
+                          )}
+                          <button
+                            type="button"
+                            className="secondary"
+                            onClick={() => inspectImportLog(log.id)}
+                          >
+                            Logdetails anzeigen
+                          </button>
+                        </article>
+                      ))}
+                    </div>
+                    {importLogEntries.length > 0 && (
+                      <div
+                        className="log-detail"
+                        aria-label="Import Logdetails"
+                      >
+                        <h2>Validierungsdetails</h2>
+                        {importLogEntries.map((entry) => (
+                          <p
+                            className="hint"
+                            key={`${entry.source_location}-${entry.reason}`}
+                          >
+                            {entry.source_location}: {entry.reason}
+                          </p>
+                        ))}
+                      </div>
+                    )}
+                  </section>
+                </section>
+              )}
+              {activePage === "projects" && currentProject === null && (
+                <section
+                  className="panel-grid"
+                  aria-label="Project Home Aktionen"
+                >
+                  <form
+                    className="panel stack"
+                    onSubmit={createProject}
+                    aria-label="Projekt erstellen"
+                  >
+                    <h2>Projekt erstellen</h2>
+                    <label>
+                      Projektname
+                      <input name="projectName" />
+                    </label>
+                    <button type="submit" disabled={isLoading}>
+                      Projekt erstellen
+                    </button>
+                  </form>
+
+                  <section className="panel" aria-label="Bestehende Projekte">
+                    <h2>Bestehende Projekte</h2>
+                    <div className="user-list">
+                      {projects.length === 0 && (
+                        <p className="hint">Noch keine Projekte vorhanden.</p>
+                      )}
+                      {projects.map((project) => (
+                        <article className="user-card" key={project.id}>
+                          <div className="user-heading">
+                            <strong>{project.name}</strong>
+                            <span>{project.updatedAt}</span>
+                          </div>
+                          <label>
+                            Projektname
+                            <input
+                              defaultValue={project.name}
+                              onBlur={(event) =>
+                                renameProject(project.id, event.target.value)
+                              }
+                            />
+                          </label>
+                          <button
+                            type="button"
+                            className="secondary"
+                            onClick={() => openProject(project.id)}
+                          >
+                            Projekt öffnen
+                          </button>
+                        </article>
+                      ))}
+                    </div>
+                  </section>
+                </section>
+              )}
+
+              {currentProject && projectTab === "delete" && (
+                <section className="panel-grid" aria-label="Projekt löschen">
+                  <section className="panel stack">
+                    <p className="eyebrow">Gefahrenbereich</p>
+                    <h2>Projekt löschen</h2>
+                    <p className="hint">
+                      Löscht das Projekt dauerhaft. Zur Bestätigung muss der
+                      Projektname exakt eingegeben werden.
+                    </p>
+                  </section>
+                  <form
+                    className="panel stack"
+                    onSubmit={(event) =>
+                      deleteProject(event, currentProject.id)
+                    }
+                    aria-label="Projekt löschen"
+                  >
+                    <label>
+                      Projektname bestätigen
+                      <input name="confirmationName" />
+                    </label>
+                    <button type="submit" className="danger">
+                      Projekt löschen
+                    </button>
+                  </form>
+                </section>
+              )}
+            </>
+          )}
+
+          {activePage === "settings" && settingsTab === "users" && (
+            <section id="users" className="admin-grid">
+              <form
+                className="panel user-form stack"
+                onSubmit={createUser}
+                aria-label="User anlegen"
+              >
+                <div className="panel-title">
+                  <div>
+                    <p className="eyebrow">Nutzerverwaltung</p>
+                    <h2>Nutzer anlegen</h2>
+                  </div>
                 </div>
                 <label>
-                  Projektname
+                  Name
+                  <input name="name" autoComplete="name" />
+                </label>
+                <label>
+                  E-Mail
+                  <input name="email" type="email" autoComplete="email" />
+                </label>
+                <label>
+                  Initiales Passwort
                   <input
-                    defaultValue={project.name}
-                    onBlur={(event) =>
-                      renameProject(project.id, event.target.value)
-                    }
+                    name="password"
+                    type="password"
+                    autoComplete="new-password"
                   />
                 </label>
-                <button
-                  type="button"
-                  className="secondary"
-                  onClick={() => openProject(project.id)}
-                >
-                  Projekt oeffnen
-                </button>
-                <form
-                  className="stack"
-                  onSubmit={(event) => deleteProject(event, project.id)}
-                >
-                  <label>
-                    Projektname bestaetigen
-                    <input name="confirmationName" />
-                  </label>
-                  <button type="submit" className="danger">
-                    Projekt loeschen
+                <div className="form-actions">
+                  <button type="submit" disabled={isLoading}>
+                    User erstellen
                   </button>
-                </form>
-              </article>
-            ))}
-          </div>
-        </section>
-      </section>
+                </div>
+              </form>
 
-      <section id="users" className="panel-grid">
-        <form
-          className="panel stack"
-          onSubmit={createUser}
-          aria-label="User anlegen"
-        >
-          <h2>User anlegen</h2>
-          <label>
-            Benutzername
-            <input name="username" />
-          </label>
-          <label>
-            Vorname
-            <input name="firstName" />
-          </label>
-          <label>
-            Nachname
-            <input name="lastName" />
-          </label>
-          <label>
-            E-Mail
-            <input name="email" type="email" />
-          </label>
-          <label>
-            Initiales Passwort
-            <input
-              name="password"
-              type="password"
-              autoComplete="new-password"
-            />
-          </label>
-          <button type="submit" disabled={isLoading}>
-            User erstellen
-          </button>
-        </form>
-
-        <section className="panel" aria-label="Bestehende User">
-          <h2>Bestehende User</h2>
-          <div className="user-list">
-            {users.map((user) => {
-              const isSelf = user.id === session.user.id;
-              return (
-                <article className="user-card" key={user.id}>
-                  <div className="user-heading">
-                    <strong>{user.username}</strong>
-                    {isSelf && <span>Aktueller User</span>}
+              <section
+                className="panel users-panel"
+                aria-label="Bestehende User"
+              >
+                <div className="panel-title">
+                  <div>
+                    <p className="eyebrow">Konten</p>
+                    <h2>Aktive Nutzer</h2>
                   </div>
-                  <label>
-                    Benutzername
-                    <input
-                      value={user.username}
-                      onChange={(event) =>
-                        updateUser(user.id, "username", event.target.value)
-                      }
-                    />
-                  </label>
-                  <label>
-                    Vorname
-                    <input
-                      value={user.firstName}
-                      onChange={(event) =>
-                        updateUser(user.id, "firstName", event.target.value)
-                      }
-                    />
-                  </label>
-                  <label>
-                    Nachname
-                    <input
-                      value={user.lastName}
-                      onChange={(event) =>
-                        updateUser(user.id, "lastName", event.target.value)
-                      }
-                    />
-                  </label>
-                  <label>
-                    E-Mail
-                    <input
-                      value={user.email}
-                      onChange={(event) =>
-                        updateUser(user.id, "email", event.target.value)
-                      }
-                    />
-                  </label>
-                  <label>
-                    Neues Passwort fuer diesen User
-                    <input
-                      type="password"
-                      autoComplete="new-password"
-                      onBlur={(event) =>
-                        setPassword(user.id, event.target.value)
-                      }
-                    />
-                  </label>
-                  {passwordNotice && <p className="hint">{passwordNotice}</p>}
-                  <button
-                    type="button"
-                    className="danger"
-                    disabled={isSelf}
-                    onClick={() => deleteUser(user.id)}
-                  >
-                    {isSelf ? "Self-Delete gesperrt" : "User loeschen"}
-                  </button>
-                  {isSelf && (
-                    <p className="hint">
-                      Ein User kann sich nicht selbst loeschen. Das Backend
-                      erzwingt dieselbe Regel.
-                    </p>
-                  )}
-                </article>
-              );
-            })}
-          </div>
+                </div>
+                <div
+                  className="users-table"
+                  role="table"
+                  aria-label="Aktive Nutzer"
+                >
+                  <div className="table-row table-head" role="row">
+                    <span role="columnheader">Name</span>
+                    <span role="columnheader">E-Mail</span>
+                    <span role="columnheader">Passwort</span>
+                    <span role="columnheader">Aktionen</span>
+                  </div>
+                  {users.map((user) => {
+                    const isSelf = user.id === session.user.id;
+                    return (
+                      <div
+                        className="table-row user-row"
+                        role="row"
+                        key={user.id}
+                      >
+                        <span role="cell">
+                          <input
+                            aria-label={`Name für ${user.email}`}
+                            value={user.name}
+                            onChange={(event) =>
+                              updateUser(user.id, "name", event.target.value)
+                            }
+                          />
+                        </span>
+                        <span role="cell">
+                          <input
+                            aria-label={`E-Mail für ${user.email}`}
+                            value={user.email}
+                            onChange={(event) =>
+                              updateUser(user.id, "email", event.target.value)
+                            }
+                          />
+                        </span>
+                        <span role="cell">
+                          <input
+                            aria-label={`Neues Passwort für ${user.email}`}
+                            type="password"
+                            autoComplete="new-password"
+                            onBlur={(event) =>
+                              setPassword(user.id, event.target.value)
+                            }
+                          />
+                        </span>
+                        <span className="row-actions" role="cell">
+                          {isSelf && (
+                            <span className="self-badge">Aktuell</span>
+                          )}
+                          <button
+                            type="button"
+                            className="danger"
+                            disabled={isSelf}
+                            onClick={() => deleteUser(user.id)}
+                            aria-label={
+                              isSelf
+                                ? "Selbstlöschung gesperrt"
+                                : "User löschen"
+                            }
+                            title={
+                              isSelf
+                                ? "Selbstlöschung gesperrt"
+                                : "User löschen"
+                            }
+                          >
+                            <svg
+                              aria-hidden="true"
+                              className="button-icon-svg"
+                              viewBox="0 0 24 24"
+                            >
+                              <path d="M9 3h6l1 2h4v2H4V5h4l1-2Z" />
+                              <path d="M6 9h12l-1 11H7L6 9Zm4 2v7h2v-7h-2Zm4 0v7h2v-7h-2Z" />
+                            </svg>
+                          </button>
+                        </span>
+                        {passwordNotice && (
+                          <p className="hint row-note">{passwordNotice}</p>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </section>
+            </section>
+          )}
         </section>
-      </section>
+      </div>
     </main>
   );
 }

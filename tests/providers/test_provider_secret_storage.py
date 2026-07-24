@@ -79,6 +79,33 @@ class FailingConnection:
         return None
 
 
+class OllamaSeedConnection:
+    def __init__(self) -> None:
+        self.provider: object | None = None
+        self.endpoint_url: object | None = None
+        self.manual_models: object | None = None
+
+    def __enter__(self) -> OllamaSeedConnection:
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        return None
+
+    def transaction(self) -> FakeTransaction:
+        return FakeTransaction()
+
+    def execute(
+        self, query: str, params: tuple[object, ...] | None = None
+    ) -> FakeResult:
+        normalized = " ".join(query.split())
+        if normalized.startswith("INSERT INTO provider_configurations"):
+            assert params is not None
+            self.endpoint_url = params[0]
+            self.manual_models = params[1]
+            return FakeResult()
+        raise AssertionError(f"unexpected query: {normalized}")
+
+
 def test_openai_api_key_is_encrypted_before_database_storage(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -105,6 +132,28 @@ def test_openai_api_key_is_encrypted_before_database_storage(
     assert fake_connection.stored_secret != plaintext
     assert fake_connection.stored_secret.startswith("fernet:")
     assert decrypt_provider_secret(fake_connection.stored_secret) == plaintext
+
+
+def test_ollama_provider_can_be_seeded_from_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_connection = OllamaSeedConnection()
+    monkeypatch.setenv("SKM_OLLAMA_BASE_URL", "http://localhost:11434")
+    monkeypatch.setenv("SKM_OLLAMA_MODELS", "nomic-embed-text, mxbai-embed-large")
+    monkeypatch.setattr(
+        provider_service_module,
+        "open_database_connection",
+        lambda _: fake_connection,
+    )
+
+    ProviderService().seed_ollama_provider_from_env()
+
+    assert fake_connection.endpoint_url == "http://localhost:11434/"
+    assert fake_connection.manual_models is not None
+    assert list(getattr(fake_connection.manual_models, "obj")) == [
+        "nomic-embed-text",
+        "mxbai-embed-large",
+    ]
 
 
 def test_openai_api_key_storage_requires_configured_encryption_key(

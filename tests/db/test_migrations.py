@@ -18,6 +18,7 @@ def test_migration_files_are_ordered() -> None:
         "0007_clusters.sql",
         "0008_candidates.sql",
         "0009_exports.sql",
+        "0010_ollama_provider.sql",
     ]
 
 

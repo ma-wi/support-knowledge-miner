@@ -20,14 +20,13 @@ NOW = datetime(2026, 7, 22, tzinfo=UTC)
 
 def public_user(
     user_id: UUID,
-    username: str,
+    email: str,
     first_name: str = "Local",
     last_name: str = "User",
-    email: str = "user@example.test",
 ) -> PublicUser:
     return PublicUser(
         id=user_id,
-        username=username,
+        username=email,
         first_name=first_name,
         last_name=last_name,
         email=email,
@@ -40,10 +39,9 @@ class FakeAuthService:
     def __init__(self) -> None:
         self.owner = public_user(
             OWNER_ID,
-            "owner",
+            "owner@example.test",
             first_name="Local",
             last_name="Owner",
-            email="owner@example.test",
         )
         self.valid_token = "valid-token"
         self.signed_out = False
@@ -51,9 +49,9 @@ class FakeAuthService:
     def seed_initial_user_from_env(self) -> None:
         return None
 
-    def sign_in(self, username: str, password: str) -> AuthToken:
-        if username != "owner" or password != "owner-password":
-            raise AuthenticationError("invalid username or password")
+    def sign_in(self, email: str, password: str) -> AuthToken:
+        if email != "owner@example.test" or password != "owner-password":
+            raise AuthenticationError("invalid email or password")
         return AuthToken(
             access_token=self.valid_token,
             token_type="bearer",
@@ -85,10 +83,9 @@ class FakeUserService:
         self.users = [
             public_user(
                 OWNER_ID,
-                "owner",
+                "owner@example.test",
                 first_name="Local",
                 last_name="Owner",
-                email="owner@example.test",
             )
         ]
         self.password_updates: list[UUID] = []
@@ -107,10 +104,9 @@ class FakeUserService:
         assert actor_user_id == OWNER_ID
         created = public_user(
             OTHER_ID,
-            data.username,
+            data.email,
             first_name=data.first_name,
             last_name=data.last_name,
-            email=data.email,
         )
         self.users.append(created)
         return created
@@ -123,10 +119,9 @@ class FakeUserService:
             if user.id == user_id:
                 updated = public_user(
                     user_id,
-                    data.username or user.username,
+                    data.email or user.email,
                     first_name=data.first_name or user.first_name,
                     last_name=data.last_name or user.last_name,
-                    email=data.email or user.email,
                 )
                 self.users[index] = updated
                 return updated
@@ -171,21 +166,22 @@ def test_sign_in_success_returns_bearer_token_and_redacted_user(
 ) -> None:
     response = client.post(
         "/api/auth/sign-in",
-        json={"username": "owner", "password": "owner-password"},
+        json={"email": "owner@example.test", "password": "owner-password"},
     )
 
     assert response.status_code == 200
     payload = response.json()
     assert payload["access_token"] == "valid-token"
     assert payload["token_type"] == "bearer"
-    assert payload["user"]["username"] == "owner"
+    assert payload["user"]["email"] == "owner@example.test"
+    assert "username" not in payload["user"]
     assert_no_secret_fields(payload)
 
 
 def test_sign_in_invalid_credentials_are_generic(client: TestClient) -> None:
     response = client.post(
         "/api/auth/sign-in",
-        json={"username": "owner", "password": "wrong"},
+        json={"email": "owner@example.test", "password": "wrong"},
     )
 
     assert response.status_code == 401
@@ -209,14 +205,14 @@ def test_authenticated_user_crud_password_and_self_delete_contract(
 ) -> None:
     users = client.get("/api/users", headers=auth_headers())
     assert users.status_code == 200
-    assert users.json()[0]["username"] == "owner"
+    assert users.json()[0]["email"] == "owner@example.test"
+    assert "username" not in users.json()[0]
     assert_no_secret_fields(users.json())
 
     created = client.post(
         "/api/users",
         headers=auth_headers(),
         json={
-            "username": "curator",
             "first_name": "Support",
             "last_name": "Curator",
             "email": "curator@example.test",
@@ -249,3 +245,22 @@ def test_authenticated_user_crud_password_and_self_delete_contract(
 
     deleted = client.delete(f"/api/users/{OTHER_ID}", headers=auth_headers())
     assert deleted.status_code == 204
+
+
+def test_app_startup_runs_migrations_before_initial_user_seed() -> None:
+    events: list[str] = []
+
+    class StartupAuthService(FakeAuthService):
+        def seed_initial_user_from_env(self) -> None:
+            events.append("seed")
+
+    with TestClient(
+        create_app(
+            auth_service=StartupAuthService(),  # type: ignore[arg-type]
+            user_service=FakeUserService(),  # type: ignore[arg-type]
+            migration_runner=lambda: events.append("migrate"),
+        )
+    ):
+        pass
+
+    assert events == ["migrate", "seed"]

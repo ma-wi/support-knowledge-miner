@@ -39,7 +39,6 @@ POSTGRES_PORT="${POSTGRES_PORT}" docker compose \
   exec -T postgres pg_isready -U "${DB_USER}" -d "${DB_NAME}" >/dev/null
 
 SKM_DATABASE_URL="${DATABASE_URL}" \
-SKM_INITIAL_USERNAME="owner" \
 SKM_INITIAL_PASSWORD="owner-password" \
 SKM_INITIAL_EMAIL="owner@example.test" \
 SKM_INITIAL_FIRST_NAME="Local" \
@@ -53,19 +52,19 @@ from backend.users import CreateUserInput, UpdateUserInput, UserService
 run_migrations()
 auth = AuthService()
 seeded = auth.seed_initial_user_from_env()
-if seeded is None or seeded.username != "owner":
+if seeded is None or seeded.email != "owner@example.test":
     raise SystemExit("initial user was not seeded")
 if auth.seed_initial_user_from_env() is not None:
     raise SystemExit("initial user seed was not one-time")
 
-token = auth.sign_in("owner", "owner-password")
-if token.user.username != "owner" or not token.access_token:
+token = auth.sign_in("owner@example.test", "owner-password")
+if token.user.email != "owner@example.test" or not token.access_token:
     raise SystemExit("sign-in failed")
 current = auth.authenticate_token(token.access_token)
 users = UserService()
 other = users.create_user(
     CreateUserInput(
-        username="curator",
+        username="curator@example.test",
         first_name="Support",
         last_name="Curator",
         email="curator@example.test",
@@ -89,7 +88,7 @@ users.delete_user(other.id, actor_user_id=current.id)
 
 with open_database_connection() as connection:
     owner_row = connection.execute(
-        "SELECT password_hash FROM users WHERE username = 'owner'"
+        "SELECT password_hash FROM users WHERE email = 'owner@example.test'"
     ).fetchone()
     if owner_row is None or owner_row["password_hash"] == "owner-password":
         raise SystemExit("plaintext password was stored")

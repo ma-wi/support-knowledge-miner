@@ -12,14 +12,12 @@ import App from "./App";
 
 const owner = {
   id: "local-owner",
-  username: "owner",
   first_name: "Local",
   last_name: "Owner",
   email: "owner@example.test",
 };
 const curator = {
   id: "local-curator",
-  username: "curator",
   first_name: "Support",
   last_name: "Curator",
   email: "curator@example.test",
@@ -63,6 +61,13 @@ const vllmProvider = {
   provider: "vllm",
   endpoint_url: "http://localhost:8000",
   manual_models: ["local-embed"],
+  api_key_set: false,
+  updated_at: "2026-07-22T00:00:00Z",
+};
+const ollamaProvider = {
+  provider: "ollama",
+  endpoint_url: "http://localhost:11434",
+  manual_models: ["nomic-embed-text"],
   api_key_set: false,
   updated_at: "2026-07-22T00:00:00Z",
 };
@@ -278,7 +283,10 @@ async function signIn(user: ReturnType<typeof userEvent.setup>) {
   if (signInForm === null) {
     throw new Error("sign-in form missing");
   }
-  await user.type(within(signInForm).getByLabelText("Benutzername"), "owner");
+  await user.type(
+    within(signInForm).getByLabelText("E-Mail"),
+    "owner@example.test",
+  );
   await user.type(
     within(signInForm).getByLabelText("Passwort"),
     "owner-password",
@@ -288,6 +296,28 @@ async function signIn(user: ReturnType<typeof userEvent.setup>) {
   );
 }
 
+async function openSettingsTab(
+  user: ReturnType<typeof userEvent.setup>,
+  tabName: "Embedding-Provider" | "Nutzer",
+) {
+  await user.click(screen.getByRole("button", { name: "Einstellungen" }));
+  await user.click(await screen.findByRole("button", { name: tabName }));
+}
+
+async function openProjectTab(
+  user: ReturnType<typeof userEvent.setup>,
+  tabName:
+    | "Profile"
+    | "Import"
+    | "Runs"
+    | "Cluster"
+    | "Kandidaten"
+    | "Export"
+    | "Projekt löschen",
+) {
+  await user.click(await screen.findByRole("button", { name: tabName }));
+}
+
 test("prevents protected user management before sign-in", () => {
   render(<App />);
 
@@ -295,7 +325,7 @@ test("prevents protected user management before sign-in", () => {
     screen.getByRole("heading", { name: "Lokaler Zugriff" }),
   ).toBeInTheDocument();
   expect(
-    screen.queryByRole("heading", { name: "Projektverwaltung" }),
+    screen.queryByRole("heading", { name: "Projekte & Analysen" }),
   ).not.toBeInTheDocument();
 });
 
@@ -312,7 +342,7 @@ test("keeps protected UI closed when backend rejects credentials", async () => {
     "Anmeldung fehlgeschlagen oder Backend nicht erreichbar.",
   );
   expect(
-    screen.queryByRole("heading", { name: "Projektverwaltung" }),
+    screen.queryByRole("heading", { name: "Projekte & Analysen" }),
   ).not.toBeInTheDocument();
 });
 
@@ -327,7 +357,7 @@ test("keeps protected UI closed when backend is unavailable", async () => {
     "Backend nicht erreichbar",
   );
   expect(
-    screen.queryByRole("heading", { name: "Projektverwaltung" }),
+    screen.queryByRole("heading", { name: "Projekte & Analysen" }),
   ).not.toBeInTheDocument();
 });
 
@@ -371,16 +401,18 @@ test("opens user management only after API sign-in and uses bearer token for use
   await signIn(user);
 
   expect(
-    await screen.findByRole("heading", { name: "Projektverwaltung" }),
+    await screen.findByRole("heading", { name: "Projekte & Analysen" }),
+  ).toBeInTheDocument();
+  await openSettingsTab(user, "Nutzer");
+  expect(
+    await screen.findByRole("heading", { name: "Nutzer anlegen" }),
   ).toBeInTheDocument();
   expect(
-    screen.getByRole("button", { name: "Self-Delete gesperrt" }),
+    screen.getByRole("button", { name: "Selbstlöschung gesperrt" }),
   ).toBeDisabled();
 
   const createForm = screen.getByRole("form", { name: "User anlegen" });
-  await user.type(within(createForm).getByLabelText("Benutzername"), "curator");
-  await user.type(within(createForm).getByLabelText("Vorname"), "Support");
-  await user.type(within(createForm).getByLabelText("Nachname"), "Curator");
+  await user.type(within(createForm).getByLabelText("Name"), "Support Curator");
   await user.type(
     within(createForm).getByLabelText("E-Mail"),
     "curator@example.test",
@@ -393,10 +425,14 @@ test("opens user management only after API sign-in and uses bearer token for use
     within(createForm).getByRole("button", { name: "User erstellen" }),
   );
 
-  expect(await screen.findByText("curator")).toBeInTheDocument();
-  await user.click(screen.getByRole("button", { name: "User loeschen" }));
+  expect(
+    await screen.findByDisplayValue("curator@example.test"),
+  ).toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "User löschen" }));
   await waitFor(() =>
-    expect(screen.queryByText("curator")).not.toBeInTheDocument(),
+    expect(
+      screen.queryByDisplayValue("curator@example.test"),
+    ).not.toBeInTheDocument(),
   );
   expect(fetchMock).toHaveBeenCalledWith(
     "/api/auth/sign-in",
@@ -404,7 +440,7 @@ test("opens user management only after API sign-in and uses bearer token for use
   );
 });
 
-test("shows MVP shell navigation and shared empty states after sign-in", async () => {
+test("shows sidebar navigation and settings tabs after sign-in", async () => {
   const user = userEvent.setup();
   mockFetch((input, init) => {
     const path = String(input);
@@ -428,37 +464,191 @@ test("shows MVP shell navigation and shared empty states after sign-in", async (
   await signIn(user);
 
   const navigation = await screen.findByRole("navigation", {
-    name: "MVP Navigation",
+    name: "Hauptnavigation",
   });
-  for (const name of [
-    "Projekt Home",
-    "User",
-    "Provider",
-    "Profile",
-    "Import",
-    "Runs",
-    "Cluster",
-    "Candidates",
-    "Export",
-  ]) {
-    expect(within(navigation).getByRole("link", { name })).toBeInTheDocument();
-  }
+  expect(
+    within(navigation).getByRole("button", { name: "Projekte" }),
+  ).toBeInTheDocument();
+  expect(
+    within(navigation).getByRole("button", { name: "Einstellungen" }),
+  ).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Abmelden" })).toBeInTheDocument();
 
-  const sharedStates = screen.getByRole("region", {
-    name: "Gemeinsame Zustaende",
+  await openSettingsTab(user, "Embedding-Provider");
+  expect(
+    screen.getByRole("button", { name: "Embedding-Provider" }),
+  ).toHaveClass("selected");
+  await user.click(screen.getByRole("button", { name: "Nutzer" }));
+  expect(screen.getByRole("button", { name: "Nutzer" })).toHaveClass(
+    "selected",
+  );
+  expect(
+    screen.queryByRole("region", { name: "Gemeinsame Zustände" }),
+  ).not.toBeInTheDocument();
+  expect(
+    screen.getByRole("heading", { name: "Einstellungen" }),
+  ).toBeInTheDocument();
+});
+
+test("refreshes OpenAI models for an already stored API key", async () => {
+  const user = userEvent.setup();
+  let openAiCheckCount = 0;
+  mockFetch((input, init) => {
+    const path = String(input);
+    const method = init?.method ?? "GET";
+    if (path === "/api/auth/sign-in" && method === "POST") {
+      return jsonResponse({ access_token: "api-token", user: owner });
+    }
+    if (path === "/api/users" && method === "GET") {
+      return jsonResponse([owner]);
+    }
+    if (path === "/api/projects" && method === "GET") {
+      return jsonResponse([]);
+    }
+    if (path === "/api/providers" && method === "GET") {
+      return jsonResponse([openAiProvider]);
+    }
+    if (path === "/api/providers/openai/check" && method === "POST") {
+      openAiCheckCount += 1;
+      expect(new Headers(init?.headers).get("Authorization")).toBe(
+        "Bearer api-token",
+      );
+      return jsonResponse({
+        provider: "openai",
+        ok: true,
+        models: ["text-embedding-3-large"],
+        message: "live calls are not required",
+      });
+    }
+    if (path === "/api/providers/openai" && method === "PUT") {
+      const body = JSON.parse(String(init?.body));
+      expect(body.api_key).toBeUndefined();
+      expect(body.manual_models).toEqual(["text-embedding-3-large"]);
+      return jsonResponse({
+        ...openAiProvider,
+        manual_models: ["text-embedding-3-large"],
+      });
+    }
+    throw new Error(`unexpected request ${method} ${path}`);
   });
-  expect(within(sharedStates).getByText("Loading: bereit")).toBeInTheDocument();
+  render(<App />);
+
+  await signIn(user);
+  await openSettingsTab(user, "Embedding-Provider");
+
+  const openAiForm = await screen.findByRole("form", {
+    name: "OpenAI Provider konfigurieren",
+  });
+  await user.click(
+    within(openAiForm).getByRole("button", { name: "Modelle abrufen" }),
+  );
+
   expect(
-    within(sharedStates).getByText("Empty: keine Projekte"),
+    await within(openAiForm).findByLabelText("text-embedding-3-large"),
+  ).toBeChecked();
+  expect(
+    await screen.findByText("1 OpenAI Modell(e) abgerufen."),
   ).toBeInTheDocument();
   expect(
-    within(sharedStates).getByText(/Provider: noch nicht konfiguriert/),
+    screen.queryByText("live calls are not required"),
+  ).not.toBeInTheDocument();
+  expect(openAiCheckCount).toBeGreaterThanOrEqual(1);
+});
+
+test("configures Ollama and refreshes local models", async () => {
+  const user = userEvent.setup();
+  let ollamaSaveCount = 0;
+  mockFetch((input, init) => {
+    const path = String(input);
+    const method = init?.method ?? "GET";
+    if (path === "/api/auth/sign-in" && method === "POST") {
+      return jsonResponse({ access_token: "api-token", user: owner });
+    }
+    if (path === "/api/users" && method === "GET") {
+      return jsonResponse([owner]);
+    }
+    if (path === "/api/projects" && method === "GET") {
+      return jsonResponse([]);
+    }
+    if (path === "/api/providers" && method === "GET") {
+      return jsonResponse([]);
+    }
+    if (path === "/api/providers/ollama" && method === "PUT") {
+      ollamaSaveCount += 1;
+      const body = JSON.parse(String(init?.body));
+      expect(body.endpoint_url).toBe("http://localhost:11434");
+      expect(body.manual_models).toEqual(
+        ollamaSaveCount === 1 ? [] : ["nomic-embed-text", "mxbai-embed-large"],
+      );
+      return jsonResponse({
+        ...ollamaProvider,
+        manual_models: body.manual_models,
+      });
+    }
+    if (path === "/api/providers/ollama/check" && method === "POST") {
+      return jsonResponse({
+        provider: "ollama",
+        ok: true,
+        models: ["nomic-embed-text", "mxbai-embed-large"],
+        message: "Ollama models discovered",
+      });
+    }
+    if (path === "/api/providers/ollama/pull" && method === "POST") {
+      const body = JSON.parse(String(init?.body));
+      expect(body.model).toBe("embeddinggemma");
+      return jsonResponse({
+        ...ollamaProvider,
+        manual_models: [
+          "nomic-embed-text",
+          "mxbai-embed-large",
+          "embeddinggemma",
+        ],
+      });
+    }
+    throw new Error(`unexpected request ${method} ${path}`);
+  });
+  render(<App />);
+
+  await signIn(user);
+  await openSettingsTab(user, "Embedding-Provider");
+
+  const ollamaForm = await screen.findByRole("form", {
+    name: "Ollama Provider konfigurieren",
+  });
+  await user.type(
+    within(ollamaForm).getByLabelText("Endpoint URL"),
+    "http://localhost:11434",
+  );
+  expect(within(ollamaForm).queryByLabelText("Ollama Modelle")).toBeNull();
+  await user.click(
+    within(ollamaForm).getByRole("button", { name: "Ollama speichern" }),
+  );
+
+  expect(
+    await screen.findByText("Ollama Provider gespeichert."),
+  ).toBeInTheDocument();
+  await user.click(
+    within(ollamaForm).getByRole("button", { name: "Modelle abrufen" }),
+  );
+  expect(
+    await screen.findByText(/nomic-embed-text, mxbai-embed-large/),
+  ).toBeInTheDocument();
+  await user.type(
+    within(ollamaForm).getByLabelText("Neues Ollama Modell"),
+    "embeddinggemma",
+  );
+  await user.click(
+    within(ollamaForm).getByRole("button", {
+      name: "Herunterladen und hinzufügen",
+    }),
+  );
+  expect(
+    await screen.findByText("Ollama Modell embeddinggemma wurde hinzugefügt."),
   ).toBeInTheDocument();
   expect(
-    within(sharedStates).getByText(/Projektkontext: kein Projekt geoeffnet/),
-  ).toBeInTheDocument();
-  expect(
-    within(sharedStates).getByText(/lokale Session aktiv/),
+    await screen.findByText(
+      /nomic-embed-text, mxbai-embed-large, embeddinggemma/,
+    ),
   ).toBeInTheDocument();
 });
 
@@ -527,19 +717,6 @@ test("allows signed-in users to create open rename and delete projects with conf
   if (betaCard === null) {
     throw new Error("project card missing");
   }
-  await user.click(
-    within(betaCard).getByRole("button", { name: "Projekt oeffnen" }),
-  );
-  expect(
-    await screen.findByText(
-      "Status: active; zuletzt aktualisiert: 2026-07-22T00:00:00Z",
-    ),
-  ).toBeInTheDocument();
-
-  betaCard = within(projectList).getByText("Beta").closest("article");
-  if (betaCard === null) {
-    throw new Error("project card missing");
-  }
   const nameInput = within(betaCard).getByLabelText("Projektname");
   await user.clear(nameInput);
   await user.type(nameInput, "Beta renamed");
@@ -552,18 +729,42 @@ test("allows signed-in users to create open rename and delete projects with conf
   if (betaCard === null) {
     throw new Error("renamed project card missing");
   }
-  const deleteForm = within(betaCard)
-    .getByRole("button", { name: "Projekt loeschen" })
-    .closest("form");
-  if (deleteForm === null) {
-    throw new Error("delete form missing");
+  await user.click(
+    within(betaCard).getByRole("button", { name: "Projekt öffnen" }),
+  );
+  expect(
+    await screen.findByText(
+      "Status: active; zuletzt aktualisiert: 2026-07-22T00:00:00Z",
+    ),
+  ).toBeInTheDocument();
+  expect(
+    screen.queryByRole("region", { name: "Bestehende Projekte" }),
+  ).not.toBeInTheDocument();
+
+  await user.click(screen.getByRole("button", { name: "Projekte" }));
+  expect(
+    await screen.findByRole("region", { name: "Bestehende Projekte" }),
+  ).toBeInTheDocument();
+  const reopenedProjectList = screen.getByRole("region", {
+    name: "Bestehende Projekte",
+  });
+  const reopenedBetaCard = within(reopenedProjectList)
+    .getByText("Beta renamed")
+    .closest("article");
+  if (reopenedBetaCard === null) {
+    throw new Error("reopened project card missing");
   }
+  await user.click(
+    within(reopenedBetaCard).getByRole("button", { name: "Projekt öffnen" }),
+  );
+  await openProjectTab(user, "Projekt löschen");
+  const deleteForm = screen.getByRole("form", { name: "Projekt löschen" });
   await user.type(
-    within(deleteForm).getByLabelText("Projektname bestaetigen"),
+    within(deleteForm).getByLabelText("Projektname bestätigen"),
     "Beta renamed",
   );
   await user.click(
-    within(deleteForm).getByRole("button", { name: "Projekt loeschen" }),
+    within(deleteForm).getByRole("button", { name: "Projekt löschen" }),
   );
   await waitFor(() =>
     expect(screen.queryByText("Beta renamed")).not.toBeInTheDocument(),
@@ -650,8 +851,9 @@ test("imports a selected CSV file and shows persisted log details", async () => 
     throw new Error("alpha project card missing");
   }
   await user.click(
-    within(alphaCard).getByRole("button", { name: "Projekt oeffnen" }),
+    within(alphaCard).getByRole("button", { name: "Projekt öffnen" }),
   );
+  await openProjectTab(user, "Import");
 
   const importForm = await screen.findByRole("form", {
     name: "Import starten",
@@ -688,6 +890,7 @@ test("imports a selected CSV file and shows persisted log details", async () => 
 
 test("configures providers and creates a project analysis profile", async () => {
   const user = userEvent.setup();
+  let openAiSaveCount = 0;
   mockFetch((input, init) => {
     const path = String(input);
     const method = init?.method ?? "GET";
@@ -704,11 +907,30 @@ test("configures providers and creates a project analysis profile", async () => 
       return jsonResponse([]);
     }
     if (path === "/api/providers/openai" && method === "PUT") {
+      openAiSaveCount += 1;
       expect(new Headers(init?.headers).get("Authorization")).toBe(
         "Bearer api-token",
       );
-      expect(String(init?.body)).toContain("sk-test-secret");
-      return jsonResponse(openAiProvider);
+      const body = JSON.parse(String(init?.body));
+      if (openAiSaveCount === 1) {
+        expect(body.api_key).toBe("sk-test-secret");
+        expect(body.manual_models).toEqual([]);
+        return jsonResponse(openAiProvider);
+      }
+      expect(body.api_key).toBeUndefined();
+      expect(body.manual_models).toEqual(["text-embedding-3-small"]);
+      return jsonResponse({
+        ...openAiProvider,
+        manual_models: ["text-embedding-3-small"],
+      });
+    }
+    if (path === "/api/providers/openai/check" && method === "POST") {
+      return jsonResponse({
+        provider: "openai",
+        ok: true,
+        models: ["text-embedding-3-small"],
+        message: "OpenAI embedding models discovered",
+      });
     }
     if (path === "/api/providers/vllm" && method === "PUT") {
       expect(String(init?.body)).toContain("http://localhost:8000");
@@ -845,7 +1067,7 @@ test("configures providers and creates a project analysis profile", async () => 
           csv_content:
             "candidate_id,candidate_type,status\\ncandidate-1,parameterized_faq,export_ready\\n",
           warning:
-            "Export enthaelt Originaltext und damit potentiell identifizierende Inhalte.",
+            "Export enthält Originaltext und damit potentiell identifizierende Inhalte.",
         },
         { status: 201 },
       );
@@ -871,6 +1093,7 @@ test("configures providers and creates a project analysis profile", async () => 
   render(<App />);
 
   await signIn(user);
+  await openSettingsTab(user, "Embedding-Provider");
 
   const openAiForm = await screen.findByRole("form", {
     name: "OpenAI Provider konfigurieren",
@@ -879,15 +1102,14 @@ test("configures providers and creates a project analysis profile", async () => 
     within(openAiForm).getByLabelText("Neuer OpenAI API-Key"),
     "sk-test-secret",
   );
-  await user.type(
-    within(openAiForm).getByLabelText("OpenAI Modelle"),
-    "gpt-4.1-mini",
-  );
   await user.click(
     within(openAiForm).getByRole("button", { name: "OpenAI speichern" }),
   );
 
   expect(await screen.findByText("API-Key gesetzt")).toBeInTheDocument();
+  expect(
+    await within(openAiForm).findByLabelText("text-embedding-3-small"),
+  ).toBeChecked();
   expect(screen.queryByText("sk-test-secret")).not.toBeInTheDocument();
 
   const vllmForm = screen.getByRole("form", {
@@ -905,6 +1127,8 @@ test("configures providers and creates a project analysis profile", async () => 
     within(vllmForm).getByRole("button", { name: "vLLM speichern" }),
   );
 
+  await user.click(screen.getByRole("button", { name: "Projekte" }));
+
   const projectList = await screen.findByRole("region", {
     name: "Bestehende Projekte",
   });
@@ -913,8 +1137,9 @@ test("configures providers and creates a project analysis profile", async () => 
     throw new Error("alpha project card missing");
   }
   await user.click(
-    within(alphaCard).getByRole("button", { name: "Projekt oeffnen" }),
+    within(alphaCard).getByRole("button", { name: "Projekt öffnen" }),
   );
+  await openProjectTab(user, "Profile");
 
   const profileForm = await screen.findByRole("form", {
     name: "Analyseprofil erstellen",
@@ -938,6 +1163,7 @@ test("configures providers and creates a project analysis profile", async () => 
   expect(screen.getByText("vllm/local-embed")).toBeInTheDocument();
   expect(screen.getByText(/"similarity":0.78/)).toBeInTheDocument();
 
+  await openProjectTab(user, "Runs");
   const runForm = await screen.findByRole("form", {
     name: "Analyse starten",
   });
@@ -959,6 +1185,7 @@ test("configures providers and creates a project analysis profile", async () => 
   ).toBeGreaterThan(0);
   expect(within(runsRegion).getByText(/Diagnose: {}/)).toBeInTheDocument();
 
+  await openProjectTab(user, "Cluster");
   const clusterActions = await screen.findByRole("region", {
     name: "Cluster Aktionen",
   });
@@ -1046,6 +1273,7 @@ test("configures providers and creates a project analysis profile", async () => 
       name: "Candidate erstellen",
     }),
   );
+  await openProjectTab(user, "Kandidaten");
 
   const candidateEditor = await screen.findByRole("region", {
     name: "Candidate Editor",
@@ -1112,7 +1340,7 @@ test("configures providers and creates a project analysis profile", async () => 
   });
   await user.type(
     within(candidateCard).getByLabelText(
-      "Externe Datenabhaengigkeiten, eine pro Zeile",
+      "Externe Datenabhängigkeiten, eine pro Zeile",
     ),
     "identity-service",
   );
@@ -1163,6 +1391,7 @@ test("configures providers and creates a project analysis profile", async () => 
     within(candidateSources).getByText("Answer: Use the reset link."),
   ).toBeInTheDocument();
 
+  await openProjectTab(user, "Export");
   const candidateExportForm = await screen.findByRole("form", {
     name: "Candidate CSV exportieren",
   });
@@ -1172,7 +1401,7 @@ test("configures providers and creates a project analysis profile", async () => 
     }),
   );
   expect(
-    await screen.findByText(/Export enthaelt Originaltext/),
+    await screen.findByText(/Export enthält Originaltext/),
   ).toBeInTheDocument();
 
   const sourceExportForm = screen.getByRole("form", {
@@ -1265,8 +1494,9 @@ test("does not save untouched generated candidate multi-value fields as empty ma
     throw new Error("alpha project card missing");
   }
   await user.click(
-    within(alphaCard).getByRole("button", { name: "Projekt oeffnen" }),
+    within(alphaCard).getByRole("button", { name: "Projekt öffnen" }),
   );
+  await openProjectTab(user, "Kandidaten");
 
   const candidateEditor = await screen.findByRole("region", {
     name: "Candidate Editor",
@@ -1299,15 +1529,15 @@ test("does not save untouched generated candidate multi-value fields as empty ma
   ).toBeInTheDocument();
   expect(
     within(candidateEditor).getByText(
-      /Externe Datenabhaengigkeiten Auto: identity-service/,
+      /Externe Datenabhängigkeiten Auto: identity-service/,
     ),
   ).toBeInTheDocument();
   expect(
-    within(candidateEditor).getByText(/Externe Datenabhaengigkeiten Manual: -/),
+    within(candidateEditor).getByText(/Externe Datenabhängigkeiten Manual: -/),
   ).toBeInTheDocument();
   expect(
     within(candidateEditor).getByText(
-      /Externe Datenabhaengigkeiten Effective: identity-service/,
+      /Externe Datenabhängigkeiten Effective: identity-service/,
     ),
   ).toBeInTheDocument();
   const candidateCard = within(candidateEditor)

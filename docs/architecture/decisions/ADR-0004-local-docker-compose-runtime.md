@@ -12,7 +12,7 @@ The first delivery must run locally, not on a server. The local environment has 
 
 ## Decision
 
-Use Docker Compose as the local MVP runtime. Compose must provide PostgreSQL/pgvector with persistent volume and a vLLM service or configurable vLLM endpoint path. Local model/analysis workloads should use GPU by default where available, with CPU fallback required for compatibility and tests.
+Use Docker Compose as the local MVP runtime. Compose must provide PostgreSQL/pgvector with persistent volume and Ollama/vLLM services or configurable local endpoint paths. Local model/analysis workloads should use GPU by default where available, with CPU fallback required for compatibility and tests.
 
 ## Alternatives considered
 
@@ -32,7 +32,7 @@ Use Docker Compose as the local MVP runtime. Compose must provide PostgreSQL/pgv
 ### Negative
 
 - GPU Compose configuration can vary by host and driver setup.
-- vLLM images/models may be large.
+- Local model images and caches may be large.
 
 ### Risks and mitigations
 

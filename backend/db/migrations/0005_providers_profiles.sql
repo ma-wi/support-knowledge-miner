@@ -8,7 +8,7 @@ CREATE TABLE IF NOT EXISTS provider_configurations (
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now(),
     CONSTRAINT provider_configurations_provider_check CHECK (
-        provider IN ('openai', 'vllm')
+        provider IN ('openai', 'ollama', 'vllm')
     ),
     CONSTRAINT provider_configurations_manual_models_array_check CHECK (
         jsonb_typeof(manual_models) = 'array'
@@ -30,7 +30,9 @@ CREATE TABLE IF NOT EXISTS analysis_profiles (
     updated_by_user_id uuid REFERENCES users(id) ON DELETE SET NULL,
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now(),
-    CONSTRAINT analysis_profiles_provider_check CHECK (provider IN ('openai', 'vllm')),
+    CONSTRAINT analysis_profiles_provider_check CHECK (
+        provider IN ('openai', 'ollama', 'vllm')
+    ),
     CONSTRAINT analysis_profiles_name_nonempty_check CHECK (length(btrim(name)) > 0),
     CONSTRAINT analysis_profiles_model_nonempty_check CHECK (length(btrim(model)) > 0),
     CONSTRAINT analysis_profiles_thresholds_object_check CHECK (

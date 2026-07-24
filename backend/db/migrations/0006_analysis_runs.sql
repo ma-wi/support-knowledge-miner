@@ -22,7 +22,9 @@ CREATE TABLE IF NOT EXISTS analysis_runs (
     CONSTRAINT analysis_runs_progress_range_check CHECK (
         progress >= 0 AND progress <= 100
     ),
-    CONSTRAINT analysis_runs_provider_check CHECK (provider IN ('openai', 'vllm')),
+    CONSTRAINT analysis_runs_provider_check CHECK (
+        provider IN ('openai', 'ollama', 'vllm')
+    ),
     CONSTRAINT analysis_runs_profile_snapshot_object_check CHECK (
         jsonb_typeof(profile_snapshot) = 'object'
     ),

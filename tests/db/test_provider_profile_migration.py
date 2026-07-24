@@ -13,6 +13,7 @@ def test_provider_profile_migration_defines_global_settings_and_profiles() -> No
     assert "CREATE TABLE IF NOT EXISTS provider_configurations" in migration
     assert "api_key_secret text" in migration
     assert "CONSTRAINT provider_configurations_provider_check" in migration
+    assert "provider IN ('openai', 'ollama', 'vllm')" in migration
     assert "CREATE TABLE IF NOT EXISTS analysis_profiles" in migration
     assert (
         "project_id uuid NOT NULL REFERENCES projects(id) ON DELETE CASCADE"
@@ -20,3 +21,18 @@ def test_provider_profile_migration_defines_global_settings_and_profiles() -> No
     )
     assert "CONSTRAINT analysis_profiles_project_name_unique" in migration
     assert "api_key_plaintext" not in migration
+
+
+def test_ollama_provider_migration_extends_existing_constraints() -> None:
+    migration = (
+        resources.files("backend.db.migrations")
+        .joinpath("0010_ollama_provider.sql")
+        .read_text(encoding="utf-8")
+    )
+
+    assert (
+        "DROP CONSTRAINT IF EXISTS provider_configurations_provider_check" in migration
+    )
+    assert "DROP CONSTRAINT IF EXISTS analysis_profiles_provider_check" in migration
+    assert "DROP CONSTRAINT IF EXISTS analysis_runs_provider_check" in migration
+    assert "provider IN ('openai', 'ollama', 'vllm')" in migration

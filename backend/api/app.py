@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from datetime import datetime
 from uuid import UUID
@@ -63,7 +63,6 @@ class UserResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
-    username: str
     first_name: str
     last_name: str
     email: str
@@ -72,7 +71,7 @@ class UserResponse(BaseModel):
 
 
 class SignInRequest(BaseModel):
-    username: str = Field(min_length=1)
+    email: str = Field(min_length=1)
     password: str = Field(min_length=1)
 
 
@@ -84,7 +83,6 @@ class AuthTokenResponse(BaseModel):
 
 
 class CreateUserRequest(BaseModel):
-    username: str = Field(min_length=1)
     first_name: str = Field(min_length=1)
     last_name: str = Field(min_length=1)
     email: str = Field(min_length=1)
@@ -92,7 +90,6 @@ class CreateUserRequest(BaseModel):
 
 
 class UpdateUserRequest(BaseModel):
-    username: str | None = Field(default=None, min_length=1)
     first_name: str | None = Field(default=None, min_length=1)
     last_name: str | None = Field(default=None, min_length=1)
     email: str | None = Field(default=None, min_length=1)
@@ -192,6 +189,10 @@ class ProviderCheckResponse(BaseModel):
     ok: bool
     models: list[str]
     message: str
+
+
+class OllamaPullRequest(BaseModel):
+    model: str = Field(min_length=1)
 
 
 class AnalysisProfileRequest(BaseModel):
@@ -537,6 +538,7 @@ def create_app(
     cluster_service: ClusterService | None = None,
     candidate_service: CandidateService | None = None,
     export_service: ExportService | None = None,
+    migration_runner: Callable[[], object] | None = None,
 ) -> FastAPI:
     auth_service = auth_service or AuthService(settings)
     user_service = user_service or UserService(settings)
@@ -550,7 +552,10 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+        if migration_runner is not None:
+            migration_runner()
         auth_service.seed_initial_user_from_env()
+        provider_service.seed_ollama_provider_from_env()
         yield
 
     app = FastAPI(title="Support Knowledge Miner API", lifespan=lifespan)
@@ -578,7 +583,7 @@ def create_app(
     @app.post("/api/auth/sign-in", response_model=AuthTokenResponse)
     def sign_in(payload: SignInRequest) -> AuthTokenResponse:
         try:
-            token = auth_service.sign_in(payload.username, payload.password)
+            token = auth_service.sign_in(payload.email, payload.password)
         except AuthenticationError as exc:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -782,6 +787,25 @@ def create_app(
                 status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
             ) from exc
         return _provider_check_response(result)
+
+    @app.post(
+        "/api/providers/ollama/pull",
+        response_model=ProviderConfigurationResponse,
+    )
+    def pull_ollama_model(
+        payload: OllamaPullRequest,
+        actor: CurrentUser = Depends(current_user),
+    ) -> ProviderConfigurationResponse:
+        try:
+            configuration = provider_service.pull_ollama_model(
+                payload.model,
+                actor_user_id=actor.id,
+            )
+        except ProviderError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+            ) from exc
+        return _provider_response(configuration)
 
     @app.get(
         "/api/projects/{project_id}/analysis-profiles",
@@ -1143,7 +1167,7 @@ def create_app(
         try:
             user = user_service.create_user(
                 CreateUserInput(
-                    username=payload.username,
+                    username=payload.email,
                     first_name=payload.first_name,
                     last_name=payload.last_name,
                     email=payload.email,
@@ -1167,7 +1191,7 @@ def create_app(
             user = user_service.update_user(
                 user_id,
                 UpdateUserInput(
-                    username=payload.username,
+                    username=payload.email,
                     first_name=payload.first_name,
                     last_name=payload.last_name,
                     email=payload.email,

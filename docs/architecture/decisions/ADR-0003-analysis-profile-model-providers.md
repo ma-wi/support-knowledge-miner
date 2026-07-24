@@ -8,19 +8,18 @@
 
 ## Context
 
-Users need to test different embedding and language models, thresholds, prompts, and algorithms. The MVP must support OpenAI cloud models and one local model provider. Provider connection settings such as OpenAI API keys and vLLM endpoints are shared application configuration, while model and analysis settings vary per project analysis profile.
+Users need to test different embedding and language models, thresholds, prompts, and algorithms. The MVP must support OpenAI cloud models and local Ollama/vLLM providers. Provider connection settings such as OpenAI API keys and vLLM endpoints are shared application configuration, while model and analysis settings vary per project analysis profile.
 
 ## Decision
 
-Store provider connection and credential configuration globally. Store model selection and analysis parameters per `AnalysisProfile` within a project. A project may contain multiple analysis profiles. Each analysis run references a profile snapshot so past runs remain reproducible. OpenAI is the first cloud provider. vLLM is the MVP local provider. Provider/model selection must be explicit and configured through the UI; the system must not silently switch providers.
+Store provider connection and credential configuration globally. Store model selection and analysis parameters per `AnalysisProfile` within a project. A project may contain multiple analysis profiles. Each analysis run references a profile snapshot so past runs remain reproducible. OpenAI is the first cloud provider. Ollama and vLLM are supported local providers. Provider/model selection must be explicit and configured through the UI; the system must not silently switch providers.
 
-OpenAI API keys must not be returned in plaintext-readable form after storage. vLLM endpoint settings and model discovery/manual model configuration must support multiple exposed local models that profiles can select.
+OpenAI API keys must not be returned in plaintext-readable form after storage. Ollama/vLLM endpoint settings and model discovery/manual model configuration must support multiple exposed local models that profiles can select.
 
 ## Alternatives considered
 
-- Analysis-profile scoped provider credentials/endpoints: rejected because API keys and vLLM connection settings should be configured once and reused.
+- Analysis-profile scoped provider credentials/endpoints: rejected because API keys and local-provider connection settings should be configured once and reused.
 - Project-level provider setting only: rejected because one project may compare multiple model/profile combinations.
-- Supporting both Ollama and vLLM in MVP: rejected to keep first local-provider scope reviewable; vLLM is sufficient.
 
 ## Consequences
 

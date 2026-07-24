@@ -39,7 +39,6 @@ POSTGRES_PORT="${POSTGRES_PORT}" docker compose \
   exec -T postgres pg_isready -U "${DB_USER}" -d "${DB_NAME}" >/dev/null
 
 SKM_DATABASE_URL="${DATABASE_URL}" \
-SKM_INITIAL_USERNAME="owner" \
 SKM_INITIAL_PASSWORD="owner-password" \
 SKM_INITIAL_EMAIL="owner@example.test" \
 SKM_INITIAL_FIRST_NAME="Local" \
@@ -66,7 +65,7 @@ for attempt in range(30):
 with TestClient(create_app()) as client:
     token_response = client.post(
         "/api/auth/sign-in",
-        json={"username": "owner", "password": "owner-password"},
+        json={"email": "owner@example.test", "password": "owner-password"},
     )
     if token_response.status_code != 200:
         raise SystemExit(f"sign-in failed: {token_response.status_code}")

@@ -28,6 +28,16 @@ def test_compose_defines_vllm_gpu_and_cpu_paths_with_persistent_cache() -> None:
     assert "vllm-cache:" in compose
 
 
+def test_compose_defines_ollama_path_with_persistent_model_store() -> None:
+    compose = COMPOSE_FILE.read_text(encoding="utf-8")
+    assert "ollama:" in compose
+    assert 'profiles: ["ollama"]' in compose
+    assert "ollama/ollama:latest" in compose
+    assert "11434" in compose
+    assert "ollama-data:/root/.ollama" in compose
+    assert "ollama-data:" in compose
+
+
 def test_postgres_smoke_script_verifies_migration_health_and_restart_persistence() -> (
     None
 ):

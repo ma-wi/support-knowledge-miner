@@ -1,13 +1,10 @@
 # Feature specification: Support Knowledge Miner MVP 1
 
-Store accepted specifications at `docs/specifications/<requirement-id>.md` so they remain available after temporary implementation artifacts are removed.
-
 - Requirement ID: support-knowledge-miner-mvp1
-- Status: ready-for-implementation
+- Status: accepted
 - Requirement source: `docs/requirements/support-knowledge-miner-mvp1.md`
-- Discovery artifact, if used: `.ai/work/support-knowledge-miner-mvp1/DISCOVERY.md`
 - Decision owner: User
-- Last updated: 2026-07-19
+- Last reviewed: 2026-07-23
 
 ## Purpose
 
@@ -21,16 +18,15 @@ Support Knowledge Miner MVP 1 provides a local-first project workspace for impor
 - `DatasetVersion`: immutable version of imported valid source records within one project.
 - `MessagePair`: one already-paired customer message and support answer imported from CSV or JSON.
 - `AnalysisProfile`: project-scoped configuration for provider/model, algorithms, prompts, thresholds, and runtime parameters.
-- `ProviderConfiguration`: global connection and credential configuration for providers such as OpenAI and vLLM.
-- `User`: authenticated local application user with username, first name, last name, email, and password hash.
+- `ProviderConfiguration`: global connection and credential configuration for providers such as OpenAI, Ollama, and vLLM.
+- `User`: authenticated local application user with first name, last name, email, and password hash. The email address is the login identifier.
 - `AnalysisRun`: one execution of one analysis profile over one dataset version.
 - `Embedding`: persisted vector representation associated with a source text, text variant, segment, cluster, or candidate as applicable.
 - `Cluster`: automatically generated grouping of semantically/structurally similar records or derived items.
 - `Candidate`: curated support knowledge item such as static FAQ, parameterized FAQ, dynamic case, text block, single case, or not usable.
 - `ManualOverride`: user-provided change that supersedes an automatic value while preserving the automatic source value.
 - `ImportLog`: persisted report of import outcome, including skipped rows/objects and reasons.
-- Existing behavior or constraints: Repository currently contains bootstrap Python/React structure; this specification defines product behavior, not implementation details.
-- Terminology conflicts to resolve: The draft Lastenheft referenced MongoDB. Discovery supersedes that: PostgreSQL with pgvector is accepted as the primary database.
+- Terminology decision: PostgreSQL with pgvector supersedes the draft Lastenheft reference to MongoDB.
 
 ## Scope
 
@@ -45,10 +41,10 @@ Support Knowledge Miner MVP 1 provides a local-first project workspace for impor
 - Persistent storage of source text, metadata, datasets, analysis profiles, analysis runs, embeddings/vector data where practical, clusters, curation, candidates, audit/import/export metadata.
 - Project-scoped persistent file/volume storage for bulky non-query artifacts such as model caches and generated export files.
 - Analysis profiles scoped within projects.
-- Global provider configuration for OpenAI API key and vLLM connection/model discovery.
+- Global provider configuration for OpenAI API key plus Ollama/vLLM connection and model discovery.
 - Analysis-profile model selection from globally configured provider models.
 - Simple authentication and equal-permission user management.
-- Docker Compose local runtime with PostgreSQL/pgvector and vLLM path.
+- Docker Compose local runtime with PostgreSQL/pgvector and local Ollama/vLLM paths.
 - GPU-default local runtime with CPU fallback.
 - Background analysis job state and reproducibility metadata.
 - Scalable clustering foundation that avoids full pairwise all-record distance matrices.
@@ -66,7 +62,6 @@ Support Knowledge Miner MVP 1 provides a local-first project workspace for impor
 - Customer communication.
 - Differentiated role and approval workflow.
 - Automatic pair inference from ticket histories.
-- Supporting Ollama in the first local-provider slice.
 - Legal/fachliche final approval of generated knowledge.
 
 ## User-visible behavior
@@ -85,13 +80,13 @@ Valid records are persisted as a new dataset version. Invalid records are skippe
 
 ### Analysis-profile workflow
 
-A project can contain multiple analysis profiles. Provider connection settings are configured globally. Each profile selects one globally configured provider/model and stores analysis parameters. A profile can select OpenAI or vLLM models. Provider/model selection is explicit; the system does not silently switch to OpenAI.
+A project can contain multiple analysis profiles. Provider connection settings are configured globally. Each profile selects one globally configured provider/model and stores analysis parameters. A profile can select OpenAI, Ollama, or vLLM models. Provider/model selection is explicit; the system does not silently switch to OpenAI.
 
-OpenAI API keys must not be returned in plaintext-readable form once stored. The UI may show presence/status and allow replacement/removal. vLLM global configuration must include endpoint settings and model-discovery or manual model-list behavior sufficient to make exposed local models selectable in analysis profiles.
+OpenAI API keys must not be returned in plaintext-readable form once stored. The UI may show presence/status and allow replacement/removal. Ollama and vLLM global configuration must include endpoint settings and model-discovery or manual model-list behavior sufficient to make exposed local models selectable in analysis profiles.
 
 ### User management workflow
 
-The application requires sign-in. Users are equal-permission users, not role-separated administrators. Each user has username, first name, last name, email, and password hash. Any signed-in user can create another user, edit another user's username/name/email, set or change another user's password, and delete another user. A user cannot delete themselves.
+The application requires sign-in. Users are equal-permission users, not role-separated administrators. Each user has first name, last name, email, and password hash. The email address is used as the login identifier. Any signed-in user can create another user, edit another user's name/email, set or change another user's password, and delete another user. A user cannot delete themselves.
 
 The initial user is created once through environment variables, local configuration, or database migration/seed. Passwords are never stored as plaintext; only password hashes are persisted. Auditable actions persist the acting user identity.
 
@@ -115,7 +110,7 @@ The MVP UI must make the following workflows available without direct database a
 
 Required elements:
 
-- Username field.
+- Email field.
 - Password field.
 - Sign-in action.
 - Error state for invalid credentials.
@@ -124,15 +119,15 @@ Required elements:
 Rules:
 
 - Unauthenticated users cannot access protected application screens.
-- The UI must not reveal whether username or password was the invalid part.
+- The UI must not reveal whether email or password was the invalid part.
 
 ### UI-02 User Management
 
 Required elements:
 
-- List of users with username, first name, last name, and email.
+- List of users with first name, last name, and email.
 - Create-user action.
-- Edit-user action for username, first name, last name, and email.
+- Edit-user action for first name, last name, and email.
 - Set/change-password action for another user.
 - Delete-user action for another user.
 - Disabled or blocked self-delete action with explanatory message.
@@ -150,8 +145,8 @@ Required elements:
 - OpenAI provider section with API-key set/replace/remove behavior.
 - OpenAI key presence/status indicator without showing the key.
 - OpenAI model discovery or manual model configuration.
-- vLLM provider section with endpoint configuration.
-- vLLM connection/model discovery or manual model configuration.
+- Ollama provider section with endpoint configuration and model discovery or manual model configuration.
+- vLLM provider section with endpoint configuration and model discovery or manual model configuration.
 - Provider connection-test action where technically possible.
 
 Rules:
@@ -189,7 +184,7 @@ Required elements:
 
 - List profiles in the current project.
 - Create/edit profile.
-- Select model from globally configured OpenAI/vLLM models.
+- Select model from globally configured OpenAI/Ollama/vLLM models.
 - Configure algorithm parameters, thresholds, prompts or prompt identifiers where applicable.
 - Indicate whether selected model is cloud or local.
 
@@ -324,7 +319,7 @@ Rules:
 |---|---|---|---|---|
 | US-1 | Analyst/Kurator | Create/open project | Independent project workspace is available and durable. | AC-1, AC-2 |
 | US-2 | Analyst/Kurator | Import CSV/JSON | Valid records become a dataset version; invalid records are logged. | AC-3, AC-4, AC-5, AC-6 |
-| US-3 | Analyst/Kurator | Configure profile | Profile selects OpenAI or vLLM and stores parameters safely. | AC-7, AC-8 |
+| US-3 | Analyst/Kurator | Configure profile | Profile selects OpenAI, Ollama, or vLLM and stores parameters safely. | AC-7, AC-8 |
 | US-4 | Analyst/Kurator | Run analysis | Background job persists reproducible analysis outputs. | AC-10, AC-11, AC-12 |
 | US-5 | Analyst/Kurator | Curate results | Manual edits are separate, durable, and traceable. | AC-13, AC-14 |
 | US-6 | Analyst/Kurator | Export | Candidate and source CSV files are produced and export state is persisted. | AC-15 |
@@ -340,16 +335,16 @@ Rules:
 - FR-7: `message` and `answer` must be non-empty after trimming whitespace.
 - FR-8: Duplicate `ticketid` + `messagegroupid` values are allowed and must not be skipped solely for duplication.
 - FR-9: Import logs must include source type, filename or logical source name, started/completed timestamps, total records, valid records, skipped records, failure status, and skipped-record reasons.
-- FR-10: Global provider configurations must store OpenAI and vLLM connection settings independently from analysis profiles.
+- FR-10: Global provider configurations must store OpenAI, Ollama, and vLLM connection settings independently from analysis profiles.
 - FR-11: OpenAI provider configuration must support API-key entry/replacement and basic connection/model-list check where possible.
-- FR-12: vLLM provider configuration must support endpoint configuration and basic connection/model-list check where possible.
+- FR-12: Ollama and vLLM provider configuration must support endpoint configuration and basic connection/model-list check where possible.
 - FR-13: Analysis profiles must be project-scoped and versioned or immutable per run so past runs remain reproducible.
 - FR-14: Analysis profiles must select one model from globally configured provider models and store analysis-specific thresholds, prompts, algorithms, and parameters.
 - FR-15: Stored secrets must not be exposed by read APIs or UI after creation/update.
 - FR-16: Users must authenticate before protected application operations.
-- FR-17: User records must store username, first name, last name, email, and password hash.
+- FR-17: User records must store first name, last name, email, and password hash. The email address is the login identifier.
 - FR-18: Passwords must be hashed using an established password-hashing algorithm and must never be stored or returned as plaintext.
-- FR-19: Any authenticated user must be allowed to create users; edit another user's username, first name, last name, email; set/change another user's password; and delete another user.
+- FR-19: Any authenticated user must be allowed to create users; edit another user's first name, last name, email; set/change another user's password; and delete another user.
 - FR-20: A user must not be allowed to delete themselves.
 - FR-21: The system must create the initial user once through environment variables, configuration, or database migration/seed.
 - FR-22: Auditable actions must persist the acting user identity.
@@ -393,7 +388,7 @@ Rules:
 
 - External integrations:
 - OpenAI cloud provider for configured profiles.
-- vLLM local provider through Docker Compose or configured local endpoint.
+- Ollama and vLLM local providers through Docker Compose or configured local endpoints.
 - No production/customer operational integrations.
 
 ## Test seams and verification decisions
@@ -408,7 +403,7 @@ Rules:
 
 - Database migration/schema tests for PostgreSQL/pgvector extension and project-scoped constraints.
 - Import parser unit tests for CSV/JSON edge cases.
-- Provider adapter tests using local stubs for OpenAI/vLLM connection and model-list behavior.
+- Provider adapter tests using local stubs for OpenAI/Ollama/vLLM connection and model-list behavior.
 - Authentication/user-management tests for sign-in, user CRUD, password change, no self-delete, and audit actor identity.
 - End-to-end UI smoke tests for create project, import fixture, configure profile, start run, inspect status, export.
 - Synthetic fixture-based clustering tests verifying non-quadratic path, outlier marking, and traceability on small deterministic data.
@@ -431,17 +426,17 @@ Rules:
 - [ ] AC-5: Missing CSV headers, malformed JSON, and non-list JSON roots fail before dataset creation and produce an import log.
 - [ ] AC-6: Invalid records with missing required fields or empty `message`/`answer` are skipped and logged; duplicate `ticketid` + `messagegroupid` records are accepted.
 - [ ] AC-7: An import with zero valid records creates no dataset version and reports a clear failure summary.
-- [ ] AC-8: Global provider settings support OpenAI API-key entry/replacement and vLLM endpoint/model discovery or manual model list.
-- [ ] AC-9: A project can contain multiple analysis profiles, each selecting a globally configured OpenAI or vLLM model with independent thresholds/parameters.
+- [ ] AC-8: Global provider settings support OpenAI API-key entry/replacement plus Ollama/vLLM endpoint/model discovery or manual model list.
+- [ ] AC-9: A project can contain multiple analysis profiles, each selecting a globally configured OpenAI, Ollama, or vLLM model with independent thresholds/parameters.
 - [ ] AC-10: Stored OpenAI API keys cannot be retrieved in plaintext through normal read interfaces.
-- [ ] AC-11: Users can sign in with username/password.
+- [ ] AC-11: Users can sign in with email/password.
 - [ ] AC-12: An initial user can be created once from environment/configuration or database migration/seed.
-- [ ] AC-13: Any authenticated user can create another user, edit another user's username/name/email, and set/change another user's password.
+- [ ] AC-13: Any authenticated user can create another user, edit another user's name/email, and set/change another user's password.
 - [ ] AC-14: Any authenticated user can delete another user, but cannot delete themselves.
 - [ ] AC-15: Stored user passwords are password hashes and cannot be retrieved in plaintext through normal read interfaces.
 - [ ] AC-16: Auditable actions persist the acting user identity.
 - [ ] AC-17: Docker Compose starts PostgreSQL with pgvector using a persistent volume.
-- [ ] AC-18: Docker Compose provides a vLLM service path or configurable vLLM endpoint and documents GPU-default/CPU-fallback behavior.
+- [ ] AC-18: Docker Compose provides Ollama and vLLM service paths or configurable local endpoints and documents local model runtime behavior.
 - [ ] AC-19: Background analysis runs persist status, progress, errors, profile snapshot, dataset version, provider/model, parameters, and timestamps.
 - [ ] AC-20: Embeddings/vector records persist with dimensionality, model/profile/run references, and source-object references.
 - [ ] AC-21: Clustering implementation avoids full pairwise all-record distance computation and exposes outliers/unassigned records.
@@ -451,10 +446,10 @@ Rules:
 - [ ] AC-25: Candidate CSV export exactly includes the accepted baseline columns.
 - [ ] AC-26: Source-assignment CSV export exactly includes the accepted baseline columns.
 - [ ] AC-27: Export metadata is persisted in the project database and records whether original text was included.
-- [ ] AC-28: The application can complete local fixture workflows without OpenAI by using a vLLM-compatible or stubbed local profile.
+- [ ] AC-28: The application can complete local fixture workflows without OpenAI by using an Ollama, vLLM-compatible, or stubbed local profile.
 - [ ] AC-29: The UI exposes sign-in, user management, global provider settings, project home, analysis profiles, import, run monitor, cluster explorer, candidate editor, and export screens or equivalent workflows.
 - [ ] AC-30: The UI prevents access to protected screens before sign-in.
-- [ ] AC-31: The global provider settings UI allows OpenAI key replacement/removal without displaying the saved key and allows vLLM endpoint/model configuration.
+- [ ] AC-31: The global provider settings UI allows OpenAI key replacement/removal without displaying the saved key and allows Ollama/vLLM endpoint/model configuration.
 - [ ] AC-32: The import UI shows total, imported, skipped, and failed counts and provides access to the persisted import log.
 - [ ] AC-33: The run monitor UI distinguishes queued/running/completed/failed states and shows provider/model, dataset version, timestamps, and errors.
 - [ ] AC-34: The cluster explorer UI visibly distinguishes automatic, manual, and effective values and provides drilldown to source records.
@@ -475,7 +470,7 @@ Rules:
 - Provider connection settings are global.
 - Analysis profiles are scoped per project, select globally configured models, and can differ within a project.
 - OpenAI is the first cloud provider.
-- vLLM is the MVP local provider; Ollama is out of scope for first local-provider slice.
+- Ollama and vLLM are supported MVP local providers.
 - GPU is default for local model/analysis workloads when available; CPU fallback is required.
 - Simple user management is in scope; all users are equal-permission users.
 - Users can manage other users but cannot delete themselves.
@@ -496,33 +491,22 @@ Rules:
 
 - MongoDB as primary database for MVP.
 - MongoDB plus separate vector database for MVP.
-- Supporting both Ollama and vLLM in the first local-provider slice.
 - Treating imported CSV/JSON as transient file views instead of persisted project data.
 - Server deployment in MVP 1.
 - Production integrations or production data access.
 
-## Open questions and blockers
+## Remaining implementation choices
 
-- No material blockers remain for planning the first implementation milestone.
-- Exact visual layout, component styling, and responsive design remain implementation design decisions constrained by the specified UI workflows and screens.
-- Exact clustering algorithm defaults may be chosen during technical design, but must satisfy non-quadratic and traceability requirements.
+- Exact visual layout, component styling, and responsive design remain implementation decisions constrained by the specified UI workflows and screens.
+- Exact clustering algorithm defaults remain implementation choices, but must satisfy non-quadratic and traceability requirements.
 
 ## External standards references
 
 - No external standards source is adopted in this specification.
 
-## Readiness decision
-
-The implementation agent may begin only when:
-
-- material scope and behavior decisions are resolved;
-- acceptance criteria are testable;
-- test seams are defined;
-- remaining assumptions are explicit and acceptable;
-- the user or decision owner has confirmed the specification where required.
+## Acceptance status
 
 - Shared understanding confirmed: yes
 - Confirmed by: User
 - Confirmation date: 2026-07-19
-- Ready for implementation: yes
-- Readiness conditions or remaining blockers: None. Milestone task files define implementation sequence.
+- Durable behavior specification accepted: yes

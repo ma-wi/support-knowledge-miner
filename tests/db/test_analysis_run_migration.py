@@ -17,6 +17,7 @@ def test_analysis_run_migration_defines_runs_and_embedding_seam() -> None:
     )
     assert "profile_snapshot jsonb NOT NULL" in migration
     assert "dataset_version_id uuid NOT NULL REFERENCES dataset_versions" in migration
+    assert "provider IN ('openai', 'ollama', 'vllm')" in migration
     assert "CREATE TABLE IF NOT EXISTS embeddings" in migration
     assert "embedding vector" in migration
     assert "dimensions integer NOT NULL" in migration

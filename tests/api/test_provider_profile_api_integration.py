@@ -53,6 +53,9 @@ class FakeProviderService:
     def list_configurations(self) -> list[ProviderConfiguration]:
         return list(self.configurations.values())
 
+    def seed_ollama_provider_from_env(self) -> None:
+        return None
+
     def upsert_configuration(
         self,
         payload: ProviderSettingsInput,
@@ -81,6 +84,26 @@ class FakeProviderService:
             models=self.configurations[provider].manual_models,
             message="provider reachable",
         )
+
+    def pull_ollama_model(
+        self, model: str, *, actor_user_id: UUID
+    ) -> ProviderConfiguration:
+        assert actor_user_id == OWNER_ID
+        if "ollama" not in self.configurations:
+            raise ProviderError("ollama provider is not configured")
+        existing = self.configurations["ollama"]
+        models = [*existing.manual_models]
+        if model not in models:
+            models.append(model)
+        configuration = ProviderConfiguration(
+            provider="ollama",
+            endpoint_url=existing.endpoint_url,
+            manual_models=models,
+            api_key_set=False,
+            updated_at=NOW,
+        )
+        self.configurations["ollama"] = configuration
+        return configuration
 
     def list_profiles(self, project_id: UUID) -> list[AnalysisProfile]:
         return [
@@ -250,3 +273,50 @@ def test_vllm_provider_check_and_project_profile_contract(client: TestClient) ->
     )
     assert updated.status_code == 200
     assert updated.json()["is_cloud_provider"] is True
+
+
+def test_ollama_provider_check_and_project_profile_contract(
+    client: TestClient,
+) -> None:
+    configured = client.put(
+        "/api/providers/ollama",
+        headers=auth_headers(),
+        json={
+            "endpoint_url": "http://localhost:11434",
+            "manual_models": ["nomic-embed-text", "mxbai-embed-large"],
+        },
+    )
+    assert configured.status_code == 200
+    assert configured.json()["provider"] == "ollama"
+    assert configured.json()["api_key_set"] is False
+
+    check = client.post("/api/providers/ollama/check", headers=auth_headers())
+    assert check.status_code == 200
+    assert check.json()["models"] == ["nomic-embed-text", "mxbai-embed-large"]
+
+    created = client.post(
+        f"/api/projects/{PROJECT_ID}/analysis-profiles",
+        headers=auth_headers(),
+        json={
+            "name": "Ollama local clustering",
+            "provider": "ollama",
+            "model": "nomic-embed-text",
+            "thresholds": {"similarity": 0.78},
+            "algorithm_settings": {"clusterer": "hdbscan"},
+        },
+    )
+    assert created.status_code == 201
+    assert created.json()["provider"] == "ollama"
+    assert created.json()["is_cloud_provider"] is False
+
+    pulled = client.post(
+        "/api/providers/ollama/pull",
+        headers=auth_headers(),
+        json={"model": "embeddinggemma"},
+    )
+    assert pulled.status_code == 200
+    assert pulled.json()["manual_models"] == [
+        "nomic-embed-text",
+        "mxbai-embed-large",
+        "embeddinggemma",
+    ]

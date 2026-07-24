@@ -7,7 +7,7 @@ x-vllm-common: &vllm-common
   ports:
     - "${VLLM_PORT:-8000}:8000"
   volumes:
-    - vllm-cache:/root/.cache/huggingface
+    - ksm-vllm-cache:/root/.cache/huggingface
   ipc: host
 
 services:
@@ -20,7 +20,7 @@ services:
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
     volumes:
-      - postgres-data:/var/lib/postgresql/data
+      - ksm-postgres-data:/var/lib/postgresql/data
     healthcheck:
       test:
         - CMD-SHELL
@@ -60,6 +60,24 @@ services:
       - --device
       - cpu
 
+  ollama:
+    image: ${OLLAMA_IMAGE:-ollama/ollama:latest}
+    profiles: ["ollama"]
+    ports:
+      - "${OLLAMA_PORT:-11434}:11434"
+    volumes:
+      - ksm-ollama-data:/root/.ollama
+    environment:
+      OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-0}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: ${OLLAMA_GPU_COUNT:-1}
+              capabilities: ["gpu"]
+
 volumes:
-  postgres-data:
-  vllm-cache:
+  ksm-postgres-data:
+  ksm-vllm-cache:
+  ksm-ollama-data:

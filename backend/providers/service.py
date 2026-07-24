@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from http.client import HTTPConnection, HTTPSConnection, HTTPException
 import json
+import os
 from typing import Any
 from urllib.parse import urlparse
 from uuid import UUID, uuid4
@@ -15,13 +16,21 @@ from psycopg.types.json import Jsonb
 from backend.audit import AuditService
 from backend.config import DatabaseSettings
 from backend.db.connection import open_database_connection
-from backend.providers.secrets import ProviderSecretError, encrypt_provider_secret
+from backend.providers.secrets import (
+    ProviderSecretError,
+    decrypt_provider_secret,
+    encrypt_provider_secret,
+)
 
-SUPPORTED_PROVIDERS = {"openai", "vllm"}
+SUPPORTED_PROVIDERS = {"openai", "ollama", "vllm"}
 MAX_MODELS = 200
 MAX_MODEL_LENGTH = 160
 MAX_ENDPOINT_LENGTH = 500
 PROVIDER_CHECK_TIMEOUT_SECONDS = 2.0
+OLLAMA_PULL_TIMEOUT_SECONDS = 1800.0
+OPENAI_API_HOST = "api.openai.com"
+DEFAULT_OLLAMA_BASE_URL = "http://localhost:11434"
+LOCAL_OLLAMA_HOSTS = {"localhost", "127.0.0.1", "::1", "ollama"}
 
 
 class ProviderError(ValueError):
@@ -84,7 +93,7 @@ class AnalysisProfile:
 def _provider(provider: str) -> str:
     cleaned = provider.strip().lower()
     if cleaned not in SUPPORTED_PROVIDERS:
-        raise ProviderError("provider must be openai or vllm")
+        raise ProviderError("provider must be openai, ollama, or vllm")
     return cleaned
 
 
@@ -95,6 +104,12 @@ def _clean_model(value: str) -> str:
     if len(cleaned) > MAX_MODEL_LENGTH:
         raise ProviderError("model is too long")
     return cleaned
+
+
+def _split_env_models(value: str | None) -> list[str]:
+    if value is None:
+        return []
+    return [item.strip() for item in value.split(",") if item.strip()]
 
 
 def _clean_models(values: list[str] | None) -> list[str]:
@@ -188,6 +203,27 @@ class ProviderService:
             ).fetchall()
         return [_configuration_from_row(dict(row)) for row in rows]
 
+    def seed_ollama_provider_from_env(self) -> None:
+        models = _clean_models(_split_env_models(os.environ.get("SKM_OLLAMA_MODELS")))
+        endpoint_url = _clean_endpoint(
+            os.environ.get("SKM_OLLAMA_BASE_URL")
+            or (DEFAULT_OLLAMA_BASE_URL if models else None)
+        )
+        if endpoint_url is None and not models:
+            return
+        with open_database_connection(self._settings) as connection:
+            with connection.transaction():
+                connection.execute(
+                    """
+                    INSERT INTO provider_configurations (
+                        provider, endpoint_url, manual_models
+                    )
+                    VALUES ('ollama', %s, %s)
+                    ON CONFLICT (provider) DO NOTHING
+                    """,
+                    (endpoint_url, Jsonb(models)),
+                )
+
     def upsert_configuration(
         self,
         payload: ProviderSettingsInput,
@@ -200,8 +236,8 @@ class ProviderService:
         clean_api_key = payload.api_key.strip() if payload.api_key is not None else None
         if clean_api_key == "":
             clean_api_key = None
-        if provider == "vllm" and clean_api_key is not None:
-            raise ProviderError("vllm does not accept an api_key")
+        if provider in {"ollama", "vllm"} and clean_api_key is not None:
+            raise ProviderError(f"{provider} does not accept an api_key")
         if payload.remove_api_key and clean_api_key is not None:
             raise ProviderError("api_key and remove_api_key cannot be used together")
         encrypted_api_key: str | None = None
@@ -269,22 +305,49 @@ class ProviderService:
         if config is None:
             raise ProviderError("provider is not configured")
         if clean_provider == "openai":
-            if not config.api_key_set:
+            api_key_secret = self._get_api_key_secret(clean_provider)
+            if api_key_secret is None:
                 return ProviderCheckResult(
                     provider=clean_provider,
                     ok=False,
                     models=config.manual_models,
                     message="OpenAI API key is not configured",
                 )
-            return ProviderCheckResult(
-                provider=clean_provider,
-                ok=True,
-                models=config.manual_models,
-                message="OpenAI API key is configured; live calls are not required",
-            )
+            try:
+                api_key = decrypt_provider_secret(api_key_secret)
+            except ProviderSecretError as exc:
+                return ProviderCheckResult(
+                    provider=clean_provider,
+                    ok=False,
+                    models=config.manual_models,
+                    message=f"OpenAI model discovery failed: {exc}",
+                )
+            return self._check_openai(api_key, config.manual_models)
         if config.endpoint_url is None:
-            raise ProviderError("vllm endpoint_url is required")
+            raise ProviderError(f"{clean_provider} endpoint_url is required")
+        if clean_provider == "ollama":
+            return self._check_ollama(config.endpoint_url, config.manual_models)
         return self._check_vllm(config.endpoint_url, config.manual_models)
+
+    def pull_ollama_model(
+        self, model: str, *, actor_user_id: UUID
+    ) -> ProviderConfiguration:
+        clean_model = _clean_model(model)
+        config = self._get_configuration("ollama")
+        if config is None:
+            raise ProviderError("ollama provider is not configured")
+        if config.endpoint_url is None:
+            raise ProviderError("ollama endpoint_url is required")
+        self._pull_ollama_model(config.endpoint_url, clean_model)
+        manual_models = _clean_models([*config.manual_models, clean_model])
+        return self.upsert_configuration(
+            ProviderSettingsInput(
+                provider="ollama",
+                endpoint_url=config.endpoint_url,
+                manual_models=manual_models,
+            ),
+            actor_user_id=actor_user_id,
+        )
 
     def list_profiles(self, project_id: UUID) -> list[AnalysisProfile]:
         with open_database_connection(self._settings) as connection:
@@ -334,7 +397,7 @@ class ProviderService:
                         clean_payload.name,
                         clean_payload.provider,
                         clean_payload.model,
-                        clean_payload.provider == "openai",
+                        _is_cloud_provider(clean_payload.provider),
                         Jsonb(clean_payload.thresholds),
                         Jsonb(clean_payload.algorithm_settings),
                         clean_payload.prompt_identifier,
@@ -355,7 +418,7 @@ class ProviderService:
                         "project_id": str(project_id),
                         "provider": clean_payload.provider,
                         "model": clean_payload.model,
-                        "cloud": clean_payload.provider == "openai",
+                        "cloud": _is_cloud_provider(clean_payload.provider),
                     },
                 )
         return _profile_from_row(dict(row))
@@ -396,7 +459,7 @@ class ProviderService:
                         clean_payload.name,
                         clean_payload.provider,
                         clean_payload.model,
-                        clean_payload.provider == "openai",
+                        _is_cloud_provider(clean_payload.provider),
                         Jsonb(clean_payload.thresholds),
                         Jsonb(clean_payload.algorithm_settings),
                         clean_payload.prompt_identifier,
@@ -418,7 +481,7 @@ class ProviderService:
                         "project_id": str(project_id),
                         "provider": clean_payload.provider,
                         "model": clean_payload.model,
-                        "cloud": clean_payload.provider == "openai",
+                        "cloud": _is_cloud_provider(clean_payload.provider),
                     },
                 )
         return _profile_from_row(dict(row))
@@ -434,6 +497,20 @@ class ProviderService:
                 (provider,),
             ).fetchone()
         return _configuration_from_row(dict(row)) if row is not None else None
+
+    def _get_api_key_secret(self, provider: str) -> str | None:
+        with open_database_connection(self._settings) as connection:
+            row = connection.execute(
+                """
+                SELECT api_key_secret
+                FROM provider_configurations
+                WHERE provider = %s
+                """,
+                (provider,),
+            ).fetchone()
+        if row is None or row["api_key_secret"] is None:
+            return None
+        return str(row["api_key_secret"])
 
     def _clean_profile_input(
         self, payload: AnalysisProfileInput
@@ -490,8 +567,102 @@ class ProviderService:
             raise ProviderError("model is not configured for provider")
         if provider == "openai" and row["api_key_secret"] is None:
             raise ProviderError("OpenAI API key is not configured")
-        if provider == "vllm" and row["endpoint_url"] is None:
-            raise ProviderError("vllm endpoint_url is required")
+        if provider in {"ollama", "vllm"} and row["endpoint_url"] is None:
+            raise ProviderError(f"{provider} endpoint_url is required")
+
+    def _check_ollama(
+        self, endpoint_url: str, manual_models: list[str]
+    ) -> ProviderCheckResult:
+        parsed = urlparse(endpoint_url)
+        connection_class = (
+            HTTPSConnection if parsed.scheme == "https" else HTTPConnection
+        )
+        base_path = parsed.path.rstrip("/")
+        path = f"{base_path}/api/tags" if base_path else "/api/tags"
+        connection = connection_class(
+            parsed.netloc,
+            timeout=PROVIDER_CHECK_TIMEOUT_SECONDS,
+        )
+        try:
+            connection.request("GET", path, headers={"Accept": "application/json"})
+            response = connection.getresponse()
+            if response.status >= 400:
+                raise ProviderError(f"Ollama returned HTTP {response.status}")
+            payload = json.loads(response.read(1024 * 1024).decode("utf-8"))
+        except (
+            HTTPException,
+            ProviderError,
+            TimeoutError,
+            OSError,
+            json.JSONDecodeError,
+        ) as exc:
+            return ProviderCheckResult(
+                provider="ollama",
+                ok=False,
+                models=manual_models,
+                message=f"Ollama model discovery failed: {exc.__class__.__name__}",
+            )
+        finally:
+            connection.close()
+        discovered = self._models_from_ollama_tags_payload(payload)
+        return ProviderCheckResult(
+            provider="ollama",
+            ok=bool(discovered or manual_models),
+            models=discovered or manual_models,
+            message=(
+                "Ollama models discovered"
+                if discovered
+                else "Ollama model discovery returned no model ids"
+            ),
+        )
+
+    def _pull_ollama_model(self, endpoint_url: str, model: str) -> None:
+        parsed = urlparse(endpoint_url)
+        if parsed.hostname not in LOCAL_OLLAMA_HOSTS:
+            raise ProviderError("ollama model pulls require a local endpoint")
+        connection_class = (
+            HTTPSConnection if parsed.scheme == "https" else HTTPConnection
+        )
+        base_path = parsed.path.rstrip("/")
+        path = f"{base_path}/api/pull" if base_path else "/api/pull"
+        body = json.dumps({"model": model, "stream": False}).encode("utf-8")
+        connection = connection_class(
+            parsed.netloc,
+            timeout=OLLAMA_PULL_TIMEOUT_SECONDS,
+        )
+        try:
+            connection.request(
+                "POST",
+                path,
+                body=body,
+                headers={
+                    "Accept": "application/json",
+                    "Content-Type": "application/json",
+                },
+            )
+            response = connection.getresponse()
+            payload = json.loads(response.read(1024 * 1024).decode("utf-8"))
+            if response.status >= 400:
+                message = (
+                    payload.get("error")
+                    if isinstance(payload, dict)
+                    and isinstance(payload.get("error"), str)
+                    else f"Ollama returned HTTP {response.status}"
+                )
+                raise ProviderError(message)
+            if not isinstance(payload, dict) or payload.get("status") != "success":
+                raise ProviderError("Ollama model pull did not report success")
+        except (
+            HTTPException,
+            TimeoutError,
+            OSError,
+            json.JSONDecodeError,
+        ) as exc:
+            raise ProviderError(
+                f"Ollama model pull failed: {exc.__class__.__name__}"
+            ) from exc
+        finally:
+            connection.close()
 
     def _check_vllm(
         self, endpoint_url: str, manual_models: list[str]
@@ -534,17 +705,115 @@ class ProviderService:
             message="vLLM endpoint reachable",
         )
 
+    def _check_openai(
+        self, api_key: str, manual_models: list[str]
+    ) -> ProviderCheckResult:
+        connection = HTTPSConnection(
+            OPENAI_API_HOST,
+            timeout=PROVIDER_CHECK_TIMEOUT_SECONDS,
+        )
+        try:
+            connection.request(
+                "GET",
+                "/v1/models",
+                headers={
+                    "Accept": "application/json",
+                    "Authorization": f"Bearer {api_key}",
+                },
+            )
+            response = connection.getresponse()
+            if response.status >= 400:
+                raise ProviderError(f"OpenAI returned HTTP {response.status}")
+            payload = json.loads(response.read(2 * 1024 * 1024).decode("utf-8"))
+        except (
+            HTTPException,
+            ProviderError,
+            TimeoutError,
+            OSError,
+            json.JSONDecodeError,
+        ) as exc:
+            return ProviderCheckResult(
+                provider="openai",
+                ok=False,
+                models=manual_models,
+                message=f"OpenAI model discovery failed: {exc.__class__.__name__}",
+            )
+        finally:
+            connection.close()
+
+        discovered = self._models_from_openai_compatible_payload(payload)
+        if not discovered:
+            return ProviderCheckResult(
+                provider="openai",
+                ok=False,
+                models=manual_models,
+                message="OpenAI model discovery returned no model ids",
+            )
+        embedding_models = [
+            model for model in discovered if "embedding" in model.lower()
+        ]
+        if embedding_models:
+            return ProviderCheckResult(
+                provider="openai",
+                ok=True,
+                models=embedding_models,
+                message="OpenAI embedding models discovered",
+            )
+        models = discovered or manual_models
+        return ProviderCheckResult(
+            provider="openai",
+            ok=bool(models),
+            models=models,
+            message="OpenAI models discovered",
+        )
+
     def _models_from_openai_compatible_payload(self, payload: Any) -> list[str]:
+        if isinstance(payload, list):
+            return self._models_from_openai_model_items(payload)
         if not isinstance(payload, dict):
             return []
-        data = payload.get("data")
+        data = payload.get("data", payload.get("models"))
+        if not isinstance(data, list):
+            return []
+        return self._models_from_openai_model_items(data)
+
+    def _models_from_openai_model_items(self, data: list[Any]) -> list[str]:
+        models: list[str] = []
+        for item in data:
+            if isinstance(item, str):
+                model_id = item
+            elif isinstance(item, dict) and isinstance(item.get("id"), str):
+                model_id = item["id"]
+            elif isinstance(item, dict) and isinstance(item.get("model"), str):
+                model_id = item["model"]
+            else:
+                continue
+            try:
+                models.append(_clean_model(model_id))
+            except ProviderError:
+                continue
+        return _clean_models(models)
+
+    def _models_from_ollama_tags_payload(self, payload: Any) -> list[str]:
+        if not isinstance(payload, dict):
+            return []
+        data = payload.get("models")
         if not isinstance(data, list):
             return []
         models: list[str] = []
         for item in data:
-            if isinstance(item, dict) and isinstance(item.get("id"), str):
-                try:
-                    models.append(_clean_model(item["id"]))
-                except ProviderError:
-                    continue
+            if isinstance(item, dict) and isinstance(item.get("name"), str):
+                model_id = item["name"]
+            elif isinstance(item, dict) and isinstance(item.get("model"), str):
+                model_id = item["model"]
+            else:
+                continue
+            try:
+                models.append(_clean_model(model_id))
+            except ProviderError:
+                continue
         return _clean_models(models)
+
+
+def _is_cloud_provider(provider: str) -> bool:
+    return provider == "openai"

@@ -114,15 +114,16 @@ class UserService:
         return _public_user_from_row(dict(row)) if row is not None else None
 
     def get_stored_user_by_username(self, username: str) -> StoredUser | None:
+        login = username.strip()
         with open_database_connection(self._settings) as connection:
             row = connection.execute(
                 """
                 SELECT id, username, first_name, last_name, email,
                        password_hash, created_at, updated_at
                 FROM users
-                WHERE username = %s AND deleted_at IS NULL
+                WHERE (username = %s OR email = %s) AND deleted_at IS NULL
                 """,
-                (username.strip(),),
+                (login, login),
             ).fetchone()
         return _stored_user_from_row(dict(row)) if row is not None else None
 
@@ -170,7 +171,7 @@ class UserService:
                         target_id=user_id,
                     )
         except IntegrityError as exc:
-            raise UserError("username or email already exists") from exc
+            raise UserError("email already exists") from exc
         return _public_user_from_row(dict(row))
 
     def update_user(
@@ -226,7 +227,7 @@ class UserService:
                         target_id=user_id,
                     )
         except IntegrityError as exc:
-            raise UserError("username or email already exists") from exc
+            raise UserError("email already exists") from exc
         return _public_user_from_row(dict(row))
 
     def set_password(
