@@ -5,6 +5,7 @@ from pathlib import Path
 
 COMPOSE_FILE = Path("deployment/docker/compose.yml")
 SMOKE_SCRIPT = Path("deployment/docker/scripts/smoke-postgres.sh")
+MIGRATION_SMOKE_SCRIPT = Path("deployment/docker/scripts/smoke-migrations.sh")
 
 
 def test_compose_defines_pgvector_postgres_with_persistent_volume() -> None:
@@ -46,4 +47,14 @@ def test_postgres_smoke_script_verifies_migration_health_and_restart_persistence
     assert "check_database_health()" in script
     assert "restart postgres" in script
     assert "smoke_persistence_marker" in script
+    assert "down -v" in script
+
+
+def test_migration_smoke_script_executes_fresh_and_existing_database_paths() -> None:
+    script = MIGRATION_SMOKE_SCRIPT.read_text(encoding="utf-8")
+    assert "0010_ollama_provider.sql" in script
+    assert "0011_email_identity.sql" in script
+    assert "legacy username column remains" in script
+    assert "accepted an unsupported provider" in script
+    assert "AuthService(upgrade).sign_in" in script
     assert "down -v" in script

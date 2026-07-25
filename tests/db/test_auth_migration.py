@@ -19,6 +19,7 @@ def test_auth_migration_is_ordered_after_foundation() -> None:
         "0008_candidates.sql",
         "0009_exports.sql",
         "0010_ollama_provider.sql",
+        "0011_email_identity.sql",
     ]
 
 
@@ -32,9 +33,24 @@ def test_auth_migration_defines_users_sessions_and_audit_without_plaintext_token
     )
 
     assert "CREATE TABLE IF NOT EXISTS users" in migration
+    assert "username text NOT NULL UNIQUE" in migration
     assert "password_hash text NOT NULL" in migration
     assert "CREATE TABLE IF NOT EXISTS user_sessions" in migration
     assert "token_hash text NOT NULL UNIQUE" in migration
     assert "CREATE TABLE IF NOT EXISTS audit_events" in migration
     assert "actor_user_id uuid" in migration
     assert "access_token" not in migration
+
+
+def test_email_identity_upgrade_removes_legacy_username_and_detects_collisions() -> (
+    None
+):
+    migration = (
+        resources.files("backend.db.migrations")
+        .joinpath("0011_email_identity.sql")
+        .read_text(encoding="utf-8")
+    )
+
+    assert "legacy_user.username = email_user.email" in migration
+    assert "DROP COLUMN IF EXISTS username" in migration
+    assert "CREATE INDEX IF NOT EXISTS idx_users_active_email" in migration

@@ -49,7 +49,6 @@ def _current_user_from_row(row: dict[str, object]) -> CurrentUser:
     public = _public_user_from_row(row)
     return CurrentUser(
         id=public.id,
-        username=public.username,
         first_name=public.first_name,
         last_name=public.last_name,
         email=public.email,
@@ -72,7 +71,7 @@ class AuthService:
         self._audit = AuditService()
 
     def sign_in(self, email: str, password: str) -> AuthToken:
-        stored = self._users.get_stored_user_by_username(email)
+        stored = self._users.get_stored_user_by_email(email)
         if stored is None or not verify_password(password, stored.password_hash):
             raise AuthenticationError("invalid email or password")
         token = secrets.token_urlsafe(32)
@@ -107,7 +106,7 @@ class AuthService:
         with open_database_connection(self._settings) as connection:
             row = connection.execute(
                 """
-                SELECT u.id, u.username, u.first_name, u.last_name, u.email,
+                SELECT u.id, u.first_name, u.last_name, u.email,
                        u.created_at, u.updated_at, s.id AS session_id
                 FROM user_sessions s
                 JOIN users u ON u.id = s.user_id
@@ -162,7 +161,6 @@ class AuthService:
             return None
         return self._users.create_user(
             CreateUserInput(
-                username=email,
                 first_name=first_name,
                 last_name=last_name,
                 email=email,

@@ -90,6 +90,12 @@ The application requires sign-in. Users are equal-permission users, not role-sep
 
 The initial user is created once through environment variables, local configuration, or database migration/seed. Passwords are never stored as plaintext; only password hashes are persisted. Auditable actions persist the acting user identity.
 
+The persisted, domain, and public API user models have no separate username.
+Authentication and user-management requests and responses use only `email`;
+`username` request fields are rejected. The decision owner explicitly accepted this
+breaking contract because the application had no productive use or compatibility
+consumer before the change.
+
 ### Analysis-run workflow
 
 A user starts an analysis run by selecting a dataset version and analysis profile. The run executes in the background and exposes status/progress. Completion persists embeddings/vector data, generated clusters, metadata, scores, and run diagnostics. Failure persists error details and partial state only when safe and explicitly marked as partial/failed.
@@ -104,7 +110,11 @@ A user exports curated candidates and source assignments to CSV. Export metadata
 
 ## MVP UI Screens And Workflows
 
-The MVP UI must make the following workflows available without direct database access or code edits. Exact visual design, layout system, and component implementation remain implementation decisions, but all listed screens, actions, states, and safety prompts are product requirements.
+The MVP UI must make the following workflows available without direct database access
+or code edits. After sign-in, a persistent sidebar owns global navigation between
+Projects and Settings. Project workflows and the provider/user settings use local
+tabs. Exact component implementation remains an implementation decision, but all
+listed screens, actions, states, and safety prompts are product requirements.
 
 ### UI-01 Sign-In
 
@@ -497,7 +507,8 @@ Rules:
 
 ## Remaining implementation choices
 
-- Exact visual layout, component styling, and responsive design remain implementation decisions constrained by the specified UI workflows and screens.
+- Exact component styling and responsive breakpoints remain implementation decisions
+  constrained by the sidebar and tab hierarchy plus the specified UI workflows.
 - Exact clustering algorithm defaults remain implementation choices, but must satisfy non-quadratic and traceability requirements.
 
 ## External standards references

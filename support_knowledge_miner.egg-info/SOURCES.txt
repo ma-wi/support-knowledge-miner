@@ -30,6 +30,7 @@ backend/db/migrations/0007_clusters.sql
 backend/db/migrations/0008_candidates.sql
 backend/db/migrations/0009_exports.sql
 backend/db/migrations/0010_ollama_provider.sql
+backend/db/migrations/0011_email_identity.sql
 backend/db/migrations/__init__.py
 backend/exports/__init__.py
 backend/exports/service.py

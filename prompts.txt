@@ -1,3 +1,5 @@
 Lese zuerst die AGENTS.md und die .ai/roles/IMPLEMENTER.md Dateien.
 
 Lese zuerst die AGENTS.md und die .ai/roles/CODE_REVIEWER.md Dateien.
+
+Lese zuerst die AGENTS.md und die .ai/roles/CHANGE_PLANNER.md Dateien.

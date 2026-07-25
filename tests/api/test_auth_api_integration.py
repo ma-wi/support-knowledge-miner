@@ -26,7 +26,6 @@ def public_user(
 ) -> PublicUser:
     return PublicUser(
         id=user_id,
-        username=email,
         first_name=first_name,
         last_name=last_name,
         email=email,
@@ -64,7 +63,6 @@ class FakeAuthService:
             raise AuthenticationError("invalid or expired session")
         return CurrentUser(
             id=self.owner.id,
-            username=self.owner.username,
             first_name=self.owner.first_name,
             last_name=self.owner.last_name,
             email=self.owner.email,
@@ -245,6 +243,36 @@ def test_authenticated_user_crud_password_and_self_delete_contract(
 
     deleted = client.delete(f"/api/users/{OTHER_ID}", headers=auth_headers())
     assert deleted.status_code == 204
+
+
+def test_username_is_rejected_by_current_auth_and_user_contracts(
+    client: TestClient,
+) -> None:
+    sign_in = client.post(
+        "/api/auth/sign-in",
+        json={"username": "owner@example.test", "password": "owner-password"},
+    )
+    assert sign_in.status_code == 422
+
+    create = client.post(
+        "/api/users",
+        headers=auth_headers(),
+        json={
+            "username": "curator@example.test",
+            "first_name": "Support",
+            "last_name": "Curator",
+            "email": "curator@example.test",
+            "password": "curator-password",
+        },
+    )
+    assert create.status_code == 422
+
+    update = client.patch(
+        f"/api/users/{OWNER_ID}",
+        headers=auth_headers(),
+        json={"username": "owner@example.test"},
+    )
+    assert update.status_code == 422
 
 
 def test_app_startup_runs_migrations_before_initial_user_seed() -> None:

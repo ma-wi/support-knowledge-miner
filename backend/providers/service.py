@@ -141,6 +141,17 @@ def _clean_endpoint(endpoint_url: str | None) -> str | None:
     return cleaned.rstrip("/") + "/"
 
 
+def _require_local_ollama_endpoint(endpoint_url: str) -> None:
+    parsed = urlparse(endpoint_url)
+    hostname = parsed.hostname.casefold() if parsed.hostname is not None else None
+    if (
+        hostname not in LOCAL_OLLAMA_HOSTS
+        or parsed.username is not None
+        or parsed.password is not None
+    ):
+        raise ProviderError("ollama requires an explicitly allowed local endpoint")
+
+
 def _object(value: dict[str, Any], field: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ProviderError(f"{field} must be an object")
@@ -209,6 +220,8 @@ class ProviderService:
             os.environ.get("SKM_OLLAMA_BASE_URL")
             or (DEFAULT_OLLAMA_BASE_URL if models else None)
         )
+        if endpoint_url is not None:
+            _require_local_ollama_endpoint(endpoint_url)
         if endpoint_url is None and not models:
             return
         with open_database_connection(self._settings) as connection:
@@ -232,6 +245,8 @@ class ProviderService:
     ) -> ProviderConfiguration:
         provider = _provider(payload.provider)
         endpoint_url = _clean_endpoint(payload.endpoint_url)
+        if provider == "ollama" and endpoint_url is not None:
+            _require_local_ollama_endpoint(endpoint_url)
         manual_models = _clean_models(payload.manual_models)
         clean_api_key = payload.api_key.strip() if payload.api_key is not None else None
         if clean_api_key == "":
@@ -573,6 +588,7 @@ class ProviderService:
     def _check_ollama(
         self, endpoint_url: str, manual_models: list[str]
     ) -> ProviderCheckResult:
+        _require_local_ollama_endpoint(endpoint_url)
         parsed = urlparse(endpoint_url)
         connection_class = (
             HTTPSConnection if parsed.scheme == "https" else HTTPConnection
@@ -617,9 +633,8 @@ class ProviderService:
         )
 
     def _pull_ollama_model(self, endpoint_url: str, model: str) -> None:
+        _require_local_ollama_endpoint(endpoint_url)
         parsed = urlparse(endpoint_url)
-        if parsed.hostname not in LOCAL_OLLAMA_HOSTS:
-            raise ProviderError("ollama model pulls require a local endpoint")
         connection_class = (
             HTTPSConnection if parsed.scheme == "https" else HTTPConnection
         )

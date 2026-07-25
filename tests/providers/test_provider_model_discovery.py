@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from backend.providers import ProviderService
+import pytest
+
+from backend.providers import ProviderError, ProviderService
 from backend.providers import service as provider_service_module
 
 
@@ -172,6 +174,27 @@ def test_ollama_check_discovers_local_models(monkeypatch: Any) -> None:
     assert result.models == ["nomic-embed-text:latest", "mxbai-embed-large"]
     assert result.message == "Ollama models discovered"
     assert FakeOllamaHTTPConnection.last_path == "/api/tags"
+
+
+@pytest.mark.parametrize(
+    "endpoint_url",
+    [
+        "http://example.com:11434",
+        "http://localhost.example.com:11434",
+        "http://attacker@example.com:11434",
+    ],
+)
+def test_ollama_check_rejects_non_local_endpoint_before_connecting(
+    monkeypatch: Any,
+    endpoint_url: str,
+) -> None:
+    def fail_connection(*args: object, **kwargs: object) -> None:
+        raise AssertionError("connection must not be attempted")
+
+    monkeypatch.setattr(provider_service_module, "HTTPConnection", fail_connection)
+
+    with pytest.raises(ProviderError, match="allowed local endpoint"):
+        ProviderService()._check_ollama(endpoint_url, [])
 
 
 def test_ollama_pull_uses_local_pull_endpoint(monkeypatch: Any) -> None:

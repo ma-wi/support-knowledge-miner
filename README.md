@@ -6,7 +6,7 @@ The MVP is explicitly local-only. Do not connect it to production systems, produ
 
 ## Implemented MVP Workflows
 
-- Sign in with a seeded local user and manage equal-permission users.
+- Sign in with a seeded local user's email and manage equal-permission users.
 - Create, open, rename, and delete independent projects.
 - Import CSV or JSON records with `ticketid`, `messagegroupid`, `message`, and `answer` fields.
 - Persist dataset versions, import logs, skipped-record reasons, and audit actor identity.
@@ -16,7 +16,7 @@ The MVP is explicitly local-only. Do not connect it to production systems, produ
 - Generate deterministic non-quadratic clustering scaffolds with outlier/source traceability.
 - Curate clusters and candidates while preserving automatic, manual, and effective values separately.
 - Export candidate CSV and source-assignment CSV files with persisted export metadata and original-text warnings.
-- Use the React MVP shell to reach sign-in, user, provider, project, import, profile, run, cluster, candidate, and export workflows.
+- Use the React sidebar shell to reach sign-in, settings, project, import, profile, run, cluster, candidate, and export workflows.
 
 The durable product behavior is specified in `docs/specifications/support-knowledge-miner-mvp1.md`.
 
@@ -67,7 +67,8 @@ export SKM_INITIAL_LAST_NAME=Owner
 ```
 
 The initial user is created only when the user table is empty. After that, signed-in
-users manage further local users in the application.
+users manage further local users in the application. Email is the only stored login
+identity and the only public request/response identity field.
 
 See `deployment/docker/README.md` for PostgreSQL and optional Ollama/vLLM runtime details.
 
@@ -105,6 +106,8 @@ The Vite dev server proxies `/api/*` requests to the backend at
 the frontend.
 
 For local model serving, use the optional Ollama or vLLM Compose profiles documented in `deployment/docker/README.md`.
+Ollama configuration is restricted to the reviewed local hosts `localhost`,
+`127.0.0.1`, `::1`, and the Compose service name `ollama`.
 
 ## Verification
 
@@ -124,6 +127,13 @@ Focused gates are also available:
 ./.ai/tools/security.sh
 ./.ai/tools/build.sh
 python .ai/tools/check-docs.py
+```
+
+To execute fresh and stopped-at-0009 migrations against an isolated local
+PostgreSQL container:
+
+```bash
+./deployment/docker/scripts/smoke-migrations.sh
 ```
 
 ## Configuration

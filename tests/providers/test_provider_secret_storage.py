@@ -156,6 +156,25 @@ def test_ollama_provider_can_be_seeded_from_environment(
     ]
 
 
+def test_ollama_provider_rejects_non_local_endpoint_before_storage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        provider_service_module,
+        "open_database_connection",
+        lambda _: pytest.fail("database connection must not be opened"),
+    )
+
+    with pytest.raises(ProviderError, match="allowed local endpoint"):
+        ProviderService().upsert_configuration(
+            ProviderSettingsInput(
+                provider="ollama",
+                endpoint_url="http://example.com:11434",
+            ),
+            actor_user_id=ACTOR_ID,
+        )
+
+
 def test_openai_api_key_storage_requires_configured_encryption_key(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

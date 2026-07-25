@@ -17,6 +17,8 @@ Support Knowledge Miner supports Ollama as an additional local model provider al
 - Provide an optional Docker Compose Ollama runtime with persistent model storage.
 - Seed a default Ollama provider configuration from local environment values only when no Ollama configuration exists yet.
 - Allow users to configure the Ollama endpoint in the provider UI.
+- Restrict Ollama endpoints to explicitly reviewed local hostnames before persistence
+  or any discovery/pull request.
 - Allow users to refresh the Ollama model allow-list from the local Ollama `/api/tags` endpoint.
 - Allow users to download one named Ollama model from the provider UI and add it to the allow-list after a successful local pull.
 - Keep Ollama analysis profiles non-cloud.
@@ -36,6 +38,10 @@ Support Knowledge Miner supports Ollama as an additional local model provider al
 - Startup inserts the Ollama provider from these values only when no Ollama provider row exists.
 - Existing Ollama provider configuration is never overwritten by startup seeding.
 - Provider check for Ollama calls `/api/tags`, extracts local model names, and returns them to the UI.
+- Ollama configuration, checks, and pulls accept only `localhost`, `127.0.0.1`,
+  `::1`, or the local Compose service name `ollama`; credentials in the endpoint URL
+  and all other hostnames are rejected before a connection. HTTP redirects are not
+  followed.
 - If Ollama is unavailable, the provider check returns the configured model allow-list with `ok=false` and a diagnostic message.
 - Ollama model download calls `/api/pull` with `stream:false`, requires a local endpoint, and adds the requested model to the configured allow-list only after Ollama reports success.
 - Analysis profile creation rejects Ollama models that are not in the configured Ollama model list.
@@ -48,4 +54,6 @@ Support Knowledge Miner supports Ollama as an additional local model provider al
 - The frontend can request a named Ollama model download and show the updated allow-list after success.
 - Analysis profiles can select Ollama and are marked `is_cloud_provider=false`.
 - Local Docker Compose includes an optional Ollama profile and persistent model store.
-- Tests cover migration constraints, provider discovery, Ollama pull behavior, env seeding, API contract, and frontend behavior.
+- Tests cover executable fresh and stopped-at-0009 migration constraints, provider
+  discovery, rejected non-local endpoints before connection, Ollama pull behavior,
+  env seeding, API contract, and frontend behavior.

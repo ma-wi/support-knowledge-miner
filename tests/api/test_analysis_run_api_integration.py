@@ -36,7 +36,6 @@ class FakeAuthService:
             raise AuthenticationError("invalid or expired session")
         return CurrentUser(
             id=OWNER_ID,
-            username="owner",
             first_name="Local",
             last_name="Owner",
             email="owner@example.test",

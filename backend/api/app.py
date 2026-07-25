@@ -71,6 +71,8 @@ class UserResponse(BaseModel):
 
 
 class SignInRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     email: str = Field(min_length=1)
     password: str = Field(min_length=1)
 
@@ -83,6 +85,8 @@ class AuthTokenResponse(BaseModel):
 
 
 class CreateUserRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     first_name: str = Field(min_length=1)
     last_name: str = Field(min_length=1)
     email: str = Field(min_length=1)
@@ -90,6 +94,8 @@ class CreateUserRequest(BaseModel):
 
 
 class UpdateUserRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     first_name: str | None = Field(default=None, min_length=1)
     last_name: str | None = Field(default=None, min_length=1)
     email: str | None = Field(default=None, min_length=1)
@@ -1167,7 +1173,6 @@ def create_app(
         try:
             user = user_service.create_user(
                 CreateUserInput(
-                    username=payload.email,
                     first_name=payload.first_name,
                     last_name=payload.last_name,
                     email=payload.email,
@@ -1191,7 +1196,6 @@ def create_app(
             user = user_service.update_user(
                 user_id,
                 UpdateUserInput(
-                    username=payload.email,
                     first_name=payload.first_name,
                     last_name=payload.last_name,
                     email=payload.email,

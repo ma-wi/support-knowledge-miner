@@ -9,6 +9,7 @@ def test_auth_api_openapi_does_not_expose_password_hash_or_plaintext_password_re
     schema_text = str(create_app().openapi())
 
     assert "password_hash" not in schema_text
+    assert "username" not in schema_text
     assert "access_token" in schema_text
     assert "SignInRequest" in schema_text
     assert "CreateUserRequest" in schema_text

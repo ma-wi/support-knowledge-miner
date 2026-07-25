@@ -64,7 +64,6 @@ current = auth.authenticate_token(token.access_token)
 users = UserService()
 other = users.create_user(
     CreateUserInput(
-        username="curator@example.test",
         first_name="Support",
         last_name="Curator",
         email="curator@example.test",

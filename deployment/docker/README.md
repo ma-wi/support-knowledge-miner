@@ -54,6 +54,16 @@ deployment/docker/scripts/smoke-postgres.sh
 
 The smoke test starts an isolated local Compose project, applies migrations to an empty database, verifies pgvector through the backend health query, restarts PostgreSQL, verifies database state persisted across restart, and removes its test containers, network, and volume.
 
+Run the migration compatibility smoke test from the repository root:
+
+```bash
+./deployment/docker/scripts/smoke-migrations.sh
+```
+
+It starts a separate isolated local Compose project, executes both a fresh database
+and an existing database stopped at migration `0009`, checks the Ollama provider
+constraints plus the email-only identity upgrade, and removes all test resources.
+
 ## vLLM Local Model Path
 
 The MVP local model provider path is represented as optional Compose profiles so normal database tests do not download or start model images.
@@ -87,7 +97,10 @@ Pull the local models you want to make available before selecting them in an ana
 docker compose --env-file deployment/docker/.env.example -f deployment/docker/compose.yml exec ollama ollama pull nomic-embed-text
 ```
 
-The provider UI can also download and add one named model through the local Ollama API. This uses the configured Ollama endpoint and is restricted by the backend to local Ollama hosts.
+The provider UI can also download and add one named model through the local Ollama
+API. Saving, model discovery, and model download are restricted before network access
+to `localhost`, `127.0.0.1`, `::1`, or the Compose service name `ollama`. The backend
+does not follow redirects.
 
 The default endpoint is `http://localhost:11434`. `SKM_OLLAMA_MODELS` is a comma-separated default allow-list that the backend seeds into the Ollama provider only when no Ollama provider configuration exists yet. Users can later refresh installed models or download and add one named model in the provider UI.
 

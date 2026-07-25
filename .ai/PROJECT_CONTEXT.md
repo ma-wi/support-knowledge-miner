@@ -28,7 +28,7 @@ Keep this document compact. It is a map for agents, not a duplicate of the sourc
 - Trust boundaries: browser to authenticated API, local backend to local PostgreSQL, optional explicit OpenAI/Ollama/vLLM provider calls, local filesystem/Compose volumes.
 - Public interfaces: FastAPI `/api/*` routes, React MVP shell, Docker Compose local runtime, `.ai/tools/*` quality gates.
 - Generated-code locations: Python build output in `dist/` and `build/`, frontend production output in `frontend/dist/`; these are ignored by agents.
-- Critical paths: authentication/session validation, project-scoped queries, import validation, provider secret handling, analysis-run metadata, curation override preservation, export original-text warnings.
+- Critical paths: email-only authentication/session validation and migration, project-scoped queries, import validation, provider secret handling and local Ollama endpoint allow-listing, analysis-run metadata, curation override preservation, export original-text warnings.
 
 See `docs/architecture/overview.md` for the durable architecture description.
 
@@ -41,6 +41,7 @@ See `docs/architecture/overview.md` for the durable architecture description.
 - Logging and telemetry conventions: MVP uses persisted audit/import/export/run records rather than production telemetry.
 - Dependency policy: manifests and lockfiles are mandatory; dependency and vulnerability gates run through `./.ai/tools/check-dependencies.sh` and `verify.sh`.
 - Migration policy: migrations are committed SQL files in `backend/db/migrations/` and covered by migration tests.
+- Migration smoke: `deployment/docker/scripts/smoke-migrations.sh` executes fresh and stopped-version upgrade paths against an isolated local PostgreSQL container.
 
 ## Quality commands
 

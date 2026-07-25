@@ -21,7 +21,6 @@ class UserError(ValueError):
 @dataclass(frozen=True)
 class PublicUser:
     id: UUID
-    username: str
     first_name: str
     last_name: str
     email: str
@@ -36,7 +35,6 @@ class StoredUser(PublicUser):
 
 @dataclass(frozen=True)
 class CreateUserInput:
-    username: str
     first_name: str
     last_name: str
     email: str
@@ -45,7 +43,6 @@ class CreateUserInput:
 
 @dataclass(frozen=True)
 class UpdateUserInput:
-    username: str | None = None
     first_name: str | None = None
     last_name: str | None = None
     email: str | None = None
@@ -61,7 +58,6 @@ def _clean(value: str, field: str) -> str:
 def _public_user_from_row(row: dict[str, object]) -> PublicUser:
     return PublicUser(
         id=UUID(str(row["id"])),
-        username=str(row["username"]),
         first_name=str(row["first_name"]),
         last_name=str(row["last_name"]),
         email=str(row["email"]),
@@ -74,7 +70,6 @@ def _stored_user_from_row(row: dict[str, object]) -> StoredUser:
     public = _public_user_from_row(row)
     return StoredUser(
         id=public.id,
-        username=public.username,
         first_name=public.first_name,
         last_name=public.last_name,
         email=public.email,
@@ -93,10 +88,10 @@ class UserService:
         with open_database_connection(self._settings) as connection:
             rows = connection.execute(
                 """
-                SELECT id, username, first_name, last_name, email, created_at, updated_at
+                SELECT id, first_name, last_name, email, created_at, updated_at
                 FROM users
                 WHERE deleted_at IS NULL
-                ORDER BY username ASC
+                ORDER BY email ASC
                 """
             ).fetchall()
         return [_public_user_from_row(dict(row)) for row in rows]
@@ -105,7 +100,7 @@ class UserService:
         with open_database_connection(self._settings) as connection:
             row = connection.execute(
                 """
-                SELECT id, username, first_name, last_name, email, created_at, updated_at
+                SELECT id, first_name, last_name, email, created_at, updated_at
                 FROM users
                 WHERE id = %s AND deleted_at IS NULL
                 """,
@@ -113,17 +108,17 @@ class UserService:
             ).fetchone()
         return _public_user_from_row(dict(row)) if row is not None else None
 
-    def get_stored_user_by_username(self, username: str) -> StoredUser | None:
-        login = username.strip()
+    def get_stored_user_by_email(self, email: str) -> StoredUser | None:
+        login_email = email.strip()
         with open_database_connection(self._settings) as connection:
             row = connection.execute(
                 """
-                SELECT id, username, first_name, last_name, email,
+                SELECT id, first_name, last_name, email,
                        password_hash, created_at, updated_at
                 FROM users
-                WHERE (username = %s OR email = %s) AND deleted_at IS NULL
+                WHERE email = %s AND deleted_at IS NULL
                 """,
-                (login, login),
+                (login_email,),
             ).fetchone()
         return _stored_user_from_row(dict(row)) if row is not None else None
 
@@ -135,7 +130,6 @@ class UserService:
         audit_action: str = "user.create",
     ) -> PublicUser:
         user_id = uuid4()
-        username = _clean(data.username, "username")
         first_name = _clean(data.first_name, "first_name")
         last_name = _clean(data.last_name, "last_name")
         email = _clean(data.email, "email")
@@ -146,15 +140,14 @@ class UserService:
                     row = connection.execute(
                         """
                         INSERT INTO users (
-                            id, username, first_name, last_name, email, password_hash
+                            id, first_name, last_name, email, password_hash
                         )
-                        VALUES (%s, %s, %s, %s, %s, %s)
-                        RETURNING id, username, first_name, last_name, email,
+                        VALUES (%s, %s, %s, %s, %s)
+                        RETURNING id, first_name, last_name, email,
                                   created_at, updated_at
                         """,
                         (
                             user_id,
-                            username,
                             first_name,
                             last_name,
                             email,
@@ -184,11 +177,6 @@ class UserService:
         current = self.get_user(user_id)
         if current is None:
             raise UserError("user not found")
-        username = (
-            _clean(data.username, "username")
-            if data.username is not None
-            else current.username
-        )
         first_name = (
             _clean(data.first_name, "first_name")
             if data.first_name is not None
@@ -206,16 +194,15 @@ class UserService:
                     row = connection.execute(
                         """
                         UPDATE users
-                        SET username = %s,
-                            first_name = %s,
+                        SET first_name = %s,
                             last_name = %s,
                             email = %s,
                             updated_at = now()
                         WHERE id = %s AND deleted_at IS NULL
-                        RETURNING id, username, first_name, last_name, email,
+                        RETURNING id, first_name, last_name, email,
                                   created_at, updated_at
                         """,
-                        (username, first_name, last_name, email, user_id),
+                        (first_name, last_name, email, user_id),
                     ).fetchone()
                     if row is None:
                         raise UserError("user not found")
