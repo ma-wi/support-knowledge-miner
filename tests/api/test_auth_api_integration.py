@@ -76,6 +76,11 @@ class FakeAuthService:
             self.signed_out = True
 
 
+class FakeProviderService:
+    def seed_ollama_provider_from_env(self) -> None:
+        return None
+
+
 class FakeUserService:
     def __init__(self) -> None:
         self.users = [
@@ -145,6 +150,7 @@ def client() -> TestClient:
         create_app(
             auth_service=FakeAuthService(),  # type: ignore[arg-type]
             user_service=FakeUserService(),  # type: ignore[arg-type]
+            provider_service=FakeProviderService(),  # type: ignore[arg-type]
         )
     )
 
@@ -286,6 +292,7 @@ def test_app_startup_runs_migrations_before_initial_user_seed() -> None:
         create_app(
             auth_service=StartupAuthService(),  # type: ignore[arg-type]
             user_service=FakeUserService(),  # type: ignore[arg-type]
+            provider_service=FakeProviderService(),  # type: ignore[arg-type]
             migration_runner=lambda: events.append("migrate"),
         )
     ):

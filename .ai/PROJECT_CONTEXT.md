@@ -24,11 +24,22 @@ Keep this document compact. It is a map for agents, not a duplicate of the sourc
 
 - Entry points: `backend/main.py`, `backend/api/app.py`, `frontend/src/App.tsx`, `deployment/docker/compose.yml`.
 - Core modules: `auth`, `users`, `audit`, `projects`, `imports`, `providers`, `analysis`, `clusters`, `candidates`, `exports`, `db`.
-- Data flow: authenticated user opens project, imports paired records, configures provider/profile, starts analysis scaffold, reviews clusters/candidates, and exports CSV with persisted metadata.
+- Data flow: authenticated user opens a project, imports paired records, configures
+  a provider/profile, persists bounded provider `message` embeddings, runs
+  HDBSCAN or bounded Agglomerative clustering, curates results, and exports CSV.
 - Trust boundaries: browser to authenticated API, local backend to local PostgreSQL, optional explicit OpenAI/Ollama/vLLM provider calls, local filesystem/Compose volumes.
 - Public interfaces: FastAPI `/api/*` routes, React MVP shell, Docker Compose local runtime, `.ai/tools/*` quality gates.
 - Generated-code locations: Python build output in `dist/` and `build/`, frontend production output in `frontend/dist/`; these are ignored by agents.
-- Critical paths: email-only authentication/session validation and migration, project-scoped queries, import validation, provider secret handling and local Ollama endpoint allow-listing, analysis-run metadata, curation override preservation, export original-text warnings.
+- Critical paths: email-only authentication with server-validated tab-scoped
+  session restoration and explicit revocation, project-scoped queries,
+  two-slot/30-second-idle/30-minute-total-capped 512 MiB import spooling, two-pass import
+  validation with byte-/record-bounded DB batches and cleanup, provider secret
+  handling, local Ollama/vLLM endpoint
+  allow-listing, explicit OpenAI cloud confirmation, Unicode-safe 1 KiB embedding
+  chunks with byte-weighted normalized pooling, embedding validation,
+  confirmed-batch run progress, five-minute Ollama batch keep-alive, visible-view
+  non-overlapping two-second run polling, bounded clustering, curation preservation,
+  and export text warnings.
 
 See `docs/architecture/overview.md` for the durable architecture description.
 
@@ -37,7 +48,11 @@ See `docs/architecture/overview.md` for the durable architecture description.
 - Source directories: `backend/`, `frontend/src/`, `deployment/docker/`.
 - Test directories: `tests/` for backend/service/API/migration tests; `frontend/src/*.test.tsx` for frontend smoke/component tests.
 - Naming conventions: backend domain packages mirror product capabilities; SQL migrations use zero-padded numeric prefixes.
-- Error-handling conventions: API routes return clear failure messages without exposing secrets; frontend shows summarized status/errors and import log details.
+- Error-handling conventions: API routes return clear failure messages without
+  exposing secrets; frontend action errors preserve only sanitized
+  `ApiRequestError` details or use action-specific safe fallbacks. Typed feedback
+  distinguishes error, warning, information, and success with matching live-region
+  semantics.
 - Logging and telemetry conventions: MVP uses persisted audit/import/export/run records rather than production telemetry.
 - Dependency policy: manifests and lockfiles are mandatory; dependency and vulnerability gates run through `./.ai/tools/check-dependencies.sh` and `verify.sh`.
 - Migration policy: migrations are committed SQL files in `backend/db/migrations/` and covered by migration tests.
@@ -67,9 +82,21 @@ See `docs/architecture/overview.md` for the durable architecture description.
 - Legal or compliance constraints: Imported support text can contain personal or sensitive data; original-text exports require explicit warnings.
 - Security and privacy constraints: Absolute production-access prohibition; passwords are hashes only; OpenAI keys are encrypted and write-only after save; provider/model selection is explicit.
 - Compatibility constraints: MVP runtime is local Docker Compose and CI-defined toolchain only.
-- Performance constraints: Clustering must avoid full pairwise all-record distance matrices; deterministic MVP scaffold is not final model quality.
+- Performance constraints: Provider embedding inputs are produced incrementally as
+  Unicode-safe chunks of at most 1,024 UTF-8 bytes, retaining at most the current
+  batch of 64; responses, vector dimensions, and
+  clustering record counts are bounded; imports stream through a two-slot 512 MiB
+  wire/temp bound, use 4 MiB/1,000-record DB batches, and retain at most 100 skipped
+  details; two fixed analysis workers use an
+  eight-entry queue, clustering preflights a conservative 512 MiB working-set
+  budget before native pgvector loading, including the preallocated float32 matrix,
+  estimator matrices, bounded fetch/nearest-neighbor workspaces, linkage-specific
+  graph/intermediate structures, results/mappings, and per-record overhead;
+  Agglomerative rejects disconnected neighbor graphs before estimator execution.
 - Operational constraints: No production deployment; local volumes own persistence.
-- Known technical debt: Analysis and clustering are deterministic scaffolds suitable for MVP flow verification, not final high-quality LLM output.
+- Known technical debt: Candidate generation and export-adjacent analysis remain
+  MVP-quality workflows; clustering quality still depends on the configured
+  embedding model and profile parameters.
 
 ## High-value references
 

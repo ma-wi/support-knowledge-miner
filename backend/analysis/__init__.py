@@ -2,6 +2,7 @@
 
 from backend.analysis.service import (
     AnalysisError,
+    AnalysisQueueFull,
     AnalysisRun,
     AnalysisRunInput,
     AnalysisService,
@@ -10,6 +11,7 @@ from backend.analysis.service import (
 
 __all__ = [
     "AnalysisError",
+    "AnalysisQueueFull",
     "AnalysisRun",
     "AnalysisRunInput",
     "AnalysisService",

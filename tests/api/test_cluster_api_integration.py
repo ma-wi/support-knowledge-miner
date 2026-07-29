@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 from backend.api import create_app
 from backend.auth import CurrentUser
 from backend.auth.service import AuthenticationError
-from backend.clusters import Cluster, ClusterManualUpdate, ClusterSource
+from backend.clusters import Cluster, ClusterError, ClusterManualUpdate, ClusterSource
 
 OWNER_ID = UUID("11111111-1111-1111-1111-111111111111")
 PROJECT_ID = UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
@@ -81,8 +81,8 @@ class FakeClusterService:
             ClusterSource(
                 cluster_id=CLUSTER_ID,
                 message_pair_id=PAIR_ID,
-                ticketid="T-1",
-                messagegroupid="G-1",
+                ticket_id="T-1",
+                message_group_id="G-1",
                 message="How do I reset it?",
                 answer="Use the reset link.",
                 membership_score=0.91,
@@ -106,17 +106,17 @@ class FakeClusterService:
             auto_title="Cluster H",
             manual_title=manual_title,
             effective_title=manual_title or "Cluster H",
-            auto_category="deterministic-key",
+            auto_category="hdbscan",
             manual_category=manual_category,
-            effective_category=manual_category or "deterministic-key",
+            effective_category=manual_category or "hdbscan",
             auto_status="unreviewed",
             manual_status=manual_status,
             effective_status=manual_status or "unreviewed",
             score=0.91,
             is_outlier=False,
-            algorithm="linear-prefix-scaffold",
+            algorithm="hdbscan",
             member_count=2,
-            metadata={"non_quadratic": True},
+            metadata={"label": 0, "non_quadratic": True},
             created_at=NOW,
             updated_at=NOW,
         )
@@ -189,7 +189,41 @@ def test_cluster_api_generates_updates_and_exposes_source_traceability() -> None
     )
     assert sources.status_code == 200
     payload = sources.json()[0]
-    assert payload["ticketid"] == "T-1"
-    assert payload["messagegroupid"] == "G-1"
+    assert payload["ticket_id"] == "T-1"
+    assert payload["message_group_id"] == "G-1"
+    assert "ticketid" not in payload
+    assert "messagegroupid" not in payload
     assert payload["message"] == "How do I reset it?"
     assert payload["answer"] == "Use the reset link."
+
+
+def test_cluster_api_preserves_safe_detailed_memory_budget_error() -> None:
+    detail = (
+        "clustering working set estimate 600000000 bytes for 10000 records "
+        "with 8192 dimensions exceeds the 536870912-byte (512 MiB) limit; "
+        "reduce the dataset size or embedding dimensions, or select HDBSCAN"
+    )
+
+    class BudgetRejectingClusterService(FakeClusterService):
+        def generate_for_run(
+            self, project_id: UUID, run_id: UUID, *, actor_user_id: UUID
+        ) -> list[Cluster]:
+            assert project_id == PROJECT_ID
+            assert run_id == RUN_ID
+            assert actor_user_id == OWNER_ID
+            raise ClusterError(detail)
+
+    client = TestClient(
+        create_app(
+            auth_service=FakeAuthService(),  # type: ignore[arg-type]
+            cluster_service=BudgetRejectingClusterService(),  # type: ignore[arg-type]
+        )
+    )
+
+    response = client.post(
+        f"/api/projects/{PROJECT_ID}/analysis-runs/{RUN_ID}/clusters/generate",
+        headers=auth_headers(),
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {"detail": detail}

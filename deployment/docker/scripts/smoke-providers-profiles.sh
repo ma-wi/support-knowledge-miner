@@ -10,33 +10,31 @@ DB_USER="support_knowledge_miner"
 DB_PASSWORD="support_knowledge_miner_dev_password"
 DATABASE_URL="postgresql://${DB_USER}:${DB_PASSWORD}@localhost:${POSTGRES_PORT}/${DB_NAME}"
 
+run_compose() {
+  POSTGRES_DB="${DB_NAME}" \
+    POSTGRES_USER="${DB_USER}" \
+    POSTGRES_PASSWORD="${DB_PASSWORD}" \
+    POSTGRES_PORT="${POSTGRES_PORT}" \
+    docker compose -p "${PROJECT_NAME}" -f "${COMPOSE_FILE}" "$@"
+}
+
 cleanup() {
-  POSTGRES_PORT="${POSTGRES_PORT}" docker compose \
-    -p "${PROJECT_NAME}" \
-    -f "${COMPOSE_FILE}" \
-    down -v >/dev/null 2>&1 || true
+  run_compose down -v >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
-POSTGRES_PORT="${POSTGRES_PORT}" docker compose \
-  -p "${PROJECT_NAME}" \
-  -f "${COMPOSE_FILE}" \
-  up -d postgres
+run_compose up -d postgres
 
 for _ in $(seq 1 30); do
-  if POSTGRES_PORT="${POSTGRES_PORT}" docker compose \
-    -p "${PROJECT_NAME}" \
-    -f "${COMPOSE_FILE}" \
-    exec -T postgres pg_isready -U "${DB_USER}" -d "${DB_NAME}" >/dev/null 2>&1; then
+  if run_compose exec -T postgres \
+    pg_isready -U "${DB_USER}" -d "${DB_NAME}" >/dev/null 2>&1; then
     break
   fi
   sleep 1
 done
 
-POSTGRES_PORT="${POSTGRES_PORT}" docker compose \
-  -p "${PROJECT_NAME}" \
-  -f "${COMPOSE_FILE}" \
-  exec -T postgres pg_isready -U "${DB_USER}" -d "${DB_NAME}" >/dev/null
+run_compose exec -T postgres \
+  pg_isready -U "${DB_USER}" -d "${DB_NAME}" >/dev/null
 
 SKM_DATABASE_URL="${DATABASE_URL}" \
 SKM_INITIAL_PASSWORD="owner-password" \
@@ -123,8 +121,11 @@ with TestClient(create_app()) as client:
             "provider": "vllm",
             "model": "local-embed",
             "thresholds": {"similarity": 0.78},
-            "algorithm_settings": {"clusterer": "hdbscan"},
-            "prompt_identifier": "faq-v1",
+            "algorithm_settings": {
+                "algorithm": "hdbscan",
+                "min_cluster_size": 5,
+                "cluster_selection_epsilon": 0,
+            },
         },
     )
     if local_profile.status_code != 201:
@@ -140,7 +141,11 @@ with TestClient(create_app()) as client:
             "provider": "openai",
             "model": "gpt-4.1-mini",
             "thresholds": {"similarity": 0.82},
-            "algorithm_settings": {"clusterer": "agglomerative"},
+            "algorithm_settings": {
+                "algorithm": "agglomerative",
+                "n_clusters": 2,
+                "linkage": "ward",
+            },
         },
     )
     if cloud_profile.status_code != 201:

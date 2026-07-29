@@ -25,7 +25,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-run_compose up -d postgres
+run_compose up -d --wait --wait-timeout 30 postgres
 
 for _ in $(seq 1 30); do
   if run_compose exec -T postgres \
@@ -158,10 +158,80 @@ def assert_provider_constraints(database: DatabaseSettings, user_id: UUID) -> No
         connection.commit()
 
 
+def assert_import_source_id_columns(database: DatabaseSettings) -> None:
+    with open_database_connection(database) as connection:
+        columns = {
+            str(row["column_name"])
+            for row in connection.execute(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = current_schema()
+                  AND table_name = 'message_pairs'
+                """
+            ).fetchall()
+        }
+    if not {"ticket_id", "message_group_id"}.issubset(columns):
+        raise AssertionError(f"snake-case import columns missing: {columns}")
+    if {"ticketid", "messagegroupid"} & columns:
+        raise AssertionError(f"legacy import columns remain: {columns}")
+
+
+def assert_removed_profile_run_fields(
+    database: DatabaseSettings, legacy_run_id: UUID | None = None
+) -> None:
+    with open_database_connection(database) as connection:
+        profile_columns = {
+            str(row["column_name"])
+            for row in connection.execute(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = current_schema()
+                  AND table_name = 'analysis_profiles'
+                """
+            ).fetchall()
+        }
+        if legacy_run_id is None:
+            run = None
+        else:
+            run = connection.execute(
+                """
+                SELECT profile_snapshot, parameters
+                FROM analysis_runs
+                WHERE id = %s
+                """,
+                (legacy_run_id,),
+            ).fetchone()
+    if "prompt_identifier" in profile_columns:
+        raise AssertionError("prompt_identifier column remains")
+    if "prompt_template" not in profile_columns:
+        raise AssertionError("prompt_template column was removed")
+    if legacy_run_id is not None:
+        if run is None:
+            raise AssertionError("seeded legacy analysis run is missing")
+        if run["profile_snapshot"] != {
+            "name": "Legacy profile",
+            "prompt_template": "retained",
+        }:
+            raise AssertionError(
+                f"profile snapshot cleanup changed other keys: {run['profile_snapshot']}"
+            )
+        if run["parameters"] != {"cloud_use_confirmed": True}:
+            raise AssertionError(
+                f"run parameter cleanup changed other keys: {run['parameters']}"
+            )
+
+
 fresh = settings("FRESH_DATABASE_URL")
 fresh_result = run_migrations(fresh)
-if "0011_email_identity.sql" not in fresh_result.applied_versions:
-    raise AssertionError("fresh migration did not apply email identity migration")
+if not {
+    "0012_import_snake_case_fields.sql",
+    "0013_remove_prompt_identifier_run_mode.sql",
+}.issubset(fresh_result.applied_versions):
+    raise AssertionError("fresh migration did not apply the latest migrations")
+assert_import_source_id_columns(fresh)
+assert_removed_profile_run_fields(fresh)
 fresh_user_id = uuid4()
 with open_database_connection(fresh) as connection:
     connection.execute(
@@ -175,6 +245,7 @@ with open_database_connection(fresh) as connection:
 assert_provider_constraints(fresh, fresh_user_id)
 
 upgrade = settings("UPGRADE_DATABASE_URL")
+legacy_run_id = uuid4()
 with open_database_connection(upgrade) as connection:
     with connection.transaction():
         connection.execute(_SCHEMA_TABLE_SQL)
@@ -221,13 +292,77 @@ with open_database_connection(upgrade) as connection:
                 hash_password("user-b-password"),
             ),
         )
+        legacy_project_id = uuid4()
+        legacy_import_id = uuid4()
+        legacy_dataset_id = uuid4()
+        legacy_profile_id = uuid4()
+        connection.execute(
+            "INSERT INTO projects (id, name) VALUES (%s, 'Legacy project')",
+            (legacy_project_id,),
+        )
+        connection.execute(
+            """
+            INSERT INTO import_logs (
+                id, project_id, source_type, source_name, status, total_records,
+                valid_records
+            )
+            VALUES (%s, %s, 'csv', 'legacy.csv', 'completed', 1, 1)
+            """,
+            (legacy_import_id, legacy_project_id),
+        )
+        connection.execute(
+            """
+            INSERT INTO dataset_versions (
+                id, project_id, version_number, import_log_id, record_count,
+                source_type, source_name
+            )
+            VALUES (%s, %s, 1, %s, 1, 'csv', 'legacy.csv')
+            """,
+            (legacy_dataset_id, legacy_project_id, legacy_import_id),
+        )
+        connection.execute(
+            """
+            INSERT INTO analysis_profiles (
+                id, project_id, name, provider, model, is_cloud_provider,
+                prompt_identifier, prompt_template
+            )
+            VALUES (%s, %s, 'Legacy profile', 'vllm', 'local-model', false,
+                    'faq-v1', 'retained')
+            """,
+            (legacy_profile_id, legacy_project_id),
+        )
+        connection.execute(
+            """
+            INSERT INTO analysis_runs (
+                id, project_id, dataset_version_id, analysis_profile_id, status,
+                profile_snapshot, provider, model, parameters
+            )
+            VALUES (
+                %s, %s, %s, %s, 'queued',
+                '{"name": "Legacy profile", "prompt_identifier": "faq-v1",
+                  "prompt_template": "retained"}'::jsonb,
+                'vllm', 'local-model',
+                '{"mode": "fixture", "cloud_use_confirmed": true}'::jsonb
+            )
+            """,
+            (
+                legacy_run_id,
+                legacy_project_id,
+                legacy_dataset_id,
+                legacy_profile_id,
+            ),
+        )
 
 upgrade_result = run_migrations(upgrade)
 if upgrade_result.applied_versions != (
     "0010_ollama_provider.sql",
     "0011_email_identity.sql",
+    "0012_import_snake_case_fields.sql",
+    "0013_remove_prompt_identifier_run_mode.sql",
 ):
     raise AssertionError(f"unexpected upgrade set: {upgrade_result.applied_versions}")
+assert_import_source_id_columns(upgrade)
+assert_removed_profile_run_fields(upgrade, legacy_run_id)
 with open_database_connection(upgrade) as connection:
     username_column = connection.execute(
         """

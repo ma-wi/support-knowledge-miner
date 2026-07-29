@@ -92,8 +92,8 @@ class CandidateSource:
     candidate_id: UUID
     cluster_id: UUID | None
     message_pair_id: UUID
-    ticketid: str
-    messagegroupid: str
+    ticket_id: str
+    message_group_id: str
     message: str
     answer: str
     message_segment_id: str | None
@@ -242,8 +242,8 @@ def _source_from_row(row: dict[str, object]) -> CandidateSource:
         candidate_id=UUID(str(row["candidate_id"])),
         cluster_id=UUID(str(cluster_id)) if cluster_id is not None else None,
         message_pair_id=UUID(str(row["message_pair_id"])),
-        ticketid=str(row["ticketid"]),
-        messagegroupid=str(row["messagegroupid"]),
+        ticket_id=str(row["ticket_id"]),
+        message_group_id=str(row["message_group_id"]),
         message=str(row["message"]),
         answer=str(row["answer"]),
         message_segment_id=(
@@ -583,7 +583,7 @@ class CandidateService:
             rows = connection.execute(
                 """
                 SELECT csa.candidate_id, csa.cluster_id, csa.message_pair_id,
-                       mp.ticketid, mp.messagegroupid, mp.message, mp.answer,
+                       mp.ticket_id, mp.message_group_id, mp.message, mp.answer,
                        csa.message_segment_id, csa.source_language,
                        csa.normalized_customer_message,
                        csa.normalized_support_answer, csa.assignment_type,

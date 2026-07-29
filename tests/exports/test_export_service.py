@@ -154,8 +154,8 @@ def candidate_source() -> CandidateSource:
         candidate_id=CANDIDATE_ID,
         cluster_id=CLUSTER_ID,
         message_pair_id=PAIR_ID,
-        ticketid="T-1",
-        messagegroupid="G-1",
+        ticket_id="T-1",
+        message_group_id="G-1",
         message="How do I reset it, please?",
         answer="Use the reset link.",
         message_segment_id=None,
@@ -252,7 +252,9 @@ def test_source_assignment_export_keeps_exact_headers_and_redacts_original_text(
     assert header == SOURCE_ASSIGNMENT_CSV_COLUMNS
     row = csv_rows(result.csv_content)[0]
     assert row["pair_id"] == str(PAIR_ID)
-    assert row["ticketid"] == "T-1"
+    assert row["ticket_id"] == "T-1"
+    assert "ticketid" not in row
+    assert "messagegroupid" not in row
     assert row["customer_message"] == ""
     assert row["support_answer"] == ""
     assert row["normalized_customer_message"] == "how do i reset it please"

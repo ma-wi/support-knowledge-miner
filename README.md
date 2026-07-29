@@ -6,23 +6,103 @@ The MVP is explicitly local-only. Do not connect it to production systems, produ
 
 ## Implemented MVP Workflows
 
-- Sign in with a seeded local user's email and manage equal-permission users.
+- Sign in with a seeded local user's email, restore a still-valid session after a
+  reload in the same browser tab, sign out explicitly, and manage equal-permission
+  users.
 - Create, open, rename, and delete independent projects.
-- Import CSV or JSON records with `ticketid`, `messagegroupid`, `message`, and `answer` fields.
+- Import CSV or JSON records with `ticket_id`, `message_group_id`, `message`, and `answer` fields.
 - Persist dataset versions, import logs, skipped-record reasons, and audit actor identity.
 - Configure global OpenAI, Ollama, and vLLM providers; OpenAI API keys are write-only after save.
-- Create project analysis profiles with explicit provider/model selection.
-- Start local analysis-run scaffolds with observable status, progress, run metadata, embeddings, and diagnostics.
-- Generate deterministic non-quadratic clustering scaffolds with outlier/source traceability.
+- Create project analysis profiles with editable project-local `analysis-N`
+  suggestions, provider-filtered configured models, and typed
+  HDBSCAN/Agglomerative parameters.
+- Start bounded analysis runs that split long `message` texts into provider-safe
+  chunks, persist one pooled selected-provider embedding per message, and expose
+  observable status, confirmed-batch progress, metadata, and safe diagnostics. The
+  visible Runs view refreshes immediately and then every two seconds without
+  overlapping requests.
+- Generate HDBSCAN or bounded Agglomerative clusters from persisted vectors with
+  outlier, membership, parameter, model, and source traceability.
 - Curate clusters and candidates while preserving automatic, manual, and effective values separately.
 - Export candidate CSV and source-assignment CSV files with persisted export metadata and original-text warnings.
 - Use the React sidebar shell to reach sign-in, settings, project, import, profile, run, cluster, candidate, and export workflows.
 
 The durable product behavior is specified in `docs/specifications/support-knowledge-miner-mvp1.md`.
 
+## Import File Formats
+
+The import accepts an uncompressed UTF-8 `.csv` or `.json` file through and
+including 512 MiB (536,870,912 bytes). The browser sends the selected file directly;
+the backend independently counts the received bytes, stores them temporarily on the
+local filesystem, parses the file in two bounded passes, and removes the temporary
+file after every outcome. Every record represents one
+already-paired customer message and support answer and requires these fields:
+`ticket_id`, `message_group_id`, `message`, and `answer`.
+
+At most two upload/import operations run concurrently in one backend process.
+Additional attempts receive HTTP 503 with a retry hint. An upload that provides no
+new chunk for 30 seconds or exceeds 30 minutes total upload time is aborted and
+cleaned up. Database writes are bounded by both record count and a conservative
+4 MiB text budget per batch; one individual record may still approach the complete
+file limit.
+
+For JSON, the file root must be an array of objects:
+
+```json
+[
+  {
+    "ticket_id": "TICKET-1001",
+    "message_group_id": "GROUP-1",
+    "message": "Wie kann ich meine Lieferadresse ändern?",
+    "answer": "Die Lieferadresse kann vor dem Versand im Kundenkonto geändert werden."
+  },
+  {
+    "ticket_id": "TICKET-1002",
+    "message_group_id": "GROUP-2",
+    "message": "Wann wird meine Bestellung versendet?",
+    "answer": "Der Versand erfolgt üblicherweise innerhalb von zwei Werktagen."
+  }
+]
+```
+
+The equivalent CSV starts with the four required headers:
+
+```csv
+ticket_id,message_group_id,message,answer
+TICKET-1001,GROUP-1,Wie kann ich meine Lieferadresse ändern?,Die Lieferadresse kann vor dem Versand im Kundenkonto geändert werden.
+TICKET-1002,GROUP-2,Wann wird meine Bestellung versendet?,Der Versand erfolgt üblicherweise innerhalb von zwei Werktagen.
+```
+
+Field values are trimmed and must not be empty. Invalid individual records are
+skipped and recorded in the import log; the import succeeds when at least one
+record is valid. A malformed JSON document, a JSON root other than an array, or
+missing CSV headers fails the complete import before a dataset version is created.
+Duplicate `ticket_id` and `message_group_id` combinations are allowed.
+Legacy `ticketid` and `messagegroupid` field names are not accepted.
+Complete record counts remain in the import log, but only the first 100 skipped-row
+details are persisted and returned. The UI explicitly identifies a truncated detail
+list.
+
+The authenticated HTTP contract uses the raw file as the request body, the media
+type `text/csv` or `application/json`, and an RFC 5987 filename. It does not use a
+JSON wrapper around the file:
+
+```bash
+curl --request POST \
+  --header "Authorization: Bearer LOCAL_SESSION_TOKEN" \
+  --header "Content-Type: application/json" \
+  --header "Content-Disposition: attachment; filename*=UTF-8''support.json" \
+  --data-binary @support.json \
+  http://127.0.0.1:8080/api/projects/PROJECT_ID/imports
+```
+
+Unsupported media or filename extensions, oversize input, invalid UTF-8, malformed
+CSV/JSON, missing CSV headers, a non-array JSON root, and an import without any
+valid records produce distinct German messages.
+
 ## Technology
 
-- Backend: Python 3.13, FastAPI, psycopg, PostgreSQL with pgvector.
+- Backend: Python 3.13, FastAPI, ijson, psycopg, scikit-learn, PostgreSQL with pgvector.
 - Frontend: React 19, TypeScript, Vite, Vitest, Testing Library, Oxlint, Prettier.
 - Runtime: local Docker Compose PostgreSQL/pgvector; optional Ollama and vLLM GPU or CPU profiles.
 - Security-sensitive libraries: Argon2id via `argon2-cffi` for passwords and `cryptography` for provider secret encryption.
@@ -106,8 +186,34 @@ The Vite dev server proxies `/api/*` requests to the backend at
 the frontend.
 
 For local model serving, use the optional Ollama or vLLM Compose profiles documented in `deployment/docker/README.md`.
-Ollama configuration is restricted to the reviewed local hosts `localhost`,
-`127.0.0.1`, `::1`, and the Compose service name `ollama`.
+Ollama and vLLM configuration is restricted to reviewed local hosts:
+`localhost`, `127.0.0.1`, `::1`, `ollama`, `vllm-gpu`, and `vllm-cpu`.
+Provider calls use bounded batches and responses without redirects or fallback.
+OpenAI analysis runs additionally require `cloud_use_confirmed: true`.
+Ollama embedding calls keep the selected model warm for five minutes between
+normal analysis batches; OpenAI and vLLM payloads are unchanged.
+Long messages are split at Unicode-safe boundaries into chunks of at most
+1,024 UTF-8 bytes. Chunks are produced incrementally, and only the current provider
+batch of at most 64 is retained. A byte-weighted mean followed by L2 normalization
+combines multiple chunk vectors into exactly one message vector; messages fitting
+into one chunk retain the provider vector unchanged. Run metadata records the source byte and chunk
+counts without storing source text in diagnostics. Provider failures expose a safe,
+actionable reason such as a context-window violation without copying provider
+response bodies or message text.
+The local backend runs at most two analysis jobs concurrently, queues up to eight
+more, and rejects overload safely. Clustering rejects an estimated working set over
+512 MiB before loading vectors or writing clusters. Pgvector values are decoded
+natively in bounded server-cursor batches into one preallocated contiguous matrix;
+the estimate includes the native matrix, estimator matrices, bounded fetch batch,
+bounded nearest-neighbor workspace, linkage-specific graph/intermediate structures,
+results, mappings, and conservative per-record overhead. Agglomerative rejects a
+disconnected neighbor graph before scikit-learn can complete it with unbudgeted
+cross-component distances.
+Frontend actions preserve server-sanitized API details and otherwise show
+action-specific safe fallbacks. Errors are explicitly labeled and announced as
+alerts; success, informational, and warning feedback remain distinct. Cluster
+loading is available only for completed runs, and an empty result explains that
+clustering must be generated first.
 
 ## Verification
 
@@ -144,6 +250,8 @@ PostgreSQL container:
 - `SKM_INITIAL_FIRST_NAME`, `SKM_INITIAL_LAST_NAME`: optional initial-user display names.
 - `SKM_VLLM_BASE_URL`: optional local vLLM-compatible endpoint.
 - `SKM_OLLAMA_BASE_URL`, `SKM_OLLAMA_MODELS`: optional local Ollama endpoint and comma-separated default model allow-list. The backend seeds this provider only when no Ollama provider is configured yet.
+- `OLLAMA_KEEP_ALIVE`: optional local Ollama model-residency duration; the Compose
+  default and example use `5m`.
 - `POSTGRES_*`, `VLLM_*`, `OLLAMA_*`: local Docker Compose settings in `deployment/docker/.env.example`.
 
 Do not commit secrets or local `.env` files.

@@ -3,6 +3,19 @@
 This directory contains local-only Docker Compose assets for Support Knowledge Miner.
 Do not point these services at production data, production credentials, or production networks.
 
+## Import Temporary Storage
+
+Imports through 512 MiB are spooled to a permission-restricted file in the backend
+host/container's standard temporary directory and parsed twice from that file. Keep
+slightly more than 512 MiB of temporary disk headroom per concurrent import, in
+addition to PostgreSQL space. One backend process admits at most two active imports,
+so reserve slightly more than 1 GiB when both slots may receive maximum-size files.
+Further attempts receive HTTP 503; uploads idle between chunks for 30 seconds or
+running longer than 30 minutes are aborted. The backend deletes the file after success, validation
+failure, disconnect, oversize detection, or database failure. Temporary storage is
+not a persistence or recovery mechanism and must not be populated with production
+data.
+
 ## PostgreSQL with pgvector
 
 Start the local database:
@@ -79,7 +92,11 @@ CPU fallback is available for hosts without GPU support or for constrained local
 docker compose --env-file deployment/docker/.env.example -f deployment/docker/compose.yml --profile vllm-cpu up -d vllm-cpu
 ```
 
-Both profiles expose an OpenAI-compatible local endpoint at `http://localhost:8000/v1` by default and share the persistent `vllm-cache` volume for model artifacts. The endpoint can also be supplied by a separately managed local vLLM process through `SKM_VLLM_BASE_URL`; later provider/profile work should consume that setting rather than hard-coding a service name.
+Both profiles expose an OpenAI-compatible local endpoint at
+`http://localhost:8000/v1` by default and share the persistent `vllm-cache` volume
+for model artifacts. Configure either that loopback endpoint or the active Compose
+service name (`vllm-gpu` or `vllm-cpu`) in provider settings. URL credentials,
+redirects, and non-local hosts are rejected.
 
 `VLLM_IMAGE`, `VLLM_MODEL`, and `VLLM_PORT` are local runtime knobs. Do not use production credentials, production datasets, or production networks with these services.
 
@@ -104,4 +121,5 @@ does not follow redirects.
 
 The default endpoint is `http://localhost:11434`. `SKM_OLLAMA_MODELS` is a comma-separated default allow-list that the backend seeds into the Ollama provider only when no Ollama provider configuration exists yet. Users can later refresh installed models or download and add one named model in the provider UI.
 
-`OLLAMA_KEEP_ALIVE=0` unloads models after requests; use a duration such as `5m` to keep recently used models warm between analysis batches.
+`OLLAMA_KEEP_ALIVE=5m` keeps the selected model warm between normal analysis
+batches and allows Ollama to unload it again after five minutes without activity.

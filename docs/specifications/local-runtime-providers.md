@@ -4,8 +4,10 @@
 - Status: ready-for-implementation
 - Ready for implementation: yes
 - Requirement source: user request on 2026-07-23
+- Accepted incremental requirement:
+  `docs/requirements/chg-002-analysis-clustering-feedback.md`
 - Decision owner: User
-- Last reviewed: 2026-07-23
+- Last reviewed: 2026-07-28
 
 ## Purpose
 
@@ -28,7 +30,7 @@ Support Knowledge Miner supports Ollama as an additional local model provider al
 
 - Production deployment or production access.
 - Automatically pulling models from remote registries during analysis.
-- Replacing the existing deterministic analysis scaffold with real provider embedding execution in this slice.
+- Unbounded model residency after analysis activity stops.
 - Multi-model orchestration for vLLM containers.
 
 ## Behavior
@@ -45,6 +47,10 @@ Support Knowledge Miner supports Ollama as an additional local model provider al
 - If Ollama is unavailable, the provider check returns the configured model allow-list with `ok=false` and a diagnostic message.
 - Ollama model download calls `/api/pull` with `stream:false`, requires a local endpoint, and adds the requested model to the configured allow-list only after Ollama reports success.
 - Analysis profile creation rejects Ollama models that are not in the configured Ollama model list.
+- Every Ollama embedding request sets `keep_alive` to `5m`. The local Compose
+  fallback and example use `OLLAMA_KEEP_ALIVE=5m`, keeping the selected model warm
+  between normal analysis batches while allowing it to unload after inactivity.
+- OpenAI and vLLM embedding payloads do not receive Ollama-specific fields.
 
 ## Acceptance Criteria
 
@@ -54,6 +60,8 @@ Support Knowledge Miner supports Ollama as an additional local model provider al
 - The frontend can request a named Ollama model download and show the updated allow-list after success.
 - Analysis profiles can select Ollama and are marked `is_cloud_provider=false`.
 - Local Docker Compose includes an optional Ollama profile and persistent model store.
+- Ollama embedding adapter tests verify `keep_alive: "5m"` on every batch, unchanged
+  OpenAI/vLLM payloads, and a matching Compose default/example.
 - Tests cover executable fresh and stopped-at-0009 migration constraints, provider
   discovery, rejected non-local endpoints before connection, Ollama pull behavior,
   env seeding, API contract, and frontend behavior.

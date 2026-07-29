@@ -126,7 +126,6 @@ class FakeProviderService:
             is_cloud_provider=payload.provider == "openai",
             thresholds=payload.thresholds,
             algorithm_settings=payload.algorithm_settings,
-            prompt_identifier=payload.prompt_identifier,
             prompt_template=payload.prompt_template,
             created_at=NOW,
             updated_at=NOW,
@@ -154,7 +153,6 @@ class FakeProviderService:
                     is_cloud_provider=payload.provider == "openai",
                     thresholds=payload.thresholds,
                     algorithm_settings=payload.algorithm_settings,
-                    prompt_identifier=payload.prompt_identifier,
                     prompt_template=payload.prompt_template,
                     created_at=profile.created_at,
                     updated_at=NOW,
@@ -221,7 +219,9 @@ def test_openai_provider_key_is_write_only_in_api_responses(
     assert removed.json()["api_key_set"] is False
 
 
-def test_vllm_provider_check_and_project_profile_contract(client: TestClient) -> None:
+def test_vllm_provider_check_and_project_profile_contract(
+    client: TestClient, fake_provider_service: FakeProviderService
+) -> None:
     configured = client.put(
         "/api/providers/vllm",
         headers=auth_headers(),
@@ -244,14 +244,34 @@ def test_vllm_provider_check_and_project_profile_contract(client: TestClient) ->
             "provider": "vllm",
             "model": "local-embed",
             "thresholds": {"similarity": 0.78},
-            "algorithm_settings": {"clusterer": "hdbscan"},
-            "prompt_identifier": "faq-v1",
+            "algorithm_settings": {
+                "algorithm": "hdbscan",
+                "min_cluster_size": 5,
+            },
         },
     )
     assert created.status_code == 201
     assert created.json()["project_id"] == str(PROJECT_ID)
     assert created.json()["is_cloud_provider"] is False
     assert created.json()["thresholds"]["similarity"] == 0.78
+    assert "prompt_identifier" not in created.json()
+
+    rejected = client.post(
+        f"/api/projects/{PROJECT_ID}/analysis-profiles",
+        headers=auth_headers(),
+        json={
+            "name": "Legacy prompt profile",
+            "provider": "vllm",
+            "model": "local-embed",
+            "algorithm_settings": {
+                "algorithm": "hdbscan",
+                "min_cluster_size": 5,
+            },
+            "prompt_identifier": "faq-v1",
+        },
+    )
+    assert rejected.status_code == 422
+    assert len(fake_provider_service.profiles) == 1
 
     listed = client.get(
         f"/api/projects/{PROJECT_ID}/analysis-profiles", headers=auth_headers()
@@ -267,7 +287,11 @@ def test_vllm_provider_check_and_project_profile_contract(client: TestClient) ->
             "provider": "openai",
             "model": "gpt-4.1-mini",
             "thresholds": {"similarity": 0.82},
-            "algorithm_settings": {"clusterer": "agglomerative"},
+            "algorithm_settings": {
+                "algorithm": "agglomerative",
+                "n_clusters": 2,
+                "linkage": "ward",
+            },
         },
     )
     assert updated.status_code == 200
@@ -301,7 +325,10 @@ def test_ollama_provider_check_and_project_profile_contract(
             "provider": "ollama",
             "model": "nomic-embed-text",
             "thresholds": {"similarity": 0.78},
-            "algorithm_settings": {"clusterer": "hdbscan"},
+            "algorithm_settings": {
+                "algorithm": "hdbscan",
+                "min_cluster_size": 5,
+            },
         },
     )
     assert created.status_code == 201

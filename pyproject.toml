@@ -6,7 +6,10 @@ dependencies = [
     "argon2-cffi>=25,<26",
     "cryptography>=48,<49",
     "fastapi>=0.116,<1",
+    "ijson>=3.5,<4",
+    "pgvector>=0.5,<1",
     "psycopg[binary]>=3.2,<4",
+    "scikit-learn>=1.9,<2",
     "uvicorn>=0.38,<1",
 ]
 

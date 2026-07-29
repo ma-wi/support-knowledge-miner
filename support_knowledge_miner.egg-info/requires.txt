@@ -1,5 +1,8 @@
 argon2-cffi<26,>=25
 cryptography<49,>=48
 fastapi<1,>=0.116
+ijson<4,>=3.5
+pgvector<1,>=0.5
 psycopg[binary]<4,>=3.2
+scikit-learn<2,>=1.9
 uvicorn<1,>=0.38

@@ -1,12 +1,19 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 from datetime import UTC, datetime
+from threading import Event
 from uuid import UUID
 
 import pytest
 
 import backend.analysis.service as analysis_service_module
-from backend.analysis import AnalysisRunInput, AnalysisService
+from backend.analysis import (
+    AnalysisQueueFull,
+    AnalysisRunInput,
+    AnalysisService,
+)
+from backend.providers import ProviderError
 
 ACTOR_ID = UUID("11111111-1111-1111-1111-111111111111")
 PROJECT_ID = UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
@@ -19,12 +26,18 @@ NOW = datetime(2026, 7, 22, tzinfo=UTC)
 class FakeResult:
     def __init__(self, rows: list[dict[str, object]] | None = None) -> None:
         self._rows = rows or []
+        self._offset = 0
 
     def fetchone(self) -> dict[str, object] | None:
         return self._rows[0] if self._rows else None
 
     def fetchall(self) -> list[dict[str, object]]:
         return self._rows
+
+    def fetchmany(self, size: int) -> list[dict[str, object]]:
+        rows = self._rows[self._offset : self._offset + size]
+        self._offset += len(rows)
+        return rows
 
 
 class FakeTransaction:
@@ -35,10 +48,49 @@ class FakeTransaction:
         return None
 
 
+class FakeServerCursor:
+    def __init__(self, connection: AnalysisConnection, name: str) -> None:
+        self._connection = connection
+        self._name = name
+        self._result: FakeResult | None = None
+
+    def __enter__(self) -> FakeServerCursor:
+        assert self._connection.active_server_cursor is None
+        self._connection.active_server_cursor = self._name
+        self._connection.server_cursor_events.append(("open", self._name))
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        assert self._connection.active_server_cursor == self._name
+        self._connection.server_cursor_events.append(("close", self._name))
+        self._connection.active_server_cursor = None
+
+    def execute(
+        self, query: str, params: tuple[object, ...] | None = None
+    ) -> FakeServerCursor:
+        self._result = self._connection.execute_server_cursor(query, params)
+        return self
+
+    def fetchmany(self, size: int) -> list[dict[str, object]]:
+        assert self._result is not None
+        return self._result.fetchmany(size)
+
+
 class AnalysisConnection:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        is_cloud_provider: bool = False,
+        message: str = "How do I reset it?",
+        messages: list[str] | None = None,
+    ) -> None:
         self.run: dict[str, object] | None = None
         self.embeddings: list[dict[str, object]] = []
+        self.progress_updates: list[int] = []
+        self.active_server_cursor: str | None = None
+        self.server_cursor_events: list[tuple[str, str]] = []
+        self.is_cloud_provider = is_cloud_provider
+        self.messages = messages if messages is not None else [message]
 
     def __enter__(self) -> AnalysisConnection:
         return self
@@ -49,12 +101,35 @@ class AnalysisConnection:
     def transaction(self) -> FakeTransaction:
         return FakeTransaction()
 
+    def cursor(self, *, name: str) -> FakeServerCursor:
+        return FakeServerCursor(self, name)
+
+    def execute_server_cursor(
+        self, query: str, params: tuple[object, ...] | None = None
+    ) -> FakeResult:
+        assert params == (PROJECT_ID, DATASET_ID)
+        normalized = " ".join(query.split())
+        if normalized.startswith("SELECT message FROM message_pairs"):
+            return FakeResult([{"message": message} for message in self.messages])
+        if normalized.startswith("SELECT id, ordinal, message FROM message_pairs"):
+            return FakeResult(
+                [
+                    {
+                        "id": PAIR_ID if index == 0 else UUID(int=index + 1),
+                        "ordinal": index + 1,
+                        "message": message,
+                    }
+                    for index, message in enumerate(self.messages)
+                ]
+            )
+        raise AssertionError(f"unexpected server-cursor query: {normalized}")
+
     def execute(
         self, query: str, params: tuple[object, ...] | None = None
     ) -> FakeResult:
         normalized = " ".join(query.split())
         if normalized.startswith("SELECT id, record_count FROM dataset_versions"):
-            return FakeResult([{"id": DATASET_ID, "record_count": 1}])
+            return FakeResult([{"id": DATASET_ID, "record_count": len(self.messages)}])
         if normalized.startswith("SELECT id, name, provider, model"):
             return FakeResult(
                 [
@@ -63,10 +138,12 @@ class AnalysisConnection:
                         "name": "Local profile",
                         "provider": "vllm",
                         "model": "local-embed",
-                        "is_cloud_provider": False,
+                        "is_cloud_provider": self.is_cloud_provider,
                         "thresholds": {"similarity": 0.78},
-                        "algorithm_settings": {"algorithm": "fixture"},
-                        "prompt_identifier": "faq-v1",
+                        "algorithm_settings": {
+                            "algorithm": "hdbscan",
+                            "min_cluster_size": 5,
+                        },
                         "prompt_template": None,
                         "created_at": NOW,
                         "updated_at": NOW,
@@ -99,7 +176,8 @@ class AnalysisConnection:
         if normalized.startswith("UPDATE analysis_runs SET status = 'running'"):
             assert self.run is not None
             self.run["status"] = "running"
-            self.run["progress"] = 5
+            assert params is not None
+            self.run["progress"] = params[0]
             self.run["started_at"] = NOW
             return FakeResult(
                 [
@@ -108,20 +186,8 @@ class AnalysisConnection:
                         "project_id": self.run["project_id"],
                         "dataset_version_id": self.run["dataset_version_id"],
                         "analysis_profile_id": self.run["analysis_profile_id"],
+                        "provider": self.run["provider"],
                         "model": self.run["model"],
-                    }
-                ]
-            )
-        if normalized.startswith(
-            "SELECT id, ordinal, message, answer FROM message_pairs"
-        ):
-            return FakeResult(
-                [
-                    {
-                        "id": PAIR_ID,
-                        "ordinal": 1,
-                        "message": "How do I reset it?",
-                        "answer": "Use the reset link.",
                     }
                 ]
             )
@@ -135,9 +201,10 @@ class AnalysisConnection:
                     "dataset_version_id": params[3],
                     "analysis_profile_id": params[4],
                     "source_object_id": params[5],
-                    "text_variant": params[6],
-                    "model": params[7],
-                    "dimensions": params[8],
+                    "text_variant": "message",
+                    "model": params[6],
+                    "dimensions": params[7],
+                    "embedding": params[8],
                     "metadata": unwrap_json(params[9]),
                 }
             )
@@ -150,6 +217,28 @@ class AnalysisConnection:
             self.run["completed_at"] = NOW
             self.run["diagnostics"] = unwrap_json(params[0])
             return FakeResult()
+        if normalized.startswith("UPDATE analysis_runs SET progress ="):
+            assert params is not None
+            assert self.run is not None
+            progress = int(str(params[0]))
+            if (
+                self.run["status"] == "running"
+                and int(str(self.run["progress"])) < progress
+            ):
+                self.run["progress"] = progress
+                self.progress_updates.append(progress)
+            return FakeResult()
+        if normalized.startswith("UPDATE analysis_runs SET status = 'failed',"):
+            assert params is not None
+            assert self.run is not None
+            self.run["status"] = "failed"
+            if len(params) == 2:
+                self.run["error_message"] = "AnalysisQueueFull"
+                self.run["diagnostics"] = unwrap_json(params[0])
+            else:
+                self.run["error_message"] = params[0]
+                self.run["diagnostics"] = unwrap_json(params[1])
+            return FakeResult()
         if normalized.startswith("SELECT id, project_id, dataset_version_id"):
             assert self.run is not None
             return FakeResult([self.run])
@@ -160,7 +249,99 @@ def unwrap_json(value: object) -> object:
     return getattr(value, "obj", value)
 
 
-def test_start_run_returns_queued_before_background_scaffold_completes(
+class FakeEmbeddingProvider:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str, list[str]]] = []
+
+    def embed_texts(
+        self, provider: str, model: str, texts: list[str]
+    ) -> list[list[float]]:
+        self.calls.append((provider, model, texts))
+        return [[0.1, 0.2, 0.3] for _ in texts]
+
+
+def test_long_unicode_text_is_split_without_exceeding_byte_bound() -> None:
+    message = "ä" * 10_355 + "x"
+
+    chunks = list(analysis_service_module._text_chunks(message))
+
+    assert len(chunks) > 1
+    assert "".join(chunks) == message
+    assert max(len(chunk.encode("utf-8")) for chunk in chunks) <= 1024
+
+
+def test_message_embeddings_pool_chunks_and_bound_provider_batches() -> None:
+    class RecordingProvider:
+        def __init__(self) -> None:
+            self.calls: list[list[str]] = []
+
+        def embed_texts(
+            self, provider: str, model: str, texts: list[str]
+        ) -> list[list[float]]:
+            assert provider == "ollama"
+            assert model == "local-embed"
+            self.calls.append(texts)
+            return [
+                [1.0, 0.0] if text.startswith("a") else [0.0, 1.0] for text in texts
+            ]
+
+    provider = RecordingProvider()
+    long_message = ("a" * 1024) + " " + ("b" * 512)
+    messages = [long_message, *["short"] * 64]
+
+    embedded = analysis_service_module._message_embeddings(
+        provider,  # type: ignore[arg-type]
+        "ollama",
+        "local-embed",
+        messages,
+    )
+
+    assert [len(call) for call in provider.calls] == [64, 2]
+    pooled, chunk_count, source_bytes, pooling = embedded[0]
+    assert pooled == pytest.approx([0.8944271909999159, 0.4472135954999579])
+    assert chunk_count == 2
+    assert source_bytes == len(long_message.encode("utf-8"))
+    assert pooling == "byte_weighted_mean_l2"
+    assert embedded[1] == ([0.0, 1.0], 1, 5, "none")
+
+
+def test_message_chunks_are_consumed_only_as_provider_batches_need_them(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class RecordingProvider:
+        def __init__(self) -> None:
+            self.batch_sizes: list[int] = []
+
+        def embed_texts(
+            self, provider: str, model: str, texts: list[str]
+        ) -> list[list[float]]:
+            self.batch_sizes.append(len(texts))
+            return [[1.0, 0.0] for _ in texts]
+
+    provider = RecordingProvider()
+
+    def observed_chunks(_: str) -> Iterator[str]:
+        for index in range(129):
+            if index == 64:
+                assert provider.batch_sizes == [64]
+            if index == 128:
+                assert provider.batch_sizes == [64, 64]
+            yield "a"
+
+    monkeypatch.setattr(analysis_service_module, "_text_chunks", observed_chunks)
+
+    embedded = analysis_service_module._message_embeddings(
+        provider,  # type: ignore[arg-type]
+        "ollama",
+        "local-embed",
+        ["synthetic"],
+    )
+
+    assert provider.batch_sizes == [64, 64, 1]
+    assert embedded == [([1.0, 0.0], 129, 9, "byte_weighted_mean_l2")]
+
+
+def test_start_run_returns_queued_before_batched_embedding_completes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     fake_connection = AnalysisConnection()
@@ -170,12 +351,14 @@ def test_start_run_returns_queued_before_background_scaffold_completes(
         lambda _: fake_connection,
     )
 
-    run = AnalysisService().start_run(
+    embedding_provider = FakeEmbeddingProvider()
+    service = AnalysisService(provider_service=embedding_provider)  # type: ignore[arg-type]
+    run = service.start_run(
         PROJECT_ID,
         AnalysisRunInput(
             dataset_version_id=DATASET_ID,
             analysis_profile_id=PROFILE_ID,
-            parameters={"mode": "fixture"},
+            parameters={"experiment": "baseline"},
         ),
         actor_user_id=ACTOR_ID,
     )
@@ -183,22 +366,307 @@ def test_start_run_returns_queued_before_background_scaffold_completes(
     assert run.status == "queued"
     assert run.progress == 0
     assert run.profile_snapshot["model"] == "local-embed"
-    assert run.parameters == {"mode": "fixture"}
+    assert run.parameters == {"experiment": "baseline"}
+    assert "prompt_identifier" not in run.profile_snapshot
     assert fake_connection.embeddings == []
 
-    AnalysisService().execute_queued_run(run.id)
-    completed = AnalysisService().get_run(PROJECT_ID, run.id)
+    service.execute_queued_run(run.id)
+    completed = service.get_run(PROJECT_ID, run.id)
 
     assert completed is not None
     assert completed.status == "completed"
     assert completed.progress == 100
-    assert completed.diagnostics["embeddings_written"] == 2
-    assert len(fake_connection.embeddings) == 2
-    assert {item["text_variant"] for item in fake_connection.embeddings} == {
-        "message",
-        "answer",
-    }
+    assert completed.diagnostics["embeddings_written"] == 1
+    assert len(fake_connection.embeddings) == 1
+    assert fake_connection.embeddings[0]["text_variant"] == "message"
     assert all(item["dimensions"] == 3 for item in fake_connection.embeddings)
+    assert (
+        fake_connection.embeddings[0]["embedding"]
+        == "[0.10000000000000001,0.20000000000000001,0.29999999999999999]"
+    )
     assert all(
         item["source_object_id"] == PAIR_ID for item in fake_connection.embeddings
     )
+    assert embedding_provider.calls == [("vllm", "local-embed", ["How do I reset it?"])]
+
+
+def test_long_message_run_persists_one_pooled_embedding_with_provenance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    message = "ä" * 20_711
+    fake_connection = AnalysisConnection(message=message)
+    monkeypatch.setattr(
+        analysis_service_module,
+        "open_database_connection",
+        lambda _: fake_connection,
+    )
+    embedding_provider = FakeEmbeddingProvider()
+    service = AnalysisService(provider_service=embedding_provider)  # type: ignore[arg-type]
+    run = service.start_run(
+        PROJECT_ID,
+        AnalysisRunInput(
+            dataset_version_id=DATASET_ID,
+            analysis_profile_id=PROFILE_ID,
+            parameters={},
+        ),
+        actor_user_id=ACTOR_ID,
+    )
+
+    service.execute_queued_run(run.id)
+    completed = service.get_run(PROJECT_ID, run.id)
+
+    assert completed is not None
+    assert completed.status == "completed"
+    assert len(fake_connection.embeddings) == 1
+    metadata = fake_connection.embeddings[0]["metadata"]
+    assert isinstance(metadata, dict)
+    assert metadata["source_chunk_count"] == 41
+    assert metadata["source_bytes"] == len(message.encode("utf-8"))
+    assert metadata["pooling"] == "byte_weighted_mean_l2"
+    assert completed.diagnostics["chunked_messages"] == 1
+    assert completed.diagnostics["chunks_embedded"] == 41
+    assert (
+        max(
+            len(text.encode("utf-8"))
+            for _, _, batch in embedding_provider.calls
+            for text in batch
+        )
+        <= 1024
+    )
+
+
+def test_provider_failure_persists_safe_actionable_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FailingProvider:
+        def embed_texts(
+            self, provider: str, model: str, texts: list[str]
+        ) -> list[list[float]]:
+            raise ProviderError("embedding provider is temporarily unavailable")
+
+    fake_connection = AnalysisConnection()
+    monkeypatch.setattr(
+        analysis_service_module,
+        "open_database_connection",
+        lambda _: fake_connection,
+    )
+    service = AnalysisService(provider_service=FailingProvider())  # type: ignore[arg-type]
+    run = service.start_run(
+        PROJECT_ID,
+        AnalysisRunInput(
+            dataset_version_id=DATASET_ID,
+            analysis_profile_id=PROFILE_ID,
+            parameters={},
+        ),
+        actor_user_id=ACTOR_ID,
+    )
+
+    service.execute_queued_run(run.id)
+    failed = service.get_run(PROJECT_ID, run.id)
+
+    assert failed is not None
+    assert failed.status == "failed"
+    assert failed.progress == 5
+    assert failed.error_message == "embedding provider is temporarily unavailable"
+    assert failed.diagnostics["failure_type"] == "ProviderError"
+    assert fake_connection.embeddings == []
+
+
+def test_chunked_message_provider_batches_publish_monotone_confirmed_progress(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_connection = AnalysisConnection(message="a" * (1024 * 193))
+    monkeypatch.setattr(
+        analysis_service_module,
+        "open_database_connection",
+        lambda _: fake_connection,
+    )
+    service = AnalysisService(
+        provider_service=FakeEmbeddingProvider(),  # type: ignore[arg-type]
+    )
+    run = service.start_run(
+        PROJECT_ID,
+        AnalysisRunInput(
+            dataset_version_id=DATASET_ID,
+            analysis_profile_id=PROFILE_ID,
+            parameters={},
+        ),
+        actor_user_id=ACTOR_ID,
+    )
+
+    service.execute_queued_run(run.id)
+    completed = service.get_run(PROJECT_ID, run.id)
+
+    assert fake_connection.progress_updates == [27, 50, 72, 95]
+    assert fake_connection.server_cursor_events == [
+        ("open", f"analysis_count_{run.id.hex}"),
+        ("close", f"analysis_count_{run.id.hex}"),
+        ("open", f"analysis_embed_{run.id.hex}"),
+        ("close", f"analysis_embed_{run.id.hex}"),
+    ]
+    assert fake_connection.active_server_cursor is None
+    assert completed is not None
+    assert completed.status == "completed"
+    assert completed.progress == 100
+
+
+def test_later_chunked_message_provider_batch_failure_preserves_progress(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class LaterFailingProvider(FakeEmbeddingProvider):
+        def embed_texts(
+            self, provider: str, model: str, texts: list[str]
+        ) -> list[list[float]]:
+            if len(self.calls) == 2:
+                raise ProviderError("embedding provider is temporarily unavailable")
+            return super().embed_texts(provider, model, texts)
+
+    fake_connection = AnalysisConnection(message="a" * (1024 * 193))
+    monkeypatch.setattr(
+        analysis_service_module,
+        "open_database_connection",
+        lambda _: fake_connection,
+    )
+    service = AnalysisService(
+        provider_service=LaterFailingProvider(),  # type: ignore[arg-type]
+    )
+    run = service.start_run(
+        PROJECT_ID,
+        AnalysisRunInput(
+            dataset_version_id=DATASET_ID,
+            analysis_profile_id=PROFILE_ID,
+            parameters={},
+        ),
+        actor_user_id=ACTOR_ID,
+    )
+
+    service.execute_queued_run(run.id)
+    failed = service.get_run(PROJECT_ID, run.id)
+
+    assert fake_connection.progress_updates == [27, 50]
+    assert failed is not None
+    assert failed.status == "failed"
+    assert failed.progress == 50
+    assert failed.error_message == "embedding provider is temporarily unavailable"
+
+
+def test_start_run_rejects_removed_mode_before_insert(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_connection = AnalysisConnection()
+    monkeypatch.setattr(
+        analysis_service_module,
+        "open_database_connection",
+        lambda _: fake_connection,
+    )
+
+    with pytest.raises(
+        analysis_service_module.AnalysisError,
+        match=r"parameters\.mode is no longer supported",
+    ):
+        AnalysisService().start_run(
+            PROJECT_ID,
+            AnalysisRunInput(
+                dataset_version_id=DATASET_ID,
+                analysis_profile_id=PROFILE_ID,
+                parameters={"mode": "fixture", "experiment": "baseline"},
+            ),
+            actor_user_id=ACTOR_ID,
+        )
+
+    assert fake_connection.run is None
+
+
+def test_openai_run_requires_explicit_cloud_confirmation_before_insert(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_connection = AnalysisConnection(is_cloud_provider=True)
+    monkeypatch.setattr(
+        analysis_service_module,
+        "open_database_connection",
+        lambda _: fake_connection,
+    )
+
+    with pytest.raises(
+        analysis_service_module.AnalysisError,
+        match="cloud_use_confirmed",
+    ):
+        AnalysisService().start_run(
+            PROJECT_ID,
+            AnalysisRunInput(
+                dataset_version_id=DATASET_ID,
+                analysis_profile_id=PROFILE_ID,
+                parameters={},
+            ),
+            actor_user_id=ACTOR_ID,
+        )
+
+    assert fake_connection.run is None
+
+
+def test_background_runner_caps_concurrency_and_releases_queue_capacity() -> None:
+    runner = analysis_service_module.LocalBackgroundJobRunner(
+        worker_count=1,
+        queue_capacity=1,
+    )
+    first_started = Event()
+    release_first = Event()
+    first_finished = Event()
+    second_started = Event()
+    third_finished = Event()
+
+    def first_task() -> None:
+        first_started.set()
+        assert release_first.wait(timeout=2)
+        first_finished.set()
+
+    runner.submit(first_task)
+    assert first_started.wait(timeout=2)
+    runner.submit(second_started.set)
+
+    with pytest.raises(AnalysisQueueFull, match="capacity is exhausted"):
+        runner.submit(lambda: None)
+
+    assert second_started.is_set() is False
+    release_first.set()
+    assert first_finished.wait(timeout=2)
+    assert second_started.wait(timeout=2)
+
+    runner.submit(third_finished.set)
+    assert third_finished.wait(timeout=2)
+
+
+def test_enqueue_overload_marks_queued_run_failed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FullRunner:
+        def submit(self, _: object) -> None:
+            raise AnalysisQueueFull("local analysis capacity is exhausted; retry later")
+
+    fake_connection = AnalysisConnection()
+    monkeypatch.setattr(
+        analysis_service_module,
+        "open_database_connection",
+        lambda _: fake_connection,
+    )
+    service = AnalysisService(
+        job_runner=FullRunner(),  # type: ignore[arg-type]
+        provider_service=FakeEmbeddingProvider(),  # type: ignore[arg-type]
+    )
+    run = service.start_run(
+        PROJECT_ID,
+        AnalysisRunInput(
+            dataset_version_id=DATASET_ID,
+            analysis_profile_id=PROFILE_ID,
+            parameters={},
+        ),
+        actor_user_id=ACTOR_ID,
+    )
+
+    with pytest.raises(AnalysisQueueFull):
+        service.enqueue_run(run.id)
+
+    assert fake_connection.run is not None
+    assert fake_connection.run["status"] == "failed"
+    assert fake_connection.run["progress"] == 0
+    assert fake_connection.run["diagnostics"] == {"failure_type": "AnalysisQueueFull"}

@@ -4,6 +4,7 @@ from pathlib import Path
 
 
 COMPOSE_FILE = Path("deployment/docker/compose.yml")
+ENV_EXAMPLE_FILE = Path("deployment/docker/.env.example")
 SMOKE_SCRIPT = Path("deployment/docker/scripts/smoke-postgres.sh")
 MIGRATION_SMOKE_SCRIPT = Path("deployment/docker/scripts/smoke-migrations.sh")
 
@@ -31,12 +32,15 @@ def test_compose_defines_vllm_gpu_and_cpu_paths_with_persistent_cache() -> None:
 
 def test_compose_defines_ollama_path_with_persistent_model_store() -> None:
     compose = COMPOSE_FILE.read_text(encoding="utf-8")
+    env_example = ENV_EXAMPLE_FILE.read_text(encoding="utf-8")
     assert "ollama:" in compose
     assert 'profiles: ["ollama"]' in compose
     assert "ollama/ollama:latest" in compose
     assert "11434" in compose
     assert "ollama-data:/root/.ollama" in compose
     assert "ollama-data:" in compose
+    assert "OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-5m}" in compose
+    assert "OLLAMA_KEEP_ALIVE=5m" in env_example
 
 
 def test_postgres_smoke_script_verifies_migration_health_and_restart_persistence() -> (

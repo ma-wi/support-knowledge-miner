@@ -38,7 +38,10 @@ def run_migrations(settings: DatabaseSettings | None = None) -> MigrationResult:
     """Apply unapplied SQL migrations in filename order."""
 
     applied: list[str] = []
-    with open_database_connection(settings) as connection:
+    with open_database_connection(
+        settings,
+        register_pgvector_types=False,
+    ) as connection:
         with connection.transaction():
             connection.execute(_SCHEMA_TABLE_SQL)
             existing_rows = connection.execute(

@@ -20,6 +20,8 @@ def test_migration_files_are_ordered() -> None:
         "0009_exports.sql",
         "0010_ollama_provider.sql",
         "0011_email_identity.sql",
+        "0012_import_snake_case_fields.sql",
+        "0013_remove_prompt_identifier_run_mode.sql",
     ]
 
 
@@ -28,3 +30,14 @@ def test_foundation_migration_enables_pgvector() -> None:
     assert "CREATE EXTENSION IF NOT EXISTS vector" in migration.read_text(
         encoding="utf-8"
     )
+
+
+def test_removed_profile_and_run_fields_have_forward_migration() -> None:
+    migration = resources.files("backend.db.migrations").joinpath(
+        "0013_remove_prompt_identifier_run_mode.sql"
+    )
+    sql = migration.read_text(encoding="utf-8")
+
+    assert "DROP COLUMN prompt_identifier" in sql
+    assert "profile_snapshot - 'prompt_identifier'" in sql
+    assert "parameters - 'mode'" in sql

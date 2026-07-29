@@ -118,8 +118,8 @@ class FakeCandidateService:
                 candidate_id=CANDIDATE_ID,
                 cluster_id=CLUSTER_ID,
                 message_pair_id=PAIR_ID,
-                ticketid="T-1",
-                messagegroupid="G-1",
+                ticket_id="T-1",
+                message_group_id="G-1",
                 message="How do I reset it?",
                 answer="Use the reset link.",
                 message_segment_id=None,
@@ -273,8 +273,10 @@ def test_candidate_api_creates_updates_lists_and_exposes_sources() -> None:
     )
     assert sources.status_code == 200
     payload = sources.json()[0]
-    assert payload["ticketid"] == "T-1"
-    assert payload["messagegroupid"] == "G-1"
+    assert payload["ticket_id"] == "T-1"
+    assert payload["message_group_id"] == "G-1"
+    assert "ticketid" not in payload
+    assert "messagegroupid" not in payload
     assert payload["message"] == "How do I reset it?"
     assert payload["answer"] == "Use the reset link."
     assert payload["cluster_id"] == str(CLUSTER_ID)

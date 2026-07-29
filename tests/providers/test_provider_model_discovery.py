@@ -1,11 +1,17 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
 
-from backend.providers import ProviderError, ProviderService
+from backend.providers import (
+    AnalysisProfileInput,
+    ProviderConfiguration,
+    ProviderError,
+    ProviderService,
+)
 from backend.providers import service as provider_service_module
 
 
@@ -103,6 +109,120 @@ class FakeOllamaHTTPConnection:
 
     def close(self) -> None:
         return None
+
+
+class FakeEmbeddingHTTPConnection:
+    payload: Any = {"embeddings": [[0.1, 0.2], [0.3, 0.4]]}
+    last_path: str | None = None
+    last_body: dict[str, object] | None = None
+
+    def __init__(self, host: str, timeout: float) -> None:
+        self.host = host
+        self.timeout = timeout
+
+    def request(
+        self,
+        method: str,
+        path: str,
+        body: bytes | None = None,
+        *,
+        headers: dict[str, str],
+    ) -> None:
+        assert method == "POST"
+        assert body is not None
+        FakeEmbeddingHTTPConnection.last_path = path
+        FakeEmbeddingHTTPConnection.last_body = json.loads(body.decode("utf-8"))
+
+    def getresponse(self) -> FakeResponse:
+        return FakeResponse(self.payload)
+
+    def close(self) -> None:
+        return None
+
+
+class RecordingEmbeddingResponse:
+    def __init__(self, *, status: int, payload: Any, raw: bytes | None) -> None:
+        self.status = status
+        self._payload = payload
+        self._raw = raw
+
+    def read(self, _: int) -> bytes:
+        if self._raw is not None:
+            return self._raw
+        return json.dumps(self._payload).encode("utf-8")
+
+
+class RecordingEmbeddingConnection:
+    status = 200
+    payload: Any = {}
+    raw: bytes | None = None
+    request_error: Exception | None = None
+    requests: list[dict[str, object]] = []
+
+    def __init__(self, host: str, timeout: float) -> None:
+        self.host = host
+        self.timeout = timeout
+
+    def request(
+        self,
+        method: str,
+        path: str,
+        body: bytes | None = None,
+        *,
+        headers: dict[str, str],
+    ) -> None:
+        if self.request_error is not None:
+            raise self.request_error
+        self.requests.append(
+            {
+                "host": self.host,
+                "timeout": self.timeout,
+                "method": method,
+                "path": path,
+                "body": json.loads(body.decode("utf-8")) if body else None,
+                "headers": headers,
+            }
+        )
+
+    def getresponse(self) -> RecordingEmbeddingResponse:
+        return RecordingEmbeddingResponse(
+            status=self.status,
+            payload=self.payload,
+            raw=self.raw,
+        )
+
+    def close(self) -> None:
+        return None
+
+    @classmethod
+    def reset(
+        cls,
+        *,
+        payload: Any,
+        status: int = 200,
+        raw: bytes | None = None,
+        request_error: Exception | None = None,
+    ) -> None:
+        cls.payload = payload
+        cls.status = status
+        cls.raw = raw
+        cls.request_error = request_error
+        cls.requests = []
+
+
+def provider_configuration(
+    provider: str,
+    *,
+    endpoint_url: str | None,
+    model: str = "local-embed",
+) -> ProviderConfiguration:
+    return ProviderConfiguration(
+        provider=provider,
+        endpoint_url=endpoint_url,
+        manual_models=[model],
+        api_key_set=provider == "openai",
+        updated_at=datetime(2026, 7, 26, tzinfo=UTC),
+    )
 
 
 def test_openai_check_prefers_embedding_models(monkeypatch: Any) -> None:
@@ -210,3 +330,305 @@ def test_ollama_pull_uses_local_pull_endpoint(monkeypatch: Any) -> None:
         "model": "nomic-embed-text",
         "stream": False,
     }
+
+
+def test_ollama_embeddings_are_batched_and_validated(monkeypatch: Any) -> None:
+    monkeypatch.setattr(
+        provider_service_module, "HTTPConnection", FakeEmbeddingHTTPConnection
+    )
+    service = ProviderService()
+    monkeypatch.setattr(
+        service,
+        "_get_configuration",
+        lambda _: ProviderConfiguration(
+            provider="ollama",
+            endpoint_url="http://localhost:11434/",
+            manual_models=["local-embed"],
+            api_key_set=False,
+            updated_at=datetime(2026, 7, 26, tzinfo=UTC),
+        ),
+    )
+
+    vectors = service.embed_texts(
+        "ollama", "local-embed", ["first message", "second message"]
+    )
+
+    assert vectors == [[0.1, 0.2], [0.3, 0.4]]
+    assert FakeEmbeddingHTTPConnection.last_path == "/api/embed"
+    assert FakeEmbeddingHTTPConnection.last_body == {
+        "model": "local-embed",
+        "input": ["first message", "second message"],
+        "keep_alive": "5m",
+    }
+
+
+def test_embedding_response_rejects_non_finite_values() -> None:
+    with pytest.raises(ProviderError, match="non-finite"):
+        ProviderService()._validate_embeddings([[0.1, float("nan")]], 1)
+
+
+def test_openai_embeddings_use_fixed_host_and_restore_index_mapping(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    RecordingEmbeddingConnection.reset(
+        payload={
+            "data": [
+                {"index": 1, "embedding": [0.3, 0.4]},
+                {"index": 0, "embedding": [0.1, 0.2]},
+            ]
+        }
+    )
+    monkeypatch.setattr(
+        provider_service_module, "HTTPSConnection", RecordingEmbeddingConnection
+    )
+    monkeypatch.setattr(
+        provider_service_module,
+        "decrypt_provider_secret",
+        lambda _: "sk-adapter-test",
+    )
+    service = ProviderService()
+    monkeypatch.setattr(
+        service,
+        "_get_configuration",
+        lambda _: provider_configuration("openai", endpoint_url=None),
+    )
+    monkeypatch.setattr(service, "_get_api_key_secret", lambda _: "encrypted")
+
+    vectors = service.embed_texts(
+        "openai", "local-embed", ["first source", "second source"]
+    )
+
+    assert vectors == [[0.1, 0.2], [0.3, 0.4]]
+    assert RecordingEmbeddingConnection.requests == [
+        {
+            "host": "api.openai.com",
+            "timeout": provider_service_module.PROVIDER_EMBEDDING_TIMEOUT_SECONDS,
+            "method": "POST",
+            "path": "/v1/embeddings",
+            "body": {
+                "model": "local-embed",
+                "input": ["first source", "second source"],
+            },
+            "headers": {
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+                "Authorization": "Bearer sk-adapter-test",
+            },
+        }
+    ]
+
+
+def test_vllm_embeddings_use_allowed_local_v1_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    RecordingEmbeddingConnection.reset(
+        payload={"data": [{"index": 0, "embedding": [0.1, 0.2]}]}
+    )
+    monkeypatch.setattr(
+        provider_service_module, "HTTPConnection", RecordingEmbeddingConnection
+    )
+    service = ProviderService()
+    monkeypatch.setattr(
+        service,
+        "_get_configuration",
+        lambda _: provider_configuration(
+            "vllm", endpoint_url="http://vllm-cpu:8000/v1"
+        ),
+    )
+
+    assert service.embed_texts("vllm", "local-embed", ["source"]) == [[0.1, 0.2]]
+    assert RecordingEmbeddingConnection.requests[0]["host"] == "vllm-cpu:8000"
+    assert RecordingEmbeddingConnection.requests[0]["path"] == "/v1/embeddings"
+
+
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    [
+        ({"embeddings": [[0.1, 0.2]]}, "wrong number"),
+        ({"embeddings": [[0.1], [0.2, 0.3]]}, "inconsistent dimensions"),
+        ({"embeddings": [[0.1, "bad"], [0.2, 0.3]]}, "invalid vector"),
+        ({"embeddings": [[0.1, float("nan")], [0.2, 0.3]]}, "non-finite"),
+    ],
+)
+def test_ollama_embedding_adapter_rejects_hostile_responses(
+    monkeypatch: pytest.MonkeyPatch,
+    payload: Any,
+    message: str,
+) -> None:
+    RecordingEmbeddingConnection.reset(payload=payload)
+    monkeypatch.setattr(
+        provider_service_module, "HTTPConnection", RecordingEmbeddingConnection
+    )
+    service = ProviderService()
+    monkeypatch.setattr(
+        service,
+        "_get_configuration",
+        lambda _: provider_configuration(
+            "ollama", endpoint_url="http://localhost:11434"
+        ),
+    )
+
+    with pytest.raises(ProviderError, match=message):
+        service.embed_texts("ollama", "local-embed", ["first", "second"])
+
+
+def test_embedding_redirect_is_rejected_without_cloud_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    RecordingEmbeddingConnection.reset(payload={}, status=302)
+    monkeypatch.setattr(
+        provider_service_module, "HTTPConnection", RecordingEmbeddingConnection
+    )
+    monkeypatch.setattr(
+        provider_service_module,
+        "HTTPSConnection",
+        lambda *_args, **_kwargs: pytest.fail("cloud fallback must not be attempted"),
+    )
+    service = ProviderService()
+    monkeypatch.setattr(
+        service,
+        "_get_configuration",
+        lambda _: provider_configuration(
+            "vllm", endpoint_url="http://localhost:8000/v1"
+        ),
+    )
+
+    with pytest.raises(ProviderError, match="HTTP 302"):
+        service.embed_texts("vllm", "local-embed", ["source"])
+
+    assert len(RecordingEmbeddingConnection.requests) == 1
+
+
+def test_embedding_context_error_is_actionable_without_echoing_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    RecordingEmbeddingConnection.reset(
+        payload={
+            "error": (
+                "the input length exceeds the context length: sensitive source text"
+            )
+        },
+        status=400,
+    )
+    monkeypatch.setattr(
+        provider_service_module, "HTTPConnection", RecordingEmbeddingConnection
+    )
+    service = ProviderService()
+    monkeypatch.setattr(
+        service,
+        "_get_configuration",
+        lambda _: provider_configuration(
+            "ollama", endpoint_url="http://localhost:11434"
+        ),
+    )
+
+    with pytest.raises(
+        ProviderError,
+        match="embedding input exceeds the model context window",
+    ) as error:
+        service.embed_texts("ollama", "local-embed", ["source"])
+
+    assert "sensitive source text" not in str(error.value)
+
+
+def test_embedding_response_size_limit_is_enforced(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    RecordingEmbeddingConnection.reset(
+        payload={},
+        raw=b"x" * (provider_service_module.MAX_EMBEDDING_RESPONSE_BYTES + 1),
+    )
+    monkeypatch.setattr(
+        provider_service_module, "HTTPConnection", RecordingEmbeddingConnection
+    )
+    service = ProviderService()
+    monkeypatch.setattr(
+        service,
+        "_get_configuration",
+        lambda _: provider_configuration(
+            "ollama", endpoint_url="http://localhost:11434"
+        ),
+    )
+
+    with pytest.raises(ProviderError, match="response is too large"):
+        service.embed_texts("ollama", "local-embed", ["source"])
+
+
+def test_embedding_timeout_fails_safely_without_source_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    RecordingEmbeddingConnection.reset(
+        payload={},
+        request_error=TimeoutError("sensitive source text"),
+    )
+    monkeypatch.setattr(
+        provider_service_module, "HTTPConnection", RecordingEmbeddingConnection
+    )
+    service = ProviderService()
+    monkeypatch.setattr(
+        service,
+        "_get_configuration",
+        lambda _: provider_configuration("vllm", endpoint_url="http://localhost:8000"),
+    )
+
+    with pytest.raises(ProviderError) as error:
+        service.embed_texts("vllm", "local-embed", ["sensitive source text"])
+
+    assert "TimeoutError" in str(error.value)
+    assert "sensitive source text" not in str(error.value)
+
+
+def test_embedding_rejects_non_local_vllm_endpoint_before_connecting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        provider_service_module,
+        "HTTPConnection",
+        lambda *_args, **_kwargs: pytest.fail("connection must not be attempted"),
+    )
+    service = ProviderService()
+    monkeypatch.setattr(
+        service,
+        "_get_configuration",
+        lambda _: provider_configuration(
+            "vllm", endpoint_url="http://example.com:8000"
+        ),
+    )
+
+    with pytest.raises(ProviderError, match="allowed local endpoint"):
+        service.embed_texts("vllm", "local-embed", ["source"])
+
+
+def test_profile_algorithm_settings_are_normalized() -> None:
+    cleaned = ProviderService()._clean_profile_input(
+        AnalysisProfileInput(
+            name="Local",
+            provider="vllm",
+            model="local-embed",
+            thresholds={},
+            algorithm_settings={"algorithm": "agglomerative"},
+        )
+    )
+
+    assert cleaned.algorithm_settings == {
+        "algorithm": "agglomerative",
+        "n_clusters": 2,
+        "distance_threshold": None,
+        "linkage": "ward",
+    }
+
+
+def test_profile_algorithm_settings_reject_unknown_parameters() -> None:
+    with pytest.raises(ProviderError, match="unknown hdbscan setting"):
+        ProviderService()._clean_profile_input(
+            AnalysisProfileInput(
+                name="Local",
+                provider="vllm",
+                model="local-embed",
+                thresholds={},
+                algorithm_settings={
+                    "algorithm": "hdbscan",
+                    "n_clusters": 2,
+                },
+            )
+        )

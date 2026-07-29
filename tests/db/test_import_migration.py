@@ -20,6 +20,8 @@ def test_import_migration_is_ordered_after_projects() -> None:
         "0009_exports.sql",
         "0010_ollama_provider.sql",
         "0011_email_identity.sql",
+        "0012_import_snake_case_fields.sql",
+        "0013_remove_prompt_identifier_run_mode.sql",
     ]
 
 
@@ -39,3 +41,14 @@ def test_import_migration_defines_project_scoped_dataset_and_log_tables() -> Non
     assert "CONSTRAINT dataset_versions_project_version_unique" in migration
     assert "CREATE TABLE IF NOT EXISTS message_pairs" in migration
     assert "CREATE TABLE IF NOT EXISTS import_log_entries" in migration
+
+
+def test_import_snake_case_migration_renames_both_source_id_columns() -> None:
+    migration = (
+        resources.files("backend.db.migrations")
+        .joinpath("0012_import_snake_case_fields.sql")
+        .read_text(encoding="utf-8")
+    )
+
+    assert "RENAME COLUMN ticketid TO ticket_id" in migration
+    assert "RENAME COLUMN messagegroupid TO message_group_id" in migration

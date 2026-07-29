@@ -68,7 +68,7 @@ services:
     volumes:
       - ksm-ollama-data:/root/.ollama
     environment:
-      OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-0}
+      OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-5m}
     deploy:
       resources:
         reservations:

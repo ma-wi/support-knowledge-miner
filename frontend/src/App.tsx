@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import "./App.css";
 
@@ -60,6 +60,8 @@ type ImportLog = {
   datasetVersionId: string | null;
 };
 
+const MAX_IMPORT_BYTES = 512 * 1024 * 1024;
+
 type ApiProviderConfiguration = {
   provider: string;
   endpoint_url: string | null;
@@ -84,6 +86,22 @@ type ProviderConfiguration = {
 };
 
 type ConfigurableProvider = "openai" | "ollama" | "vllm";
+type ProfileAlgorithm = "hdbscan" | "agglomerative";
+type AgglomerativeCriterion = "n_clusters" | "distance_threshold";
+type ProjectProfileLoadState = {
+  projectId: string | null;
+  status: "idle" | "loading" | "ready" | "error";
+};
+type AuthoritativeProjectContext = {
+  projectId: string | null;
+  generation: number;
+  ready: boolean;
+};
+type ClusterGenerationRequest = {
+  projectId: string;
+  runId: string;
+  generation: number;
+};
 
 type ApiAnalysisProfile = {
   id: string;
@@ -94,7 +112,6 @@ type ApiAnalysisProfile = {
   is_cloud_provider: boolean;
   thresholds: Record<string, unknown>;
   algorithm_settings: Record<string, unknown>;
-  prompt_identifier: string | null;
   prompt_template: string | null;
 };
 
@@ -107,7 +124,6 @@ type AnalysisProfile = {
   isCloudProvider: boolean;
   thresholds: Record<string, unknown>;
   algorithmSettings: Record<string, unknown>;
-  promptIdentifier: string | null;
   promptTemplate: string | null;
 };
 
@@ -194,8 +210,8 @@ type Cluster = {
 type ApiClusterSource = {
   cluster_id: string;
   message_pair_id: string;
-  ticketid: string;
-  messagegroupid: string;
+  ticket_id: string;
+  message_group_id: string;
   message: string;
   answer: string;
   membership_score: number;
@@ -206,8 +222,8 @@ type ApiClusterSource = {
 type ClusterSource = {
   clusterId: string;
   messagePairId: string;
-  ticketid: string;
-  messagegroupid: string;
+  ticketId: string;
+  messageGroupId: string;
   message: string;
   answer: string;
   membershipScore: number;
@@ -303,8 +319,8 @@ type ApiCandidateSource = {
   candidate_id: string;
   cluster_id: string | null;
   message_pair_id: string;
-  ticketid: string;
-  messagegroupid: string;
+  ticket_id: string;
+  message_group_id: string;
   message: string;
   answer: string;
   message_segment_id: string | null;
@@ -323,8 +339,8 @@ type CandidateSource = {
   candidateId: string;
   clusterId: string | null;
   messagePairId: string;
-  ticketid: string;
-  messagegroupid: string;
+  ticketId: string;
+  messageGroupId: string;
   message: string;
   answer: string;
   messageSegmentId: string | null;
@@ -374,6 +390,13 @@ type Session = {
   user: User;
 };
 
+type FeedbackKind = "success" | "info" | "warning" | "error";
+
+type Feedback = {
+  kind: FeedbackKind;
+  text: string;
+};
+
 type ActivePage = "projects" | "settings";
 type SettingsTab = "providers" | "users";
 type ProjectTab =
@@ -387,6 +410,39 @@ type ProjectTab =
 
 const API_BASE = import.meta.env.VITE_SKM_API_BASE_URL ?? "";
 const INTERNAL_LAST_NAME_PLACEHOLDER = "-";
+const SESSION_TOKEN_STORAGE_KEY = "skm.session-token";
+const RUN_POLL_INTERVAL_MS = 2000;
+const FEEDBACK_LABELS: Record<FeedbackKind, string> = {
+  success: "Erfolg",
+  info: "Hinweis",
+  warning: "Warnung",
+  error: "Fehler",
+};
+
+function readStoredSessionToken(): string | null {
+  try {
+    return window.sessionStorage.getItem(SESSION_TOKEN_STORAGE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function storeSessionToken(token: string): void {
+  window.sessionStorage.setItem(SESSION_TOKEN_STORAGE_KEY, token);
+}
+
+function clearStoredSessionToken(expectedToken?: string): void {
+  try {
+    if (
+      expectedToken === undefined ||
+      window.sessionStorage.getItem(SESSION_TOKEN_STORAGE_KEY) === expectedToken
+    ) {
+      window.sessionStorage.removeItem(SESSION_TOKEN_STORAGE_KEY);
+    }
+  } catch {
+    // The in-memory session is still cleared when browser storage is unavailable.
+  }
+}
 
 function userNameFromApi(user: ApiUser): string {
   return [user.first_name, user.last_name]
@@ -425,6 +481,17 @@ function toProject(project: ApiProject): Project {
   };
 }
 
+function formatProjectUpdatedAt(updatedAt: string): string {
+  const date = new Date(updatedAt);
+  if (Number.isNaN(date.getTime())) {
+    return updatedAt;
+  }
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(date);
+}
+
 function toImportLog(log: ApiImportLog): ImportLog {
   return {
     id: log.id,
@@ -461,7 +528,6 @@ function toAnalysisProfile(profile: ApiAnalysisProfile): AnalysisProfile {
     isCloudProvider: profile.is_cloud_provider,
     thresholds: profile.thresholds,
     algorithmSettings: profile.algorithm_settings,
-    promptIdentifier: profile.prompt_identifier,
     promptTemplate: profile.prompt_template,
   };
 }
@@ -514,8 +580,8 @@ function toClusterSource(source: ApiClusterSource): ClusterSource {
   return {
     clusterId: source.cluster_id,
     messagePairId: source.message_pair_id,
-    ticketid: source.ticketid,
-    messagegroupid: source.messagegroupid,
+    ticketId: source.ticket_id,
+    messageGroupId: source.message_group_id,
     message: source.message,
     answer: source.answer,
     membershipScore: source.membership_score,
@@ -574,8 +640,8 @@ function toCandidateSource(source: ApiCandidateSource): CandidateSource {
     candidateId: source.candidate_id,
     clusterId: source.cluster_id,
     messagePairId: source.message_pair_id,
-    ticketid: source.ticketid,
-    messagegroupid: source.messagegroupid,
+    ticketId: source.ticket_id,
+    messageGroupId: source.message_group_id,
     message: source.message,
     answer: source.answer,
     messageSegmentId: source.message_segment_id,
@@ -615,11 +681,38 @@ function parseModels(value: FormDataEntryValue | null): string[] {
     .filter(Boolean);
 }
 
+function suggestedAnalysisProfileName(
+  profiles: Pick<AnalysisProfile, "name">[],
+): string {
+  const highestSequence = profiles.reduce((highest, profile) => {
+    const match = /^analysis-(\d+)$/.exec(profile.name);
+    if (match === null) {
+      return highest;
+    }
+    return Math.max(highest, Number.parseInt(match[1], 10));
+  }, 0);
+  return `analysis-${highestSequence + 1}`;
+}
+
 function formatJsonObject(value: Record<string, unknown> | null): string {
   if (value === null || Object.keys(value).length === 0) {
     return "-";
   }
   return JSON.stringify(value);
+}
+
+class ApiRequestError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "ApiRequestError";
+    this.status = status;
+  }
+}
+
+function actionErrorMessage(error: unknown, fallback: string): string {
+  return error instanceof ApiRequestError ? error.message : fallback;
 }
 
 async function apiRequest<T>(
@@ -628,7 +721,7 @@ async function apiRequest<T>(
 ): Promise<T> {
   const headers = new Headers(options.headers);
   headers.set("Accept", "application/json");
-  if (options.body !== undefined) {
+  if (options.body !== undefined && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
   }
   if (options.token) {
@@ -636,14 +729,17 @@ async function apiRequest<T>(
   }
   const response = await fetch(`${API_BASE}${path}`, { ...options, headers });
   if (!response.ok) {
-    let detail = "";
+    let detail: string | null = null;
     try {
       const payload = (await response.json()) as { detail?: unknown };
-      detail = typeof payload.detail === "string" ? `: ${payload.detail}` : "";
+      detail = typeof payload.detail === "string" ? payload.detail : null;
     } catch {
-      detail = "";
+      detail = null;
     }
-    throw new Error(`request failed with status ${response.status}${detail}`);
+    throw new ApiRequestError(
+      detail ?? `Anfrage fehlgeschlagen (HTTP ${response.status}).`,
+      response.status,
+    );
   }
   if (response.status === 204) {
     return undefined as T;
@@ -651,19 +747,18 @@ async function apiRequest<T>(
   return (await response.json()) as T;
 }
 
-function readFileAsText(file: File): Promise<string> {
-  if (typeof file.text === "function") {
-    return file.text();
-  }
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.addEventListener("load", () => resolve(String(reader.result ?? "")));
-    reader.addEventListener("error", () => reject(reader.error));
-    reader.readAsText(file);
-  });
+function encodeRfc5987Filename(filename: string): string {
+  return encodeURIComponent(filename).replace(
+    /['()*]/g,
+    (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`,
+  );
 }
 
 function App() {
+  const [bootstrapToken] = useState(readStoredSessionToken);
+  const [isSessionChecking, setIsSessionChecking] = useState(
+    bootstrapToken !== null,
+  );
   const [session, setSession] = useState<Session | null>(null);
   const [users, setUsers] = useState<User[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
@@ -676,6 +771,11 @@ function App() {
   const [analysisProfiles, setAnalysisProfiles] = useState<AnalysisProfile[]>(
     [],
   );
+  const [projectProfileLoadState, setProjectProfileLoadState] =
+    useState<ProjectProfileLoadState>({
+      projectId: null,
+      status: "idle",
+    });
   const [analysisRuns, setAnalysisRuns] = useState<AnalysisRun[]>([]);
   const [clusters, setClusters] = useState<Cluster[]>([]);
   const [clusterSources, setClusterSources] = useState<ClusterSource[]>([]);
@@ -685,12 +785,14 @@ function App() {
   );
   const [exportLogs, setExportLogs] = useState<ExportLog[]>([]);
   const [lastExportCsv, setLastExportCsv] = useState("");
-  const [message, setMessage] = useState("");
-  const [passwordNotice, setPasswordNotice] = useState("");
+  const [feedback, setFeedback] = useState<Feedback | null>(null);
+  const [clusterLoadRunId, setClusterLoadRunId] = useState<string | null>(null);
+  const [clusterGenerationRequest, setClusterGenerationRequest] =
+    useState<ClusterGenerationRequest | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [activePage, setActivePage] = useState<ActivePage>("projects");
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("providers");
-  const [projectTab, setProjectTab] = useState<ProjectTab>("profiles");
+  const [projectTab, setProjectTab] = useState<ProjectTab>("import");
   const [recentProjectIds, setRecentProjectIds] = useState<string[]>([]);
   const [openAiDiscoveredModels, setOpenAiDiscoveredModels] = useState<
     string[]
@@ -698,6 +800,53 @@ function App() {
   const [openAiSelectedModels, setOpenAiSelectedModels] = useState<string[]>(
     [],
   );
+  const [profileName, setProfileName] = useState("analysis-1");
+  const [profileProvider, setProfileProvider] =
+    useState<ConfigurableProvider>("vllm");
+  const [profileModel, setProfileModel] = useState("");
+  const [profileAlgorithm, setProfileAlgorithm] =
+    useState<ProfileAlgorithm>("hdbscan");
+  const [agglomerativeCriterion, setAgglomerativeCriterion] =
+    useState<AgglomerativeCriterion>("n_clusters");
+  const [runAnalysisProfileId, setRunAnalysisProfileId] = useState("");
+  const [cloudUseConfirmed, setCloudUseConfirmed] = useState(false);
+  const projectOpenGeneration = useRef(0);
+  const clusterGenerationRequestRef = useRef<ClusterGenerationRequest | null>(
+    null,
+  );
+  const signOutRef = useRef<() => void>(() => undefined);
+  const authoritativeProjectContext = useRef<AuthoritativeProjectContext>({
+    projectId: null,
+    generation: 0,
+    ready: false,
+  });
+
+  function showFeedback(kind: FeedbackKind, text: string) {
+    setFeedback({ kind, text });
+  }
+
+  function invalidateProjectContext() {
+    const generation = projectOpenGeneration.current + 1;
+    projectOpenGeneration.current = generation;
+    authoritativeProjectContext.current = {
+      projectId: null,
+      generation,
+      ready: false,
+    };
+    return generation;
+  }
+
+  function isAuthoritativeProjectContext(
+    projectId: string,
+    generation: number,
+  ) {
+    const context = authoritativeProjectContext.current;
+    return (
+      context.ready &&
+      context.projectId === projectId &&
+      context.generation === generation
+    );
+  }
 
   async function loadUsers(token: string) {
     const apiUsers = await apiRequest<ApiUser[]>("/api/users", { token });
@@ -711,12 +860,12 @@ function App() {
     setProjects(apiProjects.map(toProject));
   }
 
-  async function loadImportLogs(token: string, projectId: string) {
+  async function fetchImportLogs(token: string, projectId: string) {
     const apiLogs = await apiRequest<ApiImportLog[]>(
       `/api/projects/${projectId}/imports`,
       { token },
     );
-    setImportLogs(apiLogs.map(toImportLog));
+    return apiLogs.map(toImportLog);
   }
 
   async function loadProviders(token: string) {
@@ -734,45 +883,109 @@ function App() {
     }
   }
 
-  async function loadAnalysisProfiles(token: string, projectId: string) {
+  async function fetchAnalysisProfiles(token: string, projectId: string) {
     const apiProfiles = await apiRequest<ApiAnalysisProfile[]>(
       `/api/projects/${projectId}/analysis-profiles`,
       { token },
     );
-    setAnalysisProfiles(apiProfiles.map(toAnalysisProfile));
+    return apiProfiles.map(toAnalysisProfile);
   }
 
-  async function loadAnalysisRuns(token: string, projectId: string) {
+  async function fetchAnalysisRuns(
+    token: string,
+    projectId: string,
+    signal?: AbortSignal,
+  ) {
     const apiRuns = await apiRequest<ApiAnalysisRun[]>(
       `/api/projects/${projectId}/analysis-runs`,
-      { token },
+      { token, signal },
     );
-    setAnalysisRuns(apiRuns.map(toAnalysisRun));
+    return apiRuns.map(toAnalysisRun);
   }
 
   async function loadClusters(token: string, projectId: string, runId: string) {
-    const apiClusters = await apiRequest<ApiCluster[]>(
-      `/api/projects/${projectId}/analysis-runs/${runId}/clusters`,
-      { token },
-    );
-    setClusters(apiClusters.map(toCluster));
+    try {
+      const apiClusters = await apiRequest<ApiCluster[]>(
+        `/api/projects/${projectId}/analysis-runs/${runId}/clusters`,
+        { token },
+      );
+      setClusters(apiClusters.map(toCluster));
+      setClusterSources([]);
+      setClusterLoadRunId(runId);
+      showFeedback(
+        apiClusters.length > 0 ? "success" : "info",
+        apiClusters.length > 0
+          ? "Cluster geladen."
+          : "Für diesen abgeschlossenen Run wurden noch keine Cluster erzeugt.",
+      );
+    } catch (error: unknown) {
+      showFeedback(
+        "error",
+        actionErrorMessage(error, "Cluster konnten nicht geladen werden."),
+      );
+    }
   }
 
-  async function loadCandidates(token: string, projectId: string) {
+  async function fetchCandidates(token: string, projectId: string) {
     const apiCandidates = await apiRequest<ApiCandidate[]>(
       `/api/projects/${projectId}/candidates`,
       { token },
     );
-    setCandidates(apiCandidates.map(toCandidate));
+    return apiCandidates.map(toCandidate);
   }
 
-  async function loadExports(token: string, projectId: string) {
+  async function fetchExports(token: string, projectId: string) {
     const apiExports = await apiRequest<ApiExportLog[]>(
       `/api/projects/${projectId}/exports`,
       { token },
     );
-    setExportLogs(apiExports.map(toExportLog));
+    return apiExports.map(toExportLog);
   }
+
+  useEffect(() => {
+    if (bootstrapToken === null) {
+      return undefined;
+    }
+
+    let cancelled = false;
+    void apiRequest<ApiUser>("/api/auth/me", { token: bootstrapToken })
+      .then((apiUser) => {
+        if (cancelled) {
+          return;
+        }
+        setSession({
+          token: bootstrapToken,
+          user: toUser(apiUser),
+        });
+        setIsSessionChecking(false);
+        void loadUsers(bootstrapToken).catch(() => setUsers([]));
+        void loadProjects(bootstrapToken).catch(() => setProjects([]));
+        void loadProviders(bootstrapToken).catch(() => setProviders([]));
+      })
+      .catch((error: unknown) => {
+        if (cancelled) {
+          return;
+        }
+        if (error instanceof ApiRequestError && error.status === 401) {
+          clearStoredSessionToken(bootstrapToken);
+          setFeedback(null);
+        } else {
+          showFeedback(
+            "error",
+            actionErrorMessage(
+              error,
+              "Sitzungsprüfung fehlgeschlagen oder Backend nicht erreichbar. Das gespeicherte Token bleibt für einen späteren Versuch erhalten.",
+            ),
+          );
+        }
+        setSession(null);
+        setIsSessionChecking(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [bootstrapToken]);
 
   async function signIn(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -781,6 +994,7 @@ function App() {
     const form = new FormData(formElement);
     const email = String(form.get("email") ?? "").trim();
     const password = String(form.get("password") ?? "");
+    let issuedToken: string | null = null;
     try {
       const response = await apiRequest<{
         access_token: string;
@@ -789,19 +1003,44 @@ function App() {
         method: "POST",
         body: JSON.stringify({ email, password }),
       });
+      issuedToken = response.access_token;
       const nextSession = {
         token: response.access_token,
         user: toUser(response.user),
       };
+      storeSessionToken(nextSession.token);
       setSession(nextSession);
       await Promise.all([
         loadUsers(nextSession.token),
         loadProjects(nextSession.token),
       ]);
-      await loadProviders(nextSession.token).catch(() => setProviders([]));
+      let providerLoadError: unknown = null;
+      try {
+        await loadProviders(nextSession.token);
+      } catch (error: unknown) {
+        setProviders([]);
+        providerLoadError = error;
+      }
       setActivePage("projects");
-      setMessage("Angemeldet. Geschützte Workflows sind verfügbar.");
-    } catch {
+      if (providerLoadError === null) {
+        showFeedback(
+          "success",
+          "Angemeldet. Geschützte Workflows sind verfügbar.",
+        );
+      } else {
+        showFeedback(
+          "error",
+          actionErrorMessage(
+            providerLoadError,
+            "Angemeldet, aber Provider-Konfigurationen konnten nicht geladen werden.",
+          ),
+        );
+      }
+    } catch (error: unknown) {
+      if (issuedToken !== null) {
+        clearStoredSessionToken(issuedToken);
+      }
+      invalidateProjectContext();
       setSession(null);
       setUsers([]);
       setProjects([]);
@@ -810,15 +1049,21 @@ function App() {
       setImportLogEntries([]);
       setProviders([]);
       setAnalysisProfiles([]);
+      setProjectProfileLoadState({ projectId: null, status: "idle" });
       setAnalysisRuns([]);
       setClusters([]);
+      setClusterLoadRunId(null);
       setClusterSources([]);
       setCandidates([]);
       setCandidateSources([]);
       setExportLogs([]);
       setLastExportCsv("");
-      setMessage(
-        "Anmeldung fehlgeschlagen oder Backend nicht erreichbar. Bitte Zugangsdaten und lokalen Dienst prüfen.",
+      showFeedback(
+        "error",
+        actionErrorMessage(
+          error,
+          "Anmeldung fehlgeschlagen oder Backend nicht erreichbar. Bitte Zugangsdaten und lokalen Dienst prüfen.",
+        ),
       );
     } finally {
       setIsLoading(false);
@@ -826,6 +1071,9 @@ function App() {
   }
 
   function signOut() {
+    const token = session?.token;
+    clearStoredSessionToken(token);
+    invalidateProjectContext();
     setSession(null);
     setUsers([]);
     setProjects([]);
@@ -834,20 +1082,36 @@ function App() {
     setImportLogEntries([]);
     setProviders([]);
     setAnalysisProfiles([]);
+    setProjectProfileLoadState({ projectId: null, status: "idle" });
     setAnalysisRuns([]);
     setClusters([]);
+    setClusterLoadRunId(null);
     setClusterSources([]);
     setCandidates([]);
     setCandidateSources([]);
     setExportLogs([]);
     setLastExportCsv("");
-    setPasswordNotice("");
     setOpenAiDiscoveredModels([]);
     setOpenAiSelectedModels([]);
     setRecentProjectIds([]);
     setActivePage("projects");
-    setMessage("");
+    setFeedback(null);
+    if (token !== undefined) {
+      void apiRequest<void>("/api/auth/sign-out", {
+        method: "POST",
+        token,
+      }).catch((error: unknown) => {
+        showFeedback(
+          "error",
+          actionErrorMessage(
+            error,
+            "Lokale Abmeldung abgeschlossen, aber die Serversitzung konnte nicht widerrufen werden.",
+          ),
+        );
+      });
+    }
   }
+  signOutRef.current = signOut;
 
   function openProvidersPage() {
     setActivePage("settings");
@@ -863,10 +1127,13 @@ function App() {
   }
 
   function openProjectListPage() {
+    invalidateProjectContext();
     setActivePage("projects");
     setCurrentProject(null);
-    setProjectTab("profiles");
-    setMessage("");
+    setAnalysisProfiles([]);
+    setProjectProfileLoadState({ projectId: null, status: "idle" });
+    setProjectTab("import");
+    setFeedback(null);
   }
 
   async function createProject(event: FormEvent<HTMLFormElement>) {
@@ -885,14 +1152,19 @@ function App() {
         body: JSON.stringify({ name }),
       });
       const project = toProject(created);
+      invalidateProjectContext();
       setProjects((existing) => [project, ...existing]);
       setCurrentProject(null);
       setActivePage("projects");
       formElement.reset();
-      setMessage("Projekt erstellt.");
-    } catch {
-      setMessage(
-        "Projekt konnte nicht erstellt werden. Bitte Namen und Backend prüfen.",
+      showFeedback("success", "Projekt erstellt.");
+    } catch (error: unknown) {
+      showFeedback(
+        "error",
+        actionErrorMessage(
+          error,
+          "Projekt konnte nicht erstellt werden. Bitte Namen und Backend prüfen.",
+        ),
       );
     } finally {
       setIsLoading(false);
@@ -903,6 +1175,25 @@ function App() {
     if (session === null) {
       return;
     }
+    const generation = invalidateProjectContext();
+    setCurrentProject(null);
+    setImportLogs([]);
+    setImportLogEntries([]);
+    setAnalysisProfiles([]);
+    setAnalysisRuns([]);
+    setClusters([]);
+    setClusterLoadRunId(null);
+    setClusterSources([]);
+    setCandidates([]);
+    setCandidateSources([]);
+    setExportLogs([]);
+    setLastExportCsv("");
+    setProjectProfileLoadState({
+      projectId,
+      status: "loading",
+    });
+    setProjectTab("import");
+    setActivePage("projects");
     try {
       const opened = await apiRequest<ApiProject>(
         `/api/projects/${projectId}`,
@@ -910,32 +1201,65 @@ function App() {
           token: session.token,
         },
       );
+      if (projectOpenGeneration.current !== generation) {
+        return;
+      }
       const project = toProject(opened);
+      setProjectProfileLoadState({
+        projectId: project.id,
+        status: "loading",
+      });
       setCurrentProject(project);
-      setProjectTab("profiles");
+      setProjectTab("import");
       rememberProjectAccess(project.id);
-      await loadImportLogs(session.token, projectId);
-      await loadAnalysisProfiles(session.token, projectId).catch(() =>
-        setAnalysisProfiles([]),
-      );
-      await loadAnalysisRuns(session.token, projectId).catch(() =>
-        setAnalysisRuns([]),
-      );
-      await loadCandidates(session.token, projectId).catch(() =>
-        setCandidates([]),
-      );
-      await loadExports(session.token, projectId).catch(() =>
-        setExportLogs([]),
-      );
-      setClusters([]);
-      setClusterSources([]);
-      setCandidateSources([]);
-      setImportLogEntries([]);
-      setLastExportCsv("");
       setActivePage("projects");
-      setMessage("Projekt geöffnet.");
-    } catch {
-      setMessage("Projekt konnte nicht geöffnet werden.");
+
+      const [logs, profiles, nextCandidates, exports] =
+        await Promise.allSettled([
+          fetchImportLogs(session.token, projectId),
+          fetchAnalysisProfiles(session.token, projectId),
+          fetchCandidates(session.token, projectId),
+          fetchExports(session.token, projectId),
+        ]);
+      if (projectOpenGeneration.current !== generation) {
+        return;
+      }
+      setImportLogs(logs.status === "fulfilled" ? logs.value : []);
+      setCandidates(
+        nextCandidates.status === "fulfilled" ? nextCandidates.value : [],
+      );
+      setExportLogs(exports.status === "fulfilled" ? exports.value : []);
+      if (profiles.status === "fulfilled") {
+        authoritativeProjectContext.current = {
+          projectId: project.id,
+          generation,
+          ready: true,
+        };
+        setAnalysisProfiles(profiles.value);
+        setProjectProfileLoadState({
+          projectId: project.id,
+          status: "ready",
+        });
+      } else {
+        authoritativeProjectContext.current = {
+          projectId: project.id,
+          generation,
+          ready: false,
+        };
+        setAnalysisProfiles([]);
+        setProjectProfileLoadState({
+          projectId: project.id,
+          status: "error",
+        });
+      }
+      showFeedback("success", "Projekt geöffnet.");
+    } catch (error: unknown) {
+      if (projectOpenGeneration.current === generation) {
+        showFeedback(
+          "error",
+          actionErrorMessage(error, "Projekt konnte nicht geöffnet werden."),
+        );
+      }
     }
   }
 
@@ -959,9 +1283,12 @@ function App() {
       if (currentProject?.id === projectId) {
         setCurrentProject(project);
       }
-      setMessage("Projekt umbenannt.");
-    } catch {
-      setMessage("Projekt konnte nicht umbenannt werden.");
+      showFeedback("success", "Projekt umbenannt.");
+    } catch (error: unknown) {
+      showFeedback(
+        "error",
+        actionErrorMessage(error, "Projekt konnte nicht umbenannt werden."),
+      );
     }
   }
 
@@ -986,23 +1313,30 @@ function App() {
         existing.filter((project) => project.id !== projectId),
       );
       if (currentProject?.id === projectId) {
+        invalidateProjectContext();
         setCurrentProject(null);
-        setProjectTab("profiles");
+        setProjectTab("import");
         setImportLogs([]);
         setImportLogEntries([]);
         setAnalysisProfiles([]);
+        setProjectProfileLoadState({ projectId: null, status: "idle" });
         setAnalysisRuns([]);
         setClusters([]);
+        setClusterLoadRunId(null);
         setClusterSources([]);
         setCandidates([]);
         setCandidateSources([]);
         setExportLogs([]);
         setLastExportCsv("");
       }
-      setMessage("Projekt gelöscht.");
-    } catch {
-      setMessage(
-        "Projekt konnte nicht gelöscht werden. Namensbestätigung prüfen.",
+      showFeedback("success", "Projekt gelöscht.");
+    } catch (error: unknown) {
+      showFeedback(
+        "error",
+        actionErrorMessage(
+          error,
+          "Projekt konnte nicht gelöscht werden. Namensbestätigung prüfen.",
+        ),
       );
     }
   }
@@ -1032,10 +1366,14 @@ function App() {
       });
       setUsers((existing) => [...existing, toUser(created)]);
       formElement.reset();
-      setMessage("User angelegt. Passwortwert bleibt write-only.");
-    } catch {
-      setMessage(
-        "User konnte nicht angelegt werden. Bitte Eingaben und Backend prüfen.",
+      showFeedback("success", "User angelegt. Passwortwert bleibt write-only.");
+    } catch (error: unknown) {
+      showFeedback(
+        "error",
+        actionErrorMessage(
+          error,
+          "User konnte nicht angelegt werden. Bitte Eingaben und Backend prüfen.",
+        ),
       );
     } finally {
       setIsLoading(false);
@@ -1071,10 +1409,16 @@ function App() {
       setUsers((existing) =>
         existing.map((user) => (user.id === userId ? toUser(saved) : user)),
       );
-      setMessage("Userdaten aktualisiert.");
-    } catch {
+      showFeedback("success", "Userdaten aktualisiert.");
+    } catch (error: unknown) {
       setUsers(previous);
-      setMessage("Userdaten konnten nicht gespeichert werden.");
+      showFeedback(
+        "error",
+        actionErrorMessage(
+          error,
+          "Userdaten konnten nicht gespeichert werden.",
+        ),
+      );
     }
   }
 
@@ -1088,11 +1432,15 @@ function App() {
         token: session.token,
         body: JSON.stringify({ password }),
       });
-      setPasswordNotice(
+      showFeedback(
+        "success",
         "Passwortwert bleibt write-only und wurde gespeichert.",
       );
-    } catch {
-      setPasswordNotice("Passwort konnte nicht gespeichert werden.");
+    } catch (error: unknown) {
+      showFeedback(
+        "error",
+        actionErrorMessage(error, "Passwort konnte nicht gespeichert werden."),
+      );
     }
   }
 
@@ -1101,7 +1449,8 @@ function App() {
       return;
     }
     if (session.user.id === userId) {
-      setMessage(
+      showFeedback(
+        "warning",
         "Selbstlöschung ist gesperrt, damit kein lokaler Lockout entsteht.",
       );
       return;
@@ -1112,9 +1461,12 @@ function App() {
         token: session.token,
       });
       setUsers((existing) => existing.filter((user) => user.id !== userId));
-      setMessage("User gelöscht.");
-    } catch {
-      setMessage("User konnte nicht gelöscht werden.");
+      showFeedback("success", "User gelöscht.");
+    } catch (error: unknown) {
+      showFeedback(
+        "error",
+        actionErrorMessage(error, "User konnte nicht gelöscht werden."),
+      );
     }
   }
 
@@ -1130,36 +1482,62 @@ function App() {
         ? (input.files?.[0] ?? null)
         : new FormData(formElement).get("importFile");
     if (!(file instanceof File)) {
-      setMessage("Bitte CSV- oder JSON-Datei auswählen.");
+      showFeedback("warning", "Bitte CSV- oder JSON-Datei auswählen.");
       return;
     }
-    const sourceType = file.name.toLowerCase().endsWith(".json")
-      ? "json"
-      : "csv";
+    const lowerName = file.name.toLowerCase();
+    if (!lowerName.endsWith(".csv") && !lowerName.endsWith(".json")) {
+      showFeedback(
+        "warning",
+        "Nicht unterstützter Dateityp. Bitte CSV oder JSON auswählen.",
+      );
+      return;
+    }
+    if (file.size > MAX_IMPORT_BYTES) {
+      showFeedback(
+        "warning",
+        `Datei ist zu groß (${file.size} Byte). Maximal erlaubt sind 536870912 Byte (512 MiB).`,
+      );
+      return;
+    }
+    const sourceType = lowerName.endsWith(".json") ? "json" : "csv";
+    const contentType = sourceType === "json" ? "application/json" : "text/csv";
     setIsLoading(true);
     try {
-      const content = await readFileAsText(file);
       const result = await apiRequest<{
         log: ApiImportLog;
         skipped_entries: ApiImportLogEntry[];
+        skipped_entries_truncated: boolean;
       }>(`/api/projects/${currentProject.id}/imports`, {
         method: "POST",
         token: session.token,
-        body: JSON.stringify({
-          source_type: sourceType,
-          source_name: file.name,
-          content,
-        }),
+        headers: {
+          "Content-Type": contentType,
+          "Content-Disposition": `attachment; filename*=UTF-8''${encodeRfc5987Filename(file.name)}`,
+        },
+        body: file,
       });
       setImportLogs((existing) => [toImportLog(result.log), ...existing]);
       setImportLogEntries(result.skipped_entries);
-      setMessage(
-        `Import abgeschlossen: ${result.log.valid_records} importiert, ${result.log.skipped_records} übersprungen, ${result.log.total_records} gelesen.`,
-      );
+      if (result.log.status === "failed") {
+        showFeedback(
+          "error",
+          `Import fehlgeschlagen: ${result.log.failure_reason ?? "Unbekannter Validierungsfehler."}`,
+        );
+      } else {
+        const truncationNotice = result.skipped_entries_truncated
+          ? " Angezeigt werden nur die ersten 100 Fehlerdetails."
+          : "";
+        showFeedback(
+          "success",
+          `Import abgeschlossen: ${result.log.valid_records} importiert, ${result.log.skipped_records} übersprungen, ${result.log.total_records} gelesen.${truncationNotice}`,
+        );
+      }
       formElement.reset();
-    } catch {
-      setMessage(
-        "Import fehlgeschlagen. Logeintrag und Validierungsdetails prüfen.",
+    } catch (error: unknown) {
+      showFeedback(
+        "error",
+        actionErrorMessage(error, "Import konnte nicht durchgeführt werden."),
       );
     } finally {
       setIsLoading(false);
@@ -1176,9 +1554,18 @@ function App() {
         { token: session.token },
       );
       setImportLogEntries(entries);
-      setMessage("Import-Log geladen.");
-    } catch {
-      setMessage("Import-Log konnte nicht geladen werden.");
+      const selectedLog = importLogs.find((log) => log.id === logId);
+      showFeedback(
+        "info",
+        selectedLog !== undefined && selectedLog.skippedRecords > entries.length
+          ? "Import-Log geladen. Angezeigt werden nur die ersten 100 Fehlerdetails."
+          : "Import-Log geladen.",
+      );
+    } catch (error: unknown) {
+      showFeedback(
+        "error",
+        actionErrorMessage(error, "Import-Log konnte nicht geladen werden."),
+      );
     }
   }
 
@@ -1229,18 +1616,25 @@ function App() {
         if (nextOpenAi.apiKeySet) {
           await discoverOpenAiModels(nextOpenAi.manualModels, true);
         } else {
-          setMessage("OpenAI Provider gespeichert.");
+          showFeedback("success", "OpenAI Provider gespeichert.");
         }
       } else {
         formElement.reset();
-        setMessage(
+        showFeedback(
+          "success",
           provider === "ollama"
             ? "Ollama Provider gespeichert."
             : "vLLM Provider gespeichert.",
         );
       }
-    } catch {
-      setMessage("Provider-Konfiguration konnte nicht gespeichert werden.");
+    } catch (error: unknown) {
+      showFeedback(
+        "error",
+        actionErrorMessage(
+          error,
+          "Provider-Konfiguration konnte nicht gespeichert werden.",
+        ),
+      );
     }
   }
 
@@ -1312,20 +1706,23 @@ function App() {
         await persistOpenAiModels(models);
       }
       if (result.ok && models.length > 0) {
-        setMessage(`${models.length} OpenAI Modell(e) abgerufen.`);
+        showFeedback("success", `${models.length} OpenAI Modell(e) abgerufen.`);
       } else if (result.ok) {
-        setMessage("Keine OpenAI Modelle gefunden.");
+        showFeedback("info", "Keine OpenAI Modelle gefunden.");
       } else {
-        setMessage(
+        showFeedback(
+          "warning",
           result.message || "OpenAI Modelle konnten nicht abgerufen werden.",
         );
       }
-    } catch (error) {
+    } catch (error: unknown) {
       setOpenAiDiscoveredModels(fallbackModels);
-      setMessage(
-        error instanceof Error
-          ? `OpenAI Modelle konnten nicht abgerufen werden: ${error.message}`
-          : "OpenAI Modelle konnten nicht abgerufen werden.",
+      showFeedback(
+        "error",
+        actionErrorMessage(
+          error,
+          "OpenAI Modelle konnten nicht abgerufen werden.",
+        ),
       );
     }
   }
@@ -1357,15 +1754,23 @@ function App() {
         await persistProviderModels(provider, models);
       }
       if (result.ok && models.length > 0) {
-        setMessage(`${models.length} ${provider} Modell(e) abgerufen.`);
+        showFeedback(
+          "success",
+          `${models.length} ${provider} Modell(e) abgerufen.`,
+        );
       } else {
-        setMessage(result.message || `${provider} Modelle nicht gefunden.`);
+        showFeedback(
+          "warning",
+          result.message || `${provider} Modelle nicht gefunden.`,
+        );
       }
-    } catch (error) {
-      setMessage(
-        error instanceof Error
-          ? `${provider} Modelle konnten nicht abgerufen werden: ${error.message}`
-          : `${provider} Modelle konnten nicht abgerufen werden.`,
+    } catch (error: unknown) {
+      showFeedback(
+        "error",
+        actionErrorMessage(
+          error,
+          `${provider} Modelle konnten nicht abgerufen werden.`,
+        ),
       );
     }
   }
@@ -1377,11 +1782,11 @@ function App() {
     const form = new FormData(formElement);
     const model = String(form.get("pullModel") ?? "").trim();
     if (!model) {
-      setMessage("Ollama Modellname fehlt.");
+      showFeedback("warning", "Ollama Modellname fehlt.");
       return;
     }
     setIsLoading(true);
-    setMessage(`Ollama Modell ${model} wird heruntergeladen.`);
+    showFeedback("info", `Ollama Modell ${model} wird heruntergeladen.`);
     try {
       const updated = await apiRequest<ApiProviderConfiguration>(
         "/api/providers/ollama/pull",
@@ -1396,12 +1801,11 @@ function App() {
         ...existing.filter((item) => item.provider !== "ollama"),
       ]);
       formElement.reset();
-      setMessage(`Ollama Modell ${model} wurde hinzugefügt.`);
-    } catch (error) {
-      setMessage(
-        error instanceof Error
-          ? `Ollama Modell konnte nicht geladen werden: ${error.message}`
-          : "Ollama Modell konnte nicht geladen werden.",
+      showFeedback("success", `Ollama Modell ${model} wurde hinzugefügt.`);
+    } catch (error: unknown) {
+      showFeedback(
+        "error",
+        actionErrorMessage(error, "Ollama Modell konnte nicht geladen werden."),
       );
     } finally {
       setIsLoading(false);
@@ -1410,95 +1814,215 @@ function App() {
 
   async function createAnalysisProfile(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (session === null || currentProject === null) {
+    const context = authoritativeProjectContext.current;
+    if (
+      session === null ||
+      currentProject === null ||
+      !context.ready ||
+      context.projectId !== currentProject.id ||
+      projectProfileLoadState.projectId !== currentProject.id ||
+      projectProfileLoadState.status !== "ready"
+    ) {
+      showFeedback(
+        "info",
+        "Analyseprofile werden noch geladen und können noch nicht gespeichert werden.",
+      );
       return;
     }
     const formElement = event.currentTarget;
+    const originProjectId = currentProject.id;
+    const generation = context.generation;
     const form = new FormData(formElement);
     const similarity = Number.parseFloat(String(form.get("similarity") ?? ""));
     const thresholds = Number.isFinite(similarity) ? { similarity } : {};
+    const algorithmSettings: Record<string, number | string> = {
+      algorithm: profileAlgorithm,
+    };
+    if (profileAlgorithm === "hdbscan") {
+      algorithmSettings.min_cluster_size = Number.parseInt(
+        String(form.get("minClusterSize") ?? ""),
+        10,
+      );
+      const minSamples = String(form.get("minSamples") ?? "").trim();
+      if (minSamples) {
+        algorithmSettings.min_samples = Number.parseInt(minSamples, 10);
+      }
+      algorithmSettings.cluster_selection_epsilon = Number.parseFloat(
+        String(form.get("clusterSelectionEpsilon") ?? ""),
+      );
+    } else {
+      if (agglomerativeCriterion === "n_clusters") {
+        algorithmSettings.n_clusters = Number.parseInt(
+          String(form.get("nClusters") ?? ""),
+          10,
+        );
+      } else {
+        algorithmSettings.distance_threshold = Number.parseFloat(
+          String(form.get("distanceThreshold") ?? ""),
+        );
+      }
+      algorithmSettings.linkage = String(form.get("linkage") ?? "ward");
+    }
     try {
       const created = await apiRequest<ApiAnalysisProfile>(
-        `/api/projects/${currentProject.id}/analysis-profiles`,
+        `/api/projects/${originProjectId}/analysis-profiles`,
         {
           method: "POST",
           token: session.token,
           body: JSON.stringify({
-            name: String(form.get("profileName") ?? "").trim(),
-            provider: String(form.get("provider") ?? ""),
-            model: String(form.get("model") ?? "").trim(),
+            name: profileName.trim(),
+            provider: profileProvider,
+            model: profileModel,
             thresholds,
-            algorithm_settings: {
-              algorithm:
-                String(form.get("algorithm") ?? "").trim() || "default",
-            },
-            prompt_identifier:
-              String(form.get("promptIdentifier") ?? "").trim() || null,
+            algorithm_settings: algorithmSettings,
           }),
         },
       );
-      setAnalysisProfiles((existing) => [
-        toAnalysisProfile(created),
-        ...existing,
-      ]);
+      if (!isAuthoritativeProjectContext(originProjectId, generation)) {
+        return;
+      }
+      const nextProfiles = [toAnalysisProfile(created), ...analysisProfiles];
+      setAnalysisProfiles(nextProfiles);
+      setProfileName(suggestedAnalysisProfileName(nextProfiles));
       formElement.reset();
-      setMessage("Analyseprofil gespeichert.");
-    } catch {
-      setMessage(
-        "Analyseprofil konnte nicht gespeichert werden. Provider und Modell prüfen.",
-      );
+      showFeedback("success", "Analyseprofil gespeichert.");
+    } catch (error: unknown) {
+      if (isAuthoritativeProjectContext(originProjectId, generation)) {
+        showFeedback(
+          "error",
+          actionErrorMessage(
+            error,
+            "Analyseprofil konnte nicht gespeichert werden. Provider und Modell prüfen.",
+          ),
+        );
+      }
     }
   }
 
   async function startAnalysisRun(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (session === null || currentProject === null) {
+    const context = authoritativeProjectContext.current;
+    if (
+      session === null ||
+      currentProject === null ||
+      !context.ready ||
+      context.projectId !== currentProject.id ||
+      projectProfileLoadState.projectId !== currentProject.id ||
+      projectProfileLoadState.status !== "ready"
+    ) {
+      showFeedback(
+        "info",
+        "Analyseprofile werden noch geladen; ein Run kann noch nicht gestartet werden.",
+      );
       return;
     }
+    const originProjectId = currentProject.id;
+    const generation = context.generation;
     const formElement = event.currentTarget;
     const form = new FormData(formElement);
     const datasetVersionId = String(form.get("datasetVersionId") ?? "");
-    const analysisProfileId = String(form.get("analysisProfileId") ?? "");
-    const mode = String(form.get("runMode") ?? "").trim() || "fixture";
+    const selectedProfile = authoritativeAnalysisProfiles.find(
+      (profile) => profile.id === runAnalysisProfileId,
+    );
+    if (selectedProfile === undefined) {
+      showFeedback(
+        "warning",
+        "Bitte ein Profil des aktuellen Projekts auswählen.",
+      );
+      return;
+    }
+    if (selectedProfile?.isCloudProvider && !cloudUseConfirmed) {
+      showFeedback(
+        "warning",
+        "OpenAI Cloud-Nutzung muss vor dem Analysestart bestätigt werden.",
+      );
+      return;
+    }
     try {
       const created = await apiRequest<ApiAnalysisRun>(
-        `/api/projects/${currentProject.id}/analysis-runs`,
+        `/api/projects/${originProjectId}/analysis-runs`,
         {
           method: "POST",
           token: session.token,
           body: JSON.stringify({
             dataset_version_id: datasetVersionId,
-            analysis_profile_id: analysisProfileId,
-            parameters: { mode },
+            analysis_profile_id: runAnalysisProfileId,
+            parameters: {
+              ...(selectedProfile?.isCloudProvider
+                ? { cloud_use_confirmed: true }
+                : {}),
+            },
           }),
         },
       );
+      if (!isAuthoritativeProjectContext(originProjectId, generation)) {
+        return;
+      }
       setAnalysisRuns((existing) => [toAnalysisRun(created), ...existing]);
       formElement.reset();
-      setMessage(
+      setCloudUseConfirmed(false);
+      showFeedback(
+        "success",
         `Analyse gestartet: ${created.status}, Fortschritt ${created.progress}%.`,
       );
-    } catch {
-      setMessage(
-        "Analyse konnte nicht gestartet werden. Dataset-Version und Profil prüfen.",
-      );
+    } catch (error: unknown) {
+      if (isAuthoritativeProjectContext(originProjectId, generation)) {
+        showFeedback(
+          "error",
+          actionErrorMessage(
+            error,
+            "Analyse konnte nicht gestartet werden. Dataset-Version und Profil prüfen.",
+          ),
+        );
+      }
     }
   }
 
   async function generateClusters(runId: string) {
-    if (session === null || currentProject === null) {
+    if (
+      session === null ||
+      currentProject === null ||
+      clusterGenerationRequestRef.current !== null
+    ) {
       return;
     }
+    const request: ClusterGenerationRequest = {
+      projectId: currentProject.id,
+      runId,
+      generation: projectOpenGeneration.current,
+    };
+    clusterGenerationRequestRef.current = request;
+    setClusterGenerationRequest(request);
+    showFeedback("info", `Clustererzeugung für Run ${runId} läuft.`);
     try {
       const apiClusters = await apiRequest<ApiCluster[]>(
-        `/api/projects/${currentProject.id}/analysis-runs/${runId}/clusters/generate`,
+        `/api/projects/${request.projectId}/analysis-runs/${runId}/clusters/generate`,
         { method: "POST", token: session.token },
       );
+      if (projectOpenGeneration.current !== request.generation) {
+        return;
+      }
       setClusters(apiClusters.map(toCluster));
       setClusterSources([]);
-      setMessage("Cluster erzeugt und geladen.");
-    } catch {
-      setMessage("Cluster konnten nicht erzeugt werden. Run-Status prüfen.");
+      setClusterLoadRunId(runId);
+      showFeedback("success", "Cluster erzeugt und geladen.");
+    } catch (error: unknown) {
+      if (projectOpenGeneration.current === request.generation) {
+        showFeedback(
+          "error",
+          actionErrorMessage(
+            error,
+            "Cluster konnten nicht erzeugt werden. Run-Status prüfen.",
+          ),
+        );
+      }
+    } finally {
+      if (clusterGenerationRequestRef.current === request) {
+        clusterGenerationRequestRef.current = null;
+        setClusterGenerationRequest((activeRequest) =>
+          activeRequest === request ? null : activeRequest,
+        );
+      }
     }
   }
 
@@ -1531,9 +2055,12 @@ function App() {
           cluster.id === clusterId ? toCluster(updated) : cluster,
         ),
       );
-      setMessage("Manuelle Clusterwerte gespeichert.");
-    } catch {
-      setMessage("Cluster konnte nicht aktualisiert werden.");
+      showFeedback("success", "Manuelle Clusterwerte gespeichert.");
+    } catch (error: unknown) {
+      showFeedback(
+        "error",
+        actionErrorMessage(error, "Cluster konnte nicht aktualisiert werden."),
+      );
     }
   }
 
@@ -1547,9 +2074,15 @@ function App() {
         { token: session.token },
       );
       setClusterSources(apiSources.map(toClusterSource));
-      setMessage("Quellen geladen.");
-    } catch {
-      setMessage("Clusterquellen konnten nicht geladen werden.");
+      showFeedback("success", "Quellen geladen.");
+    } catch (error: unknown) {
+      showFeedback(
+        "error",
+        actionErrorMessage(
+          error,
+          "Clusterquellen konnten nicht geladen werden.",
+        ),
+      );
     }
   }
 
@@ -1568,9 +2101,15 @@ function App() {
         ...existing.filter((item) => item.id !== candidate.id),
       ]);
       setCandidateSources([]);
-      setMessage("Candidate aus Cluster erstellt.");
-    } catch {
-      setMessage("Candidate konnte nicht aus Cluster erstellt werden.");
+      showFeedback("success", "Candidate aus Cluster erstellt.");
+    } catch (error: unknown) {
+      showFeedback(
+        "error",
+        actionErrorMessage(
+          error,
+          "Candidate konnte nicht aus Cluster erstellt werden.",
+        ),
+      );
     }
   }
 
@@ -1652,9 +2191,15 @@ function App() {
           candidate.id === updated.id ? toCandidate(updated) : candidate,
         ),
       );
-      setMessage("Candidate-Curation gespeichert.");
-    } catch {
-      setMessage("Candidate konnte nicht aktualisiert werden.");
+      showFeedback("success", "Candidate-Curation gespeichert.");
+    } catch (error: unknown) {
+      showFeedback(
+        "error",
+        actionErrorMessage(
+          error,
+          "Candidate konnte nicht aktualisiert werden.",
+        ),
+      );
     }
   }
 
@@ -1668,9 +2213,15 @@ function App() {
         { token: session.token },
       );
       setCandidateSources(apiSources.map(toCandidateSource));
-      setMessage("Candidate-Quellen geladen.");
-    } catch {
-      setMessage("Candidate-Quellen konnten nicht geladen werden.");
+      showFeedback("success", "Candidate-Quellen geladen.");
+    } catch (error: unknown) {
+      showFeedback(
+        "error",
+        actionErrorMessage(
+          error,
+          "Candidate-Quellen konnten nicht geladen werden.",
+        ),
+      );
     }
   }
 
@@ -1701,21 +2252,19 @@ function App() {
         ...existing.filter((item) => item.id !== result.export.id),
       ]);
       setLastExportCsv(result.csv_content);
-      setMessage(
+      showFeedback(
+        result.warning === null ? "success" : "warning",
         result.warning ??
           `Export erstellt: ${result.export.output_filename} (${result.export.row_count} Zeilen).`,
       );
-    } catch {
-      setMessage("Export konnte nicht erstellt werden.");
+    } catch (error: unknown) {
+      showFeedback(
+        "error",
+        actionErrorMessage(error, "Export konnte nicht erstellt werden."),
+      );
     }
   }
 
-  const configuredModelHint =
-    providers
-      .flatMap((provider) =>
-        provider.manualModels.map((model) => `${provider.provider}:${model}`),
-      )
-      .join(", ") || "Noch keine Modelle konfiguriert.";
   const openAiProvider = providers.find(
     (provider) => provider.provider === "openai",
   );
@@ -1745,6 +2294,21 @@ function App() {
   const runnableDatasetLogs = importLogs.filter(
     (log) => log.datasetVersionId !== null,
   );
+  const profileProviderConfiguration = providers.find(
+    (provider) => provider.provider === profileProvider,
+  );
+  const profileProviderModels =
+    profileProviderConfiguration?.manualModels ?? [];
+  const currentProjectProfilesAreReady =
+    currentProject !== null &&
+    projectProfileLoadState.projectId === currentProject.id &&
+    projectProfileLoadState.status === "ready";
+  const authoritativeAnalysisProfiles = currentProjectProfilesAreReady
+    ? analysisProfiles
+    : [];
+  const selectedRunProfile = authoritativeAnalysisProfiles.find(
+    (profile) => profile.id === runAnalysisProfileId,
+  );
 
   function rememberProjectAccess(projectId: string) {
     setRecentProjectIds((existing) =>
@@ -1753,12 +2317,159 @@ function App() {
   }
 
   useEffect(() => {
-    if (!message) {
+    setProfileName(
+      suggestedAnalysisProfileName(
+        currentProjectProfilesAreReady ? analysisProfiles : [],
+      ),
+    );
+  }, [currentProject?.id, currentProjectProfilesAreReady, analysisProfiles]);
+
+  useEffect(() => {
+    const availableModels =
+      providers.find((provider) => provider.provider === profileProvider)
+        ?.manualModels ?? [];
+    setProfileModel((currentModel) =>
+      availableModels.includes(currentModel)
+        ? currentModel
+        : (availableModels[0] ?? ""),
+    );
+  }, [profileProvider, providers]);
+
+  useEffect(() => {
+    setRunAnalysisProfileId((currentProfileId) =>
+      currentProjectProfilesAreReady &&
+      analysisProfiles.some((profile) => profile.id === currentProfileId)
+        ? currentProfileId
+        : currentProjectProfilesAreReady
+          ? (analysisProfiles[0]?.id ?? "")
+          : "",
+    );
+    setCloudUseConfirmed(false);
+  }, [currentProject?.id, currentProjectProfilesAreReady, analysisProfiles]);
+
+  useEffect(() => {
+    if (
+      session === null ||
+      currentProject === null ||
+      activePage !== "projects" ||
+      (projectTab !== "runs" && projectTab !== "clusters")
+    ) {
       return undefined;
     }
-    const timeout = window.setTimeout(() => setMessage(""), 3500);
+
+    const shouldPoll = projectTab === "runs";
+    const token = session.token;
+    const projectId = currentProject.id;
+    const projectGeneration = projectOpenGeneration.current;
+    let cancelled = false;
+    let timer: number | null = null;
+    let activeRequest: { controller: AbortController } | null = null;
+
+    function clearScheduledPoll() {
+      if (timer !== null) {
+        window.clearTimeout(timer);
+        timer = null;
+      }
+    }
+
+    function isCurrentPollingContext(requireVisible: boolean) {
+      return (
+        !cancelled &&
+        projectOpenGeneration.current === projectGeneration &&
+        (!requireVisible || document.visibilityState === "visible")
+      );
+    }
+
+    function cancelActiveRequest() {
+      const request = activeRequest;
+      activeRequest = null;
+      request?.controller.abort();
+    }
+
+    function scheduleNextPoll(delay: number) {
+      if (!shouldPoll || !isCurrentPollingContext(true)) {
+        return;
+      }
+      clearScheduledPoll();
+      timer = window.setTimeout(() => {
+        timer = null;
+        void refreshRuns();
+      }, delay);
+    }
+
+    async function refreshRuns() {
+      if (activeRequest !== null || !isCurrentPollingContext(true)) {
+        return;
+      }
+      const request = { controller: new AbortController() };
+      activeRequest = request;
+      try {
+        const runs = await fetchAnalysisRuns(
+          token,
+          projectId,
+          request.controller.signal,
+        );
+        if (activeRequest === request && isCurrentPollingContext(true)) {
+          setAnalysisRuns(runs);
+        }
+      } catch (error: unknown) {
+        if (
+          activeRequest === request &&
+          isCurrentPollingContext(false) &&
+          error instanceof ApiRequestError &&
+          error.status === 401
+        ) {
+          signOutRef.current();
+        }
+      } finally {
+        if (activeRequest === request) {
+          activeRequest = null;
+          scheduleNextPoll(RUN_POLL_INTERVAL_MS);
+        }
+      }
+    }
+
+    function handleVisibilityChange() {
+      clearScheduledPoll();
+      cancelActiveRequest();
+      if (document.visibilityState === "visible") {
+        void refreshRuns();
+      }
+    }
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    if (document.visibilityState === "visible") {
+      void refreshRuns();
+    }
+
+    return () => {
+      cancelled = true;
+      clearScheduledPoll();
+      cancelActiveRequest();
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [activePage, currentProject, projectTab, session]);
+
+  useEffect(() => {
+    if (feedback === null) {
+      return undefined;
+    }
+    const timeout = window.setTimeout(() => setFeedback(null), 3500);
     return () => window.clearTimeout(timeout);
-  }, [message]);
+  }, [feedback]);
+
+  if (isSessionChecking) {
+    return (
+      <main className="auth-shell">
+        <section className="auth-card" aria-label="Sitzungsprüfung">
+          <p className="eyebrow">Support Knowledge Miner</p>
+          <p role="status" className="intro">
+            Gespeicherte Sitzung wird geprüft.
+          </p>
+        </section>
+      </main>
+    );
+  }
 
   if (session === null) {
     return (
@@ -1788,9 +2499,12 @@ function App() {
               {isLoading ? "Prüfe Anmeldung" : "Anmelden"}
             </button>
           </form>
-          {message && (
-            <p role="alert" className="status error">
-              {message}
+          {feedback !== null && (
+            <p
+              role={feedback.kind === "error" ? "alert" : "status"}
+              className={`status ${feedback.kind}`}
+            >
+              <strong>{FEEDBACK_LABELS[feedback.kind]}:</strong> {feedback.text}
             </p>
           )}
         </section>
@@ -1859,9 +2573,12 @@ function App() {
         </aside>
 
         <section className="content">
-          {message && (
-            <p role="status" className="feedback success">
-              {message}
+          {feedback !== null && (
+            <p
+              role={feedback.kind === "error" ? "alert" : "status"}
+              className={`feedback ${feedback.kind}`}
+            >
+              <strong>{FEEDBACK_LABELS[feedback.kind]}:</strong> {feedback.text}
             </p>
           )}
 
@@ -1873,12 +2590,40 @@ function App() {
                 aria-label="Aktuelles Projekt"
               >
                 <p className="eyebrow">Aktuelles Projekt</p>
-                <div>
-                  <h2>{currentProject.name}</h2>
-                  <p className="hint">
-                    Status: {currentProject.lifecycleState}; zuletzt
-                    aktualisiert: {currentProject.updatedAt}
-                  </p>
+                <div className="project-summary-content">
+                  <div>
+                    <h2>{currentProject.name}</h2>
+                    <p className="hint">
+                      Status: {currentProject.lifecycleState}; zuletzt
+                      aktualisiert:{" "}
+                      {formatProjectUpdatedAt(currentProject.updatedAt)}
+                    </p>
+                  </div>
+                  <form
+                    key={`${currentProject.id}:${currentProject.name}`}
+                    className="project-rename-form"
+                    aria-label="Projekt umbenennen"
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      const form = new FormData(event.currentTarget);
+                      void renameProject(
+                        currentProject.id,
+                        String(form.get("projectName") ?? ""),
+                      );
+                    }}
+                  >
+                    <label>
+                      Projektname
+                      <input
+                        name="projectName"
+                        defaultValue={currentProject.name}
+                        required
+                      />
+                    </label>
+                    <button type="submit" className="secondary">
+                      Umbenennen
+                    </button>
+                  </form>
                 </div>
               </section>
 
@@ -1889,8 +2634,8 @@ function App() {
               >
                 {(
                   [
-                    ["profiles", "Profile"],
                     ["import", "Import"],
+                    ["profiles", "Profile"],
                     ["runs", "Runs"],
                     ["clusters", "Cluster"],
                     ["candidates", "Kandidaten"],
@@ -2148,87 +2893,266 @@ function App() {
           {activePage === "projects" && (
             <>
               {currentProject && projectTab === "profiles" && (
-                <section id="profiles" className="panel-grid">
-                  <form
-                    className="panel stack"
-                    onSubmit={createAnalysisProfile}
-                    aria-label="Analyseprofil erstellen"
-                  >
-                    <p className="eyebrow">Profile</p>
-                    <h2>Analyseprofil erstellen</h2>
-                    <p className="hint">
-                      Konfigurierte Modelle: {configuredModelHint}
-                    </p>
-                    <label>
-                      Profilname
-                      <input name="profileName" />
-                    </label>
-                    <label>
-                      Provider
-                      <select name="provider" defaultValue="vllm">
-                        <option value="vllm">vLLM lokal</option>
-                        <option value="ollama">Ollama lokal</option>
-                        <option value="openai">OpenAI Cloud</option>
-                      </select>
-                    </label>
-                    <label>
-                      Modell
-                      <input name="model" placeholder="local-embed" />
-                    </label>
-                    <label>
-                      Similarity Threshold
-                      <input name="similarity" placeholder="0.78" />
-                    </label>
-                    <label>
-                      Algorithmus
-                      <input name="algorithm" placeholder="hdbscan" />
-                    </label>
-                    <label>
-                      Prompt-ID
-                      <input name="promptIdentifier" placeholder="faq-v1" />
-                    </label>
-                    <button type="submit">Profil speichern</button>
-                  </form>
-
-                  <section className="panel" aria-label="Analyseprofile">
-                    <h2>Analyseprofile</h2>
-                    <div className="user-list">
-                      {analysisProfiles.length === 0 && (
-                        <p className="hint">
-                          Noch keine Analyseprofile für dieses Projekt.
+                <section id="profiles" className="panel-grid profile-grid">
+                  {!currentProjectProfilesAreReady ? (
+                    <section
+                      className="panel stack"
+                      role="status"
+                      aria-label="Analyseprofile werden geladen"
+                    >
+                      <p className="eyebrow">Profile</p>
+                      <h2>
+                        {projectProfileLoadState.status === "error"
+                          ? "Profile nicht verfügbar"
+                          : "Analyseprofile werden geladen"}
+                      </h2>
+                      <p className="hint">
+                        {projectProfileLoadState.status === "error"
+                          ? "Die Profile dieses Projekts konnten nicht geladen werden. Wechseln Sie erneut in das Projekt, bevor Sie ein Profil anlegen."
+                          : "Das Profilformular wird freigegeben, sobald die projektlokalen Profile vollständig geladen sind."}
+                      </p>
+                    </section>
+                  ) : (
+                    <>
+                      <form
+                        className="panel stack"
+                        onSubmit={createAnalysisProfile}
+                        aria-label="Analyseprofil erstellen"
+                      >
+                        <p className="eyebrow">Profile</p>
+                        <h2>Analyseprofil erstellen</h2>
+                        <label>
+                          Profilname
+                          <input
+                            name="profileName"
+                            value={profileName}
+                            onChange={(event) =>
+                              setProfileName(event.target.value)
+                            }
+                            required
+                          />
+                        </label>
+                        <label>
+                          Provider
+                          <select
+                            name="provider"
+                            value={profileProvider}
+                            onChange={(event) =>
+                              setProfileProvider(
+                                event.target.value as ConfigurableProvider,
+                              )
+                            }
+                          >
+                            <option value="vllm">vLLM lokal</option>
+                            <option value="ollama">Ollama lokal</option>
+                            <option value="openai">OpenAI Cloud</option>
+                          </select>
+                        </label>
+                        <label>
+                          Modell
+                          <select
+                            name="model"
+                            value={profileModel}
+                            onChange={(event) =>
+                              setProfileModel(event.target.value)
+                            }
+                            aria-describedby="profile-model-status"
+                            disabled={profileProviderModels.length === 0}
+                            required
+                          >
+                            {profileProviderModels.length === 0 && (
+                              <option value="">Keine Modelle verfügbar</option>
+                            )}
+                            {profileProviderModels.map((model) => (
+                              <option key={model} value={model}>
+                                {model}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <p
+                          id="profile-model-status"
+                          className={
+                            profileProviderModels.length === 0
+                              ? "status warning"
+                              : "hint"
+                          }
+                          role="status"
+                        >
+                          {profileProviderModels.length === 0
+                            ? "Für diesen Provider ist noch kein Modell konfiguriert. Bitte zuerst die Provider-Einstellungen ergänzen."
+                            : `${profileProviderModels.length} Modell(e) für ${profileProvider} verfügbar.`}
                         </p>
-                      )}
-                      {analysisProfiles.map((profile) => (
-                        <article className="user-card" key={profile.id}>
-                          <div className="user-heading">
-                            <strong>{profile.name}</strong>
-                            <span>
-                              {profile.provider}/{profile.model}
-                            </span>
-                          </div>
-                          {profile.isCloudProvider && (
-                            <p className="status warning">
-                              Cloud-Nutzung: OpenAI Profil sendet spätere
-                              Analyseinhalte an den konfigurierten
-                              Cloud-Provider.
-                            </p>
+                        <label>
+                          Similarity Threshold
+                          <input
+                            name="similarity"
+                            type="number"
+                            min="0"
+                            max="1"
+                            step="any"
+                            placeholder="0.78"
+                          />
+                        </label>
+                        <label>
+                          Algorithmus
+                          <select
+                            name="algorithm"
+                            value={profileAlgorithm}
+                            onChange={(event) =>
+                              setProfileAlgorithm(
+                                event.target.value as ProfileAlgorithm,
+                              )
+                            }
+                          >
+                            <option value="hdbscan">HDBSCAN</option>
+                            <option value="agglomerative">Agglomerative</option>
+                          </select>
+                        </label>
+                        <fieldset className="parameter-group">
+                          <legend>
+                            {profileAlgorithm === "hdbscan"
+                              ? "HDBSCAN-Parameter"
+                              : "Agglomerative-Parameter"}
+                          </legend>
+                          {profileAlgorithm === "hdbscan" ? (
+                            <div className="stack">
+                              <label>
+                                Minimale Clustergröße
+                                <input
+                                  name="minClusterSize"
+                                  type="number"
+                                  min="2"
+                                  max="100000"
+                                  defaultValue="5"
+                                  required
+                                />
+                              </label>
+                              <label>
+                                Minimale Samples (optional)
+                                <input
+                                  name="minSamples"
+                                  type="number"
+                                  min="1"
+                                  max="100000"
+                                />
+                              </label>
+                              <label>
+                                Cluster-Auswahl-Epsilon
+                                <input
+                                  name="clusterSelectionEpsilon"
+                                  type="number"
+                                  min="0"
+                                  step="any"
+                                  defaultValue="0"
+                                  required
+                                />
+                              </label>
+                            </div>
+                          ) : (
+                            <div className="stack">
+                              <label>
+                                Abbruchkriterium
+                                <select
+                                  name="agglomerativeCriterion"
+                                  value={agglomerativeCriterion}
+                                  onChange={(event) =>
+                                    setAgglomerativeCriterion(
+                                      event.target
+                                        .value as AgglomerativeCriterion,
+                                    )
+                                  }
+                                >
+                                  <option value="n_clusters">
+                                    Anzahl Cluster
+                                  </option>
+                                  <option value="distance_threshold">
+                                    Distanzschwelle
+                                  </option>
+                                </select>
+                              </label>
+                              {agglomerativeCriterion === "n_clusters" ? (
+                                <label>
+                                  Anzahl Cluster
+                                  <input
+                                    name="nClusters"
+                                    type="number"
+                                    min="1"
+                                    defaultValue="2"
+                                    required
+                                  />
+                                </label>
+                              ) : (
+                                <label>
+                                  Distanzschwelle
+                                  <input
+                                    name="distanceThreshold"
+                                    type="number"
+                                    min="0"
+                                    step="any"
+                                    required
+                                  />
+                                </label>
+                              )}
+                              <label>
+                                Linkage
+                                <select name="linkage" defaultValue="ward">
+                                  <option value="ward">Ward</option>
+                                  <option value="complete">Complete</option>
+                                  <option value="average">Average</option>
+                                  <option value="single">Single</option>
+                                </select>
+                              </label>
+                            </div>
                           )}
-                          <p className="hint">
-                            Thresholds: {JSON.stringify(profile.thresholds)}
-                          </p>
-                          <p className="hint">
-                            Algorithmus:{" "}
-                            {JSON.stringify(profile.algorithmSettings)}
-                          </p>
-                          {profile.promptIdentifier && (
+                        </fieldset>
+                        <button
+                          type="submit"
+                          disabled={
+                            !profileName.trim() ||
+                            !profileProviderModels.includes(profileModel)
+                          }
+                        >
+                          Profil speichern
+                        </button>
+                      </form>
+
+                      <section className="panel" aria-label="Analyseprofile">
+                        <h2>Analyseprofile</h2>
+                        <div className="user-list">
+                          {analysisProfiles.length === 0 && (
                             <p className="hint">
-                              Prompt: {profile.promptIdentifier}
+                              Noch keine Analyseprofile für dieses Projekt.
                             </p>
                           )}
-                        </article>
-                      ))}
-                    </div>
-                  </section>
+                          {analysisProfiles.map((profile) => (
+                            <article className="user-card" key={profile.id}>
+                              <div className="user-heading">
+                                <strong>{profile.name}</strong>
+                                <span>
+                                  {profile.provider}/{profile.model}
+                                </span>
+                              </div>
+                              {profile.isCloudProvider && (
+                                <p className="status warning">
+                                  Cloud-Nutzung: OpenAI Profil sendet spätere
+                                  Analyseinhalte an den konfigurierten
+                                  Cloud-Provider.
+                                </p>
+                              )}
+                              <p className="hint">
+                                Thresholds: {JSON.stringify(profile.thresholds)}
+                              </p>
+                              <p className="hint">
+                                Algorithmus:{" "}
+                                {JSON.stringify(profile.algorithmSettings)}
+                              </p>
+                            </article>
+                          ))}
+                        </div>
+                      </section>
+                    </>
+                  )}
                 </section>
               )}
 
@@ -2356,23 +3280,47 @@ function App() {
                     </label>
                     <label>
                       Analyseprofil
-                      <select name="analysisProfileId">
-                        {analysisProfiles.map((profile) => (
+                      <select
+                        name="analysisProfileId"
+                        value={runAnalysisProfileId}
+                        disabled={!currentProjectProfilesAreReady}
+                        onChange={(event) => {
+                          setRunAnalysisProfileId(event.target.value);
+                          setCloudUseConfirmed(false);
+                        }}
+                      >
+                        {!currentProjectProfilesAreReady && (
+                          <option value="">Profile werden geladen</option>
+                        )}
+                        {authoritativeAnalysisProfiles.map((profile) => (
                           <option key={profile.id} value={profile.id}>
                             {profile.name} ({profile.provider}/{profile.model})
                           </option>
                         ))}
                       </select>
                     </label>
-                    <label>
-                      Run-Modus
-                      <input name="runMode" placeholder="fixture" />
-                    </label>
+                    {selectedRunProfile?.isCloudProvider && (
+                      <label className="confirmation-field">
+                        <input
+                          name="cloudUseConfirmed"
+                          type="checkbox"
+                          checked={cloudUseConfirmed}
+                          onChange={(event) =>
+                            setCloudUseConfirmed(event.target.checked)
+                          }
+                        />
+                        Ich bestätige, dass die importierten Nachrichtentexte
+                        für diesen Run an OpenAI übertragen werden.
+                      </label>
+                    )}
                     <button
                       type="submit"
                       disabled={
                         runnableDatasetLogs.length === 0 ||
-                        analysisProfiles.length === 0
+                        !currentProjectProfilesAreReady ||
+                        authoritativeAnalysisProfiles.length === 0 ||
+                        (selectedRunProfile?.isCloudProvider === true &&
+                          !cloudUseConfirmed)
                       }
                     >
                       Analyse starten
@@ -2429,8 +3377,9 @@ function App() {
                     <p className="eyebrow">Cluster Explorer</p>
                     <h2>Cluster erzeugen</h2>
                     <p className="hint">
-                      Der MVP-Scaffold nutzt eine lineare deterministische
-                      Gruppierung und markiert Einzelgruppen als Outlier.
+                      Abgeschlossene Runs können mit dem im Analyseprofil
+                      gewählten HDBSCAN- oder Agglomerative-Verfahren geclustert
+                      werden.
                     </p>
                     <div className="user-list">
                       {analysisRuns.length === 0 && (
@@ -2451,14 +3400,29 @@ function App() {
                           <button
                             type="button"
                             className="secondary"
-                            disabled={run.status !== "completed"}
+                            disabled={
+                              run.status !== "completed" ||
+                              clusterGenerationRequest !== null
+                            }
                             onClick={() => generateClusters(run.id)}
                           >
-                            Cluster erzeugen
+                            {clusterGenerationRequest?.projectId ===
+                              currentProject?.id &&
+                            clusterGenerationRequest?.runId === run.id
+                              ? "Cluster werden erzeugt"
+                              : "Cluster erzeugen"}
                           </button>
+                          {clusterGenerationRequest?.projectId ===
+                            currentProject?.id &&
+                            clusterGenerationRequest?.runId === run.id && (
+                              <p className="status info" role="status">
+                                Clustererzeugung läuft für Run {run.id}.
+                              </p>
+                            )}
                           <button
                             type="button"
                             className="secondary"
+                            disabled={run.status !== "completed"}
                             onClick={() =>
                               session &&
                               currentProject &&
@@ -2480,7 +3444,11 @@ function App() {
                     <h2>Cluster Explorer</h2>
                     <div className="user-list">
                       {clusters.length === 0 && (
-                        <p className="hint">Noch keine Cluster geladen.</p>
+                        <p className="hint">
+                          {clusterLoadRunId === null
+                            ? "Noch keine Cluster geladen."
+                            : "Für den ausgewählten abgeschlossenen Run wurden noch keine Cluster erzeugt. Bitte zuerst „Cluster erzeugen“ ausführen."}
+                        </p>
                       )}
                       {clusters.map((cluster) => (
                         <article className="user-card" key={cluster.id}>
@@ -2576,7 +3544,7 @@ function App() {
                             key={source.messagePairId}
                           >
                             <strong>
-                              {source.ticketid} / {source.messagegroupid}
+                              {source.ticketId} / {source.messageGroupId}
                             </strong>
                             <p className="hint">Message: {source.message}</p>
                             <p className="hint">Answer: {source.answer}</p>
@@ -2842,7 +3810,7 @@ function App() {
                           key={source.messagePairId}
                         >
                           <strong>
-                            {source.ticketid} / {source.messagegroupid}
+                            {source.ticketId} / {source.messageGroupId}
                           </strong>
                           <p className="hint">Message: {source.message}</p>
                           <p className="hint">Answer: {source.answer}</p>
@@ -2858,7 +3826,7 @@ function App() {
                 </section>
               )}
 
-              {projectTab === "import" && (
+              {currentProject && projectTab === "import" && (
                 <section id="imports" className="panel-grid">
                   <form
                     className="panel stack"
@@ -2868,9 +3836,9 @@ function App() {
                     <p className="eyebrow">Import</p>
                     <h2>CSV/JSON importieren</h2>
                     <p className="hint">
-                      Erwartete Felder: ticketid, messagegroupid, message,
+                      Erwartete Felder: ticket_id, message_group_id, message,
                       answer. Ungültige Datensätze werden übersprungen und
-                      protokolliert.
+                      protokolliert. Maximale Dateigröße: 512 MiB.
                     </p>
                     <label>
                       Importdatei
@@ -2943,18 +3911,18 @@ function App() {
               )}
               {activePage === "projects" && currentProject === null && (
                 <section
-                  className="panel-grid"
+                  className="project-home"
                   aria-label="Project Home Aktionen"
                 >
                   <form
-                    className="panel stack"
+                    className="panel project-create-form"
                     onSubmit={createProject}
                     aria-label="Projekt erstellen"
                   >
                     <h2>Projekt erstellen</h2>
                     <label>
                       Projektname
-                      <input name="projectName" />
+                      <input name="projectName" required />
                     </label>
                     <button type="submit" disabled={isLoading}>
                       Projekt erstellen
@@ -2968,28 +3936,18 @@ function App() {
                         <p className="hint">Noch keine Projekte vorhanden.</p>
                       )}
                       {projects.map((project) => (
-                        <article className="user-card" key={project.id}>
-                          <div className="user-heading">
-                            <strong>{project.name}</strong>
-                            <span>{project.updatedAt}</span>
-                          </div>
-                          <label>
-                            Projektname
-                            <input
-                              defaultValue={project.name}
-                              onBlur={(event) =>
-                                renameProject(project.id, event.target.value)
-                              }
-                            />
-                          </label>
-                          <button
-                            type="button"
-                            className="secondary"
-                            onClick={() => openProject(project.id)}
-                          >
-                            Projekt öffnen
-                          </button>
-                        </article>
+                        <button
+                          type="button"
+                          className="project-row"
+                          key={project.id}
+                          aria-label={`${project.name}, zuletzt aktualisiert ${formatProjectUpdatedAt(project.updatedAt)}`}
+                          onClick={() => void openProject(project.id)}
+                        >
+                          <strong>{project.name}</strong>
+                          <span>
+                            {formatProjectUpdatedAt(project.updatedAt)}
+                          </span>
+                        </button>
                       ))}
                     </div>
                   </section>
@@ -3149,9 +4107,6 @@ function App() {
                             </svg>
                           </button>
                         </span>
-                        {passwordNotice && (
-                          <p className="hint row-note">{passwordNotice}</p>
-                        )}
                       </div>
                     );
                   })}

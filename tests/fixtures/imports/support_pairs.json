@@ -1,13 +1,13 @@
 [
   {
-    "ticketid": "J-100",
-    "messagegroupid": "G-1",
+    "ticket_id": "J-100",
+    "message_group_id": "G-1",
     "message": "Wie aendere ich meine Lieferadresse?",
     "answer": "Die Lieferadresse kann vor Versand im Kundenkonto geaendert werden."
   },
   {
-    "ticketid": "J-101",
-    "messagegroupid": "G-2",
+    "ticket_id": "J-101",
+    "message_group_id": "G-2",
     "message": "Can I cancel my order?",
     "answer": "Orders can be cancelled until fulfillment starts."
   }

@@ -20,6 +20,8 @@ def test_auth_migration_is_ordered_after_foundation() -> None:
         "0009_exports.sql",
         "0010_ollama_provider.sql",
         "0011_email_identity.sql",
+        "0012_import_snake_case_fields.sql",
+        "0013_remove_prompt_identifier_run_mode.sql",
     ]
 
 

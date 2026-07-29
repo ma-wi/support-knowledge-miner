@@ -3,21 +3,26 @@
 from __future__ import annotations
 
 import csv
-import io
-import json
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
+import ijson  # type: ignore[import-untyped]
 from psycopg.types.json import Jsonb
 
 from backend.audit import AuditService
 from backend.config import DatabaseSettings
 from backend.db.connection import open_database_connection
 
-REQUIRED_FIELDS = ("ticketid", "messagegroupid", "message", "answer")
-MAX_IMPORT_BYTES = 5 * 1024 * 1024
+REQUIRED_FIELDS = ("ticket_id", "message_group_id", "message", "answer")
+MAX_IMPORT_BYTES = 512 * 1024 * 1024
+MAX_SKIPPED_DETAILS = 100
+DATABASE_BATCH_SIZE = 1_000
+DATABASE_BATCH_BYTES = 4 * 1024 * 1024
+DATABASE_RECORD_OVERHEAD_BYTES = 256
 
 
 class ImportError(ValueError):
@@ -27,8 +32,8 @@ class ImportError(ValueError):
 @dataclass(frozen=True)
 class ValidRecord:
     source_location: str
-    ticketid: str
-    messagegroupid: str
+    ticket_id: str
+    message_group_id: str
     message: str
     answer: str
 
@@ -72,6 +77,17 @@ class DatasetVersion:
 class ImportResult:
     log: ImportLog
     dataset_version: DatasetVersion | None
+    skipped_entries: list[ImportLogEntry]
+    skipped_entries_truncated: bool
+
+
+@dataclass(frozen=True)
+class ImportScan:
+    status: str
+    failure_reason: str | None
+    total_records: int
+    valid_records: int
+    skipped_records: int
     skipped_entries: list[ImportLogEntry]
 
 
@@ -133,25 +149,23 @@ class ImportService:
         self._settings = settings
         self._audit = AuditService()
 
-    def import_content(
+    def import_file(
         self,
         project_id: UUID,
         *,
         source_type: str,
         source_name: str,
-        content: str,
+        source_path: Path,
         actor_user_id: UUID,
     ) -> ImportResult:
         clean_source_type = source_type.strip().lower()
         clean_source_name = source_name.strip() or "unnamed import"
         if clean_source_type not in {"csv", "json"}:
             raise ImportError("source_type must be csv or json")
-        if len(content.encode("utf-8")) > MAX_IMPORT_BYTES:
-            raise ImportError("import file is too large")
 
-        parsed = self._parse(clean_source_type, content)
+        parsed = self._scan_file(clean_source_type, source_path)
         log_id = uuid4()
-        dataset_version_id = uuid4() if parsed["valid_records"] else None
+        dataset_version_id = uuid4() if parsed.valid_records else None
 
         with open_database_connection(self._settings) as connection:
             with connection.transaction():
@@ -195,32 +209,37 @@ class ImportService:
                         project_id,
                         clean_source_type,
                         clean_source_name,
-                        parsed["status"],
-                        parsed["failure_reason"],
-                        parsed["total_records"],
-                        len(parsed["valid_records"]),
-                        len(parsed["skipped_entries"]),
+                        parsed.status,
+                        parsed.failure_reason,
+                        parsed.total_records,
+                        parsed.valid_records,
+                        parsed.skipped_records,
                         None,
                         actor_user_id,
                     ),
                 ).fetchone()
 
-                for entry in parsed["skipped_entries"]:
-                    connection.execute(
-                        """
-                        INSERT INTO import_log_entries (
-                            id, import_log_id, source_location, reason, context
-                        )
-                        VALUES (%s, %s, %s, %s, %s)
-                        """,
+                if parsed.skipped_entries:
+                    entry_values = [
                         (
                             uuid4(),
                             log_id,
                             entry.source_location,
                             entry.reason,
                             Jsonb(entry.context),
-                        ),
-                    )
+                        )
+                        for entry in parsed.skipped_entries
+                    ]
+                    with connection.cursor() as cursor:
+                        cursor.executemany(
+                            """
+                        INSERT INTO import_log_entries (
+                            id, import_log_id, source_location, reason, context
+                        )
+                        VALUES (%s, %s, %s, %s, %s)
+                        """,
+                            entry_values,
+                        )
 
                 if dataset_version_id is not None:
                     dataset_row = connection.execute(
@@ -239,31 +258,36 @@ class ImportService:
                             project_id,
                             version_number,
                             log_id,
-                            len(parsed["valid_records"]),
+                            parsed.valid_records,
                             clean_source_type,
                             clean_source_name,
                             actor_user_id,
                         ),
                     ).fetchone()
-                    for ordinal, record in enumerate(parsed["valid_records"], start=1):
-                        connection.execute(
-                            """
-                            INSERT INTO message_pairs (
-                                id, project_id, dataset_version_id, ordinal,
-                                ticketid, messagegroupid, message, answer
+                    ordinal = 0
+                    for record_batch in self._iter_valid_record_batches(
+                        clean_source_type, source_path
+                    ):
+                        message_values: list[tuple[object, ...]] = []
+                        for record in record_batch:
+                            ordinal += 1
+                            message_values.append(
+                                (
+                                    uuid4(),
+                                    project_id,
+                                    dataset_version_id,
+                                    ordinal,
+                                    record.ticket_id,
+                                    record.message_group_id,
+                                    record.message,
+                                    record.answer,
+                                )
                             )
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                            """,
-                            (
-                                uuid4(),
-                                project_id,
-                                dataset_version_id,
-                                ordinal,
-                                record.ticketid,
-                                record.messagegroupid,
-                                record.message,
-                                record.answer,
-                            ),
+                        self._insert_message_batch(connection, message_values)
+                    if ordinal != parsed.valid_records:
+                        raise RuntimeError(
+                            "Importdatei hat sich zwischen Validierung und "
+                            "Persistierung verändert."
                         )
                     log_row = connection.execute(
                         """
@@ -286,7 +310,7 @@ class ImportService:
                     target_id=log_id,
                     metadata={
                         "source_type": clean_source_type,
-                        "status": parsed["status"],
+                        "status": parsed.status,
                     },
                 )
 
@@ -299,7 +323,10 @@ class ImportService:
                 if dataset_row is not None
                 else None
             ),
-            skipped_entries=parsed["skipped_entries"],
+            skipped_entries=parsed.skipped_entries,
+            skipped_entries_truncated=(
+                parsed.skipped_records > len(parsed.skipped_entries)
+            ),
         )
 
     def list_logs(self, project_id: UUID) -> list[ImportLog]:
@@ -333,88 +360,174 @@ class ImportService:
             ).fetchall()
         return [_entry_from_row(dict(row)) for row in rows]
 
-    def _parse(self, source_type: str, content: str) -> dict[str, Any]:
+    def _scan_file(self, source_type: str, source_path: Path) -> ImportScan:
+        total = 0
+        valid = 0
+        skipped = 0
+        entries: list[ImportLogEntry] = []
         try:
-            if source_type == "csv":
-                records, entries, total = self._parse_csv(content)
-            else:
-                records, entries, total = self._parse_json(content)
+            for location, row in self._iter_rows(source_type, source_path):
+                total += 1
+                try:
+                    self._record_from_row(row, location)
+                    valid += 1
+                except ImportError as exc:
+                    skipped += 1
+                    if len(entries) < MAX_SKIPPED_DETAILS:
+                        entries.append(self._skipped_entry(location, row, exc))
         except ImportError as exc:
-            return {
-                "valid_records": [],
-                "skipped_entries": [],
-                "total_records": 0,
-                "status": "failed",
-                "failure_reason": str(exc),
-            }
-        status = "completed" if records else "failed"
-        failure_reason = None if records else "no valid records found"
-        return {
-            "valid_records": records,
-            "skipped_entries": entries,
-            "total_records": total,
-            "status": status,
-            "failure_reason": failure_reason,
-        }
+            return ImportScan(
+                status="failed",
+                failure_reason=str(exc),
+                total_records=0,
+                valid_records=0,
+                skipped_records=0,
+                skipped_entries=[],
+            )
+        return ImportScan(
+            status="completed" if valid else "failed",
+            failure_reason=None if valid else "Keine gültigen Datensätze gefunden.",
+            total_records=total,
+            valid_records=valid,
+            skipped_records=skipped,
+            skipped_entries=entries,
+        )
 
-    def _parse_csv(
-        self, content: str
-    ) -> tuple[list[ValidRecord], list[ImportLogEntry], int]:
+    def _iter_rows(
+        self, source_type: str, source_path: Path
+    ) -> Iterator[tuple[str, dict[str, object]]]:
+        if source_type == "csv":
+            yield from self._iter_csv_rows(source_path)
+            return
+        yield from self._iter_json_rows(source_path)
+
+    def _iter_csv_rows(
+        self, source_path: Path
+    ) -> Iterator[tuple[str, dict[str, object]]]:
         try:
-            reader = csv.DictReader(io.StringIO(content))
-            fieldnames = set(reader.fieldnames or [])
+            with source_path.open(
+                "r", encoding="utf-8", errors="strict", newline=""
+            ) as source:
+                reader = csv.DictReader(source, strict=True)
+                fieldnames = set(reader.fieldnames or [])
+                missing = [
+                    field for field in REQUIRED_FIELDS if field not in fieldnames
+                ]
+                if missing:
+                    raise ImportError(f"CSV-Kopfzeilen fehlen: {', '.join(missing)}.")
+                for index, row in enumerate(reader, start=2):
+                    yield f"row {index}", dict(row)
+        except UnicodeDecodeError as exc:
+            raise ImportError("Datei ist nicht gültig UTF-8-codiert.") from exc
         except csv.Error as exc:
-            raise ImportError("malformed CSV") from exc
-        missing = [field for field in REQUIRED_FIELDS if field not in fieldnames]
-        if missing:
-            raise ImportError(f"missing CSV headers: {', '.join(missing)}")
-        rows = list(reader)
-        return self._validate_rows(rows, location_prefix="row", location_offset=2)
+            raise ImportError("CSV ist fehlerhaft.") from exc
 
-    def _parse_json(
-        self, content: str
-    ) -> tuple[list[ValidRecord], list[ImportLogEntry], int]:
+    def _iter_json_rows(
+        self, source_path: Path
+    ) -> Iterator[tuple[str, dict[str, object]]]:
         try:
-            payload = json.loads(content)
-        except json.JSONDecodeError as exc:
-            raise ImportError("malformed JSON") from exc
-        if not isinstance(payload, list):
-            raise ImportError("JSON root must be a list")
-        rows = [item if isinstance(item, dict) else {} for item in payload]
-        return self._validate_rows(rows, location_prefix="object", location_offset=1)
+            with source_path.open("rb") as source:
+                first_non_whitespace = b""
+                while not first_non_whitespace:
+                    character = source.read(1)
+                    if character == b"":
+                        raise ImportError("JSON ist fehlerhaft.")
+                    if character not in b" \t\r\n":
+                        first_non_whitespace = character
+                if first_non_whitespace != b"[":
+                    source.seek(0)
+                    try:
+                        source.read(65_536).decode("utf-8", errors="strict")
+                    except UnicodeDecodeError as exc:
+                        raise ImportError(
+                            "Datei ist nicht gültig UTF-8-codiert."
+                        ) from exc
+                    raise ImportError("JSON-Wurzel muss ein Array sein.")
+                source.seek(0)
+                for index, item in enumerate(
+                    ijson.items(source, "item", use_float=True), start=1
+                ):
+                    row = item if isinstance(item, dict) else {}
+                    yield f"object {index}", row
+        except UnicodeDecodeError as exc:
+            raise ImportError("Datei ist nicht gültig UTF-8-codiert.") from exc
+        except (ijson.JSONError, OverflowError) as exc:
+            error_message = str(exc).casefold()
+            if "utf8" in error_message or "utf-8" in error_message:
+                raise ImportError("Datei ist nicht gültig UTF-8-codiert.") from exc
+            raise ImportError("JSON ist fehlerhaft.") from exc
 
-    def _validate_rows(
-        self,
-        rows: list[dict[str, object]],
-        *,
-        location_prefix: str,
-        location_offset: int,
-    ) -> tuple[list[ValidRecord], list[ImportLogEntry], int]:
-        valid: list[ValidRecord] = []
-        skipped: list[ImportLogEntry] = []
-        for index, row in enumerate(rows, start=location_offset):
-            location = f"{location_prefix} {index}"
+    def _record_from_row(
+        self, row: dict[str, object], source_location: str
+    ) -> ValidRecord:
+        return ValidRecord(
+            source_location=source_location,
+            ticket_id=_clean_required(row.get("ticket_id"), "ticket_id"),
+            message_group_id=_clean_required(
+                row.get("message_group_id"), "message_group_id"
+            ),
+            message=_clean_required(row.get("message"), "message"),
+            answer=_clean_required(row.get("answer"), "answer"),
+        )
+
+    def _skipped_entry(
+        self, location: str, row: dict[str, object], error: ImportError
+    ) -> ImportLogEntry:
+        return ImportLogEntry(
+            source_location=location,
+            reason=str(error),
+            context={
+                "ticket_id": str(row.get("ticket_id", ""))[:120],
+                "message_group_id": str(row.get("message_group_id", ""))[:120],
+            },
+        )
+
+    def _insert_message_batch(
+        self, connection: Any, values: list[tuple[object, ...]]
+    ) -> None:
+        with connection.cursor() as cursor:
+            cursor.executemany(
+                """
+                INSERT INTO message_pairs (
+                    id, project_id, dataset_version_id, ordinal,
+                    ticket_id, message_group_id, message, answer
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                values,
+            )
+
+    def _record_size_bytes(self, record: ValidRecord) -> int:
+        return DATABASE_RECORD_OVERHEAD_BYTES + sum(
+            len(value.encode("utf-8"))
+            for value in (
+                record.ticket_id,
+                record.message_group_id,
+                record.message,
+                record.answer,
+            )
+        )
+
+    def _iter_valid_record_batches(
+        self, source_type: str, source_path: Path
+    ) -> Iterator[list[ValidRecord]]:
+        batch: list[ValidRecord] = []
+        batch_bytes = 0
+        for location, row in self._iter_rows(source_type, source_path):
             try:
-                valid.append(
-                    ValidRecord(
-                        source_location=location,
-                        ticketid=_clean_required(row.get("ticketid"), "ticketid"),
-                        messagegroupid=_clean_required(
-                            row.get("messagegroupid"), "messagegroupid"
-                        ),
-                        message=_clean_required(row.get("message"), "message"),
-                        answer=_clean_required(row.get("answer"), "answer"),
-                    )
-                )
-            except ImportError as exc:
-                skipped.append(
-                    ImportLogEntry(
-                        source_location=location,
-                        reason=str(exc),
-                        context={
-                            "ticketid": str(row.get("ticketid", ""))[:120],
-                            "messagegroupid": str(row.get("messagegroupid", ""))[:120],
-                        },
-                    )
-                )
-        return valid, skipped, len(rows)
+                record = self._record_from_row(row, location)
+            except ImportError:
+                continue
+            record_bytes = self._record_size_bytes(record)
+            if batch and batch_bytes + record_bytes > DATABASE_BATCH_BYTES:
+                yield batch
+                batch = []
+                batch_bytes = 0
+            batch.append(record)
+            batch_bytes += record_bytes
+            if len(batch) == DATABASE_BATCH_SIZE or batch_bytes >= DATABASE_BATCH_BYTES:
+                yield batch
+                batch = []
+                batch_bytes = 0
+        if batch:
+            yield batch

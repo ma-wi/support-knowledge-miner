@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 from backend.analysis import (
     AnalysisError,
+    AnalysisQueueFull,
     AnalysisRun,
     AnalysisRunInput,
     EmbeddingRecord,
@@ -57,7 +58,7 @@ class FakeAnalysisService:
             self._run(
                 run_id=FAILED_RUN_ID,
                 status="failed",
-                progress=100,
+                progress=65,
                 error_message="RuntimeError",
             ),
         ]
@@ -71,6 +72,8 @@ class FakeAnalysisService:
     ) -> AnalysisRun:
         if project_id != PROJECT_ID:
             raise AnalysisError("project not found")
+        if "mode" in payload.parameters:
+            raise AnalysisError("parameters.mode is no longer supported")
         self.started_by = actor_user_id
         self.received = payload
         return self.runs[0]
@@ -102,7 +105,7 @@ class FakeAnalysisService:
                 text_variant="message",
                 model="local-embed",
                 dimensions=3,
-                metadata={"scaffold": "deterministic-local"},
+                metadata={"provider": "vllm", "source_ordinal": 1},
                 created_at=NOW,
             )
         ]
@@ -131,7 +134,7 @@ class FakeAnalysisService:
             },
             provider="vllm",
             model="local-embed",
-            parameters={"mode": "fixture"},
+            parameters={},
             error_message=error_message,
             diagnostics={"embeddings_written": 2} if status == "completed" else {},
             started_at=NOW if status in {"running", "completed", "failed"} else None,
@@ -175,7 +178,7 @@ def test_analysis_run_api_starts_lists_reads_and_exposes_embedding_metadata() ->
         json={
             "dataset_version_id": str(DATASET_ID),
             "analysis_profile_id": str(PROFILE_ID),
-            "parameters": {"mode": "fixture"},
+            "parameters": {},
         },
     )
 
@@ -188,6 +191,7 @@ def test_analysis_run_api_starts_lists_reads_and_exposes_embedding_metadata() ->
     assert fake_service.enqueued_run_id == RUN_ID
     assert fake_service.received is not None
     assert fake_service.received.dataset_version_id == DATASET_ID
+    assert fake_service.received.parameters == {}
 
     listed = client.get(
         f"/api/projects/{PROJECT_ID}/analysis-runs", headers=auth_headers()
@@ -207,6 +211,7 @@ def test_analysis_run_api_starts_lists_reads_and_exposes_embedding_metadata() ->
     )
     assert fetched.status_code == 200
     assert fetched.json()["status"] == "failed"
+    assert fetched.json()["progress"] == 65
     assert fetched.json()["error_message"] == "RuntimeError"
 
     embeddings = client.get(
@@ -216,3 +221,57 @@ def test_analysis_run_api_starts_lists_reads_and_exposes_embedding_metadata() ->
     assert embeddings.status_code == 200
     assert embeddings.json()[0]["source_object_type"] == "message_pair"
     assert embeddings.json()[0]["dimensions"] == 3
+
+
+def test_analysis_run_api_rejects_removed_mode_without_starting_run() -> None:
+    fake_service = FakeAnalysisService()
+    client = TestClient(
+        create_app(
+            auth_service=FakeAuthService(),  # type: ignore[arg-type]
+            analysis_service=fake_service,  # type: ignore[arg-type]
+        )
+    )
+
+    response = client.post(
+        f"/api/projects/{PROJECT_ID}/analysis-runs",
+        headers=auth_headers(),
+        json={
+            "dataset_version_id": str(DATASET_ID),
+            "analysis_profile_id": str(PROFILE_ID),
+            "parameters": {"mode": "fixture"},
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "parameters.mode is no longer supported"
+    assert fake_service.started_by is None
+    assert fake_service.enqueued_run_id is None
+
+
+def test_analysis_run_api_reports_bounded_queue_overload() -> None:
+    class FullAnalysisService(FakeAnalysisService):
+        def enqueue_run(self, run_id: UUID) -> None:
+            self.enqueued_run_id = run_id
+            raise AnalysisQueueFull("local analysis capacity is exhausted; retry later")
+
+    fake_service = FullAnalysisService()
+    client = TestClient(
+        create_app(
+            auth_service=FakeAuthService(),  # type: ignore[arg-type]
+            analysis_service=fake_service,  # type: ignore[arg-type]
+        )
+    )
+
+    response = client.post(
+        f"/api/projects/{PROJECT_ID}/analysis-runs",
+        headers=auth_headers(),
+        json={
+            "dataset_version_id": str(DATASET_ID),
+            "analysis_profile_id": str(PROFILE_ID),
+        },
+    )
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == (
+        "local analysis capacity is exhausted; retry later"
+    )

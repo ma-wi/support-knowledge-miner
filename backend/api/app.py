@@ -2,17 +2,26 @@
 
 from __future__ import annotations
 
+import asyncio
+import os
+import tempfile
+import threading
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from datetime import datetime
+from email.message import Message
+from pathlib import Path
 from uuid import UUID
 
-from fastapi import Depends, FastAPI, HTTPException, Response, status
+from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, ConfigDict, Field
+from starlette.concurrency import run_in_threadpool
+from starlette.requests import ClientDisconnect
 
 from backend.analysis import (
     AnalysisError,
+    AnalysisQueueFull,
     AnalysisRun,
     AnalysisRunInput,
     AnalysisService,
@@ -43,6 +52,7 @@ from backend.imports import (
     ImportResult,
     ImportService,
 )
+from backend.imports.service import MAX_IMPORT_BYTES
 from backend.providers import (
     AnalysisProfile,
     AnalysisProfileInput,
@@ -57,6 +67,33 @@ from backend.users import CreateUserInput, UpdateUserInput, UserService
 from backend.users.service import PublicUser, UserError
 
 _bearer = HTTPBearer(auto_error=False)
+MAX_CONCURRENT_IMPORTS = 2
+IMPORT_CHUNK_IDLE_TIMEOUT_SECONDS = 30.0
+IMPORT_TOTAL_TIMEOUT_SECONDS = 30.0 * 60.0
+
+
+class ImportCapacity:
+    """Process-local capacity guard for upload and import work."""
+
+    def __init__(self, limit: int = MAX_CONCURRENT_IMPORTS) -> None:
+        if limit < 1:
+            raise ValueError("import capacity limit must be positive")
+        self._limit = limit
+        self._active = 0
+        self._lock = threading.Lock()
+
+    def try_acquire(self) -> bool:
+        with self._lock:
+            if self._active >= self._limit:
+                return False
+            self._active += 1
+            return True
+
+    def release(self) -> None:
+        with self._lock:
+            if self._active < 1:
+                raise RuntimeError("import capacity released without active import")
+            self._active -= 1
 
 
 class UserResponse(BaseModel):
@@ -127,12 +164,6 @@ class DeleteProjectRequest(BaseModel):
     confirmation_name: str = Field(min_length=1)
 
 
-class ImportRequest(BaseModel):
-    source_type: str = Field(min_length=1)
-    source_name: str = Field(min_length=1)
-    content: str = Field(min_length=1)
-
-
 class ImportLogEntryResponse(BaseModel):
     source_location: str
     reason: str
@@ -173,6 +204,7 @@ class ImportResultResponse(BaseModel):
     log: ImportLogResponse
     dataset_version: DatasetVersionResponse | None
     skipped_entries: list[ImportLogEntryResponse]
+    skipped_entries_truncated: bool
 
 
 class ProviderSettingsRequest(BaseModel):
@@ -202,12 +234,13 @@ class OllamaPullRequest(BaseModel):
 
 
 class AnalysisProfileRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     name: str = Field(min_length=1)
     provider: str = Field(min_length=1)
     model: str = Field(min_length=1)
     thresholds: dict[str, object] = Field(default_factory=dict)
     algorithm_settings: dict[str, object] = Field(default_factory=dict)
-    prompt_identifier: str | None = None
     prompt_template: str | None = None
 
 
@@ -222,7 +255,6 @@ class AnalysisProfileResponse(BaseModel):
     is_cloud_provider: bool
     thresholds: dict[str, object]
     algorithm_settings: dict[str, object]
-    prompt_identifier: str | None
     prompt_template: str | None
     created_at: datetime
     updated_at: datetime
@@ -308,8 +340,8 @@ class ClusterSourceResponse(BaseModel):
 
     cluster_id: UUID
     message_pair_id: UUID
-    ticketid: str
-    messagegroupid: str
+    ticket_id: str
+    message_group_id: str
     message: str
     answer: str
     membership_score: float
@@ -382,8 +414,8 @@ class CandidateSourceResponse(BaseModel):
     candidate_id: UUID
     cluster_id: UUID | None
     message_pair_id: UUID
-    ticketid: str
-    messagegroupid: str
+    ticket_id: str
+    message_group_id: str
     message: str
     answer: str
     message_segment_id: str | None
@@ -456,7 +488,135 @@ def _import_result_response(result: ImportResult) -> ImportResultResponse:
         skipped_entries=[
             _import_entry_response(entry) for entry in result.skipped_entries
         ],
+        skipped_entries_truncated=result.skipped_entries_truncated,
     )
+
+
+def _import_metadata(request: Request) -> tuple[str, str]:
+    media_type = request.headers.get("content-type", "").split(";", 1)[0].lower()
+    source_type_by_media = {
+        "text/csv": "csv",
+        "application/json": "json",
+    }
+    source_type = source_type_by_media.get(media_type)
+    if source_type is None:
+        raise HTTPException(
+            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            detail=(
+                "Nicht unterstützter Dateityp. Erlaubt sind CSV "
+                "(text/csv) und JSON (application/json)."
+            ),
+        )
+
+    content_disposition = request.headers.get("content-disposition", "")
+    disposition = Message()
+    disposition["content-disposition"] = content_disposition
+    source_name = disposition.get_filename()
+    if (
+        "filename*=" not in content_disposition.casefold()
+        or source_name is None
+        or not source_name.strip()
+        or len(source_name) > 255
+        or any(character in source_name for character in ("/", "\\"))
+        or any(ord(character) < 32 for character in source_name)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "Dateiname fehlt oder ist ungültig. "
+                "Content-Disposition mit RFC-5987-Dateiname verwenden."
+            ),
+        )
+    source_name = source_name.strip()
+    expected_extension = f".{source_type}"
+    if not source_name.lower().endswith(expected_extension):
+        raise HTTPException(
+            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            detail=(
+                f"Dateiendung und Medientyp passen nicht zusammen: "
+                f"{expected_extension} erwartet."
+            ),
+        )
+    return source_type, source_name
+
+
+async def _spool_import_body(request: Request) -> Path:
+    content_length = request.headers.get("content-length")
+    if content_length is not None:
+        try:
+            declared_bytes = int(content_length)
+        except ValueError:
+            declared_bytes = -1
+        if declared_bytes < 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Content-Length ist ungültig.",
+            )
+        if declared_bytes > MAX_IMPORT_BYTES:
+            raise HTTPException(
+                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                detail=(
+                    f"Datei ist zu groß ({declared_bytes} Byte). "
+                    "Maximal erlaubt sind 536870912 Byte (512 MiB)."
+                ),
+            )
+
+    descriptor, raw_path = tempfile.mkstemp(prefix="skm-import-", suffix=".upload")
+    source_path = Path(raw_path)
+    received_bytes = 0
+    try:
+        with os.fdopen(descriptor, "wb") as destination:
+            chunks = request.stream().__aiter__()
+            event_loop = asyncio.get_running_loop()
+            idle_deadline = event_loop.time() + IMPORT_CHUNK_IDLE_TIMEOUT_SECONDS
+            total_deadline = event_loop.time() + IMPORT_TOTAL_TIMEOUT_SECONDS
+            while True:
+                try:
+                    chunk = await asyncio.wait_for(
+                        anext(chunks),
+                        timeout=max(
+                            0,
+                            min(idle_deadline, total_deadline) - event_loop.time(),
+                        ),
+                    )
+                except StopAsyncIteration:
+                    break
+                except TimeoutError as exc:
+                    total_time_exceeded = event_loop.time() >= total_deadline
+                    raise HTTPException(
+                        status_code=status.HTTP_408_REQUEST_TIMEOUT,
+                        detail=(
+                            "Maximale Uploaddauer von 30 Minuten wurde überschritten."
+                            if total_time_exceeded
+                            else (
+                                "Upload hat zu lange keine Daten geliefert "
+                                "und wurde abgebrochen."
+                            )
+                        ),
+                    ) from exc
+                if not chunk:
+                    continue
+                idle_deadline = event_loop.time() + IMPORT_CHUNK_IDLE_TIMEOUT_SECONDS
+                received_bytes += len(chunk)
+                if received_bytes > MAX_IMPORT_BYTES:
+                    raise HTTPException(
+                        status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                        detail=(
+                            f"Datei ist zu groß ({received_bytes} Byte). "
+                            "Maximal erlaubt sind "
+                            "536870912 Byte (512 MiB)."
+                        ),
+                    )
+                destination.write(chunk)
+        if received_bytes == 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Importdatei ist leer.",
+            )
+        return source_path
+    except BaseException:
+        source_path.unlink(missing_ok=True)
+        raise
 
 
 def _provider_response(
@@ -527,7 +687,6 @@ def _analysis_profile_input(payload: AnalysisProfileRequest) -> AnalysisProfileI
         model=payload.model,
         thresholds=payload.thresholds,
         algorithm_settings=payload.algorithm_settings,
-        prompt_identifier=payload.prompt_identifier,
         prompt_template=payload.prompt_template,
     )
 
@@ -539,6 +698,7 @@ def create_app(
     user_service: UserService | None = None,
     project_service: ProjectService | None = None,
     import_service: ImportService | None = None,
+    import_capacity: ImportCapacity | None = None,
     provider_service: ProviderService | None = None,
     analysis_service: AnalysisService | None = None,
     cluster_service: ClusterService | None = None,
@@ -550,8 +710,12 @@ def create_app(
     user_service = user_service or UserService(settings)
     project_service = project_service or ProjectService(settings)
     import_service = import_service or ImportService(settings)
+    import_capacity = import_capacity or ImportCapacity()
     provider_service = provider_service or ProviderService(settings)
-    analysis_service = analysis_service or AnalysisService(settings)
+    analysis_service = analysis_service or AnalysisService(
+        settings,
+        provider_service=provider_service,  # type: ignore[arg-type]
+    )
     cluster_service = cluster_service or ClusterService(settings)
     candidate_service = candidate_service or CandidateService(settings)
     export_service = export_service or ExportService(settings)
@@ -699,23 +863,45 @@ def create_app(
         response_model=ImportResultResponse,
         status_code=status.HTTP_201_CREATED,
     )
-    def import_project_content(
+    async def import_project_content(
         project_id: UUID,
-        payload: ImportRequest,
+        request: Request,
         actor: CurrentUser = Depends(current_user),
     ) -> ImportResultResponse:
+        source_type, source_name = _import_metadata(request)
+        if not import_capacity.try_acquire():
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=(
+                    "Importkapazität ist ausgelastet. "
+                    "Bitte den Import später erneut versuchen."
+                ),
+                headers={"Retry-After": "5"},
+            )
+        source_path: Path | None = None
         try:
-            result = import_service.import_content(
+            source_path = await _spool_import_body(request)
+            result = await run_in_threadpool(
+                import_service.import_file,
                 project_id,
-                source_type=payload.source_type,
-                source_name=payload.source_name,
-                content=payload.content,
+                source_type=source_type,
+                source_name=source_name,
+                source_path=source_path,
                 actor_user_id=actor.id,
             )
+        except ClientDisconnect as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Upload wurde vorzeitig abgebrochen.",
+            ) from exc
         except ImportError as exc:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
             ) from exc
+        finally:
+            if source_path is not None:
+                source_path.unlink(missing_ok=True)
+            import_capacity.release()
         return _import_result_response(result)
 
     @app.get(
@@ -891,11 +1077,15 @@ def create_app(
                 ),
                 actor_user_id=actor.id,
             )
+            analysis_service.enqueue_run(run.id)
+        except AnalysisQueueFull as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
+            ) from exc
         except AnalysisError as exc:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
             ) from exc
-        analysis_service.enqueue_run(run.id)
         return _analysis_run_response(run)
 
     @app.get(

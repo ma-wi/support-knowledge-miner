@@ -1,4 +1,5 @@
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -16,6 +17,7 @@ const owner = {
   last_name: "Owner",
   email: "owner@example.test",
 };
+const sessionTokenStorageKey = "skm.session-token";
 const curator = {
   id: "local-curator",
   first_name: "Support",
@@ -80,7 +82,6 @@ const analysisProfile = {
   is_cloud_provider: false,
   thresholds: { similarity: 0.78 },
   algorithm_settings: { algorithm: "hdbscan" },
-  prompt_identifier: "faq-v1",
   prompt_template: null,
   created_at: "2026-07-22T00:00:00Z",
   updated_at: "2026-07-22T00:00:00Z",
@@ -99,7 +100,7 @@ const analysisRun = {
   },
   provider: "vllm",
   model: "local-embed",
-  parameters: { mode: "fixture" },
+  parameters: {},
   error_message: null,
   diagnostics: {},
   started_at: null,
@@ -124,15 +125,15 @@ const cluster = {
   auto_title: "Cluster H",
   manual_title: null,
   effective_title: "Cluster H",
-  auto_category: "deterministic-key",
+  auto_category: "hdbscan",
   manual_category: null,
-  effective_category: "deterministic-key",
+  effective_category: "hdbscan",
   auto_status: "unreviewed",
   manual_status: null,
   effective_status: "unreviewed",
   score: 0.91,
   is_outlier: false,
-  algorithm: "linear-prefix-scaffold",
+  algorithm: "hdbscan",
   member_count: 2,
   metadata: { non_quadratic: true },
   created_at: "2026-07-22T00:00:00Z",
@@ -158,9 +159,9 @@ const candidate = {
   manual_status: null,
   effective_status: "unreviewed",
   language: "de",
-  auto_category_path: "deterministic-key",
+  auto_category_path: "hdbscan",
   manual_category_path: null,
-  effective_category_path: "deterministic-key",
+  effective_category_path: "hdbscan",
   auto_title: "Cluster H",
   manual_title: null,
   effective_title: "Cluster H",
@@ -255,6 +256,8 @@ const generatedMultiValueCandidate = {
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  vi.useRealTimers();
+  window.sessionStorage.clear();
 });
 
 function jsonResponse(body: unknown, init: ResponseInit = {}) {
@@ -274,6 +277,59 @@ function mockFetch(
   return vi
     .spyOn(globalThis, "fetch")
     .mockImplementation(async (input, init) => handler(input, init));
+}
+
+function mockProjectFetch(
+  override: (
+    path: string,
+    method: string,
+    init?: RequestInit,
+  ) => Response | Promise<Response> | undefined,
+) {
+  return mockFetch((input, init) => {
+    const path = String(input);
+    const method = init?.method ?? "GET";
+    const overridden = override(path, method, init);
+    if (overridden !== undefined) {
+      return overridden;
+    }
+    if (path === "/api/auth/sign-in" && method === "POST") {
+      return jsonResponse({ access_token: "api-token", user: owner });
+    }
+    if (path === "/api/auth/sign-out" && method === "POST") {
+      return new Response(null, { status: 204 });
+    }
+    if (path === "/api/users" && method === "GET") {
+      return jsonResponse([owner]);
+    }
+    if (path === "/api/projects" && method === "GET") {
+      return jsonResponse([alphaProject, betaProject]);
+    }
+    if (path === "/api/providers" && method === "GET") {
+      return jsonResponse([vllmProvider]);
+    }
+    if (path === "/api/projects/project-alpha" && method === "GET") {
+      return jsonResponse(alphaProject);
+    }
+    if (path === "/api/projects/project-beta" && method === "GET") {
+      return jsonResponse(betaProject);
+    }
+    if (path.endsWith("/imports") && method === "GET") {
+      return jsonResponse(path.includes("project-alpha") ? [importLog] : []);
+    }
+    if (path.endsWith("/analysis-profiles") && method === "GET") {
+      return jsonResponse(
+        path.includes("project-alpha") ? [analysisProfile] : [],
+      );
+    }
+    if (
+      (path.endsWith("/candidates") || path.endsWith("/exports")) &&
+      method === "GET"
+    ) {
+      return jsonResponse([]);
+    }
+    throw new Error(`unexpected request ${method} ${path}`);
+  });
 }
 
 async function signIn(user: ReturnType<typeof userEvent.setup>) {
@@ -318,6 +374,24 @@ async function openProjectTab(
   await user.click(await screen.findByRole("button", { name: tabName }));
 }
 
+function getProjectRow(projectList: HTMLElement, projectName: string) {
+  const escapedProjectName = projectName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return within(projectList).getByRole("button", {
+    name: new RegExp(`^${escapedProjectName}`),
+  });
+}
+
+async function expectErrorFeedback(text: string, rawText?: string) {
+  await waitFor(() => {
+    const alert = screen.getByRole("alert");
+    expect(alert).toHaveClass("error");
+    expect(alert).toHaveTextContent(`Fehler: ${text}`);
+    if (rawText !== undefined) {
+      expect(alert).not.toHaveTextContent(rawText);
+    }
+  });
+}
+
 test("prevents protected user management before sign-in", () => {
   render(<App />);
 
@@ -327,6 +401,266 @@ test("prevents protected user management before sign-in", () => {
   expect(
     screen.queryByRole("heading", { name: "Projekte & Analysen" }),
   ).not.toBeInTheDocument();
+});
+
+test("restores a tab session only after the stored token is validated by the server", async () => {
+  window.sessionStorage.setItem(sessionTokenStorageKey, "stored-token");
+  const fetchMock = mockFetch((input, init) => {
+    const path = String(input);
+    const method = init?.method ?? "GET";
+    if (path === "/api/auth/me" && method === "GET") {
+      expect(new Headers(init?.headers).get("Authorization")).toBe(
+        "Bearer stored-token",
+      );
+      return jsonResponse(owner);
+    }
+    if (path === "/api/users" && method === "GET") {
+      return jsonResponse([owner]);
+    }
+    if (path === "/api/projects" && method === "GET") {
+      return jsonResponse([]);
+    }
+    if (path === "/api/providers" && method === "GET") {
+      return jsonResponse([]);
+    }
+    throw new Error(`unexpected request ${method} ${path}`);
+  });
+
+  render(<App />);
+
+  expect(screen.getByRole("status")).toHaveTextContent(
+    "Gespeicherte Sitzung wird geprüft.",
+  );
+  expect(
+    screen.queryByRole("heading", { name: "Projekte & Analysen" }),
+  ).not.toBeInTheDocument();
+  expect(
+    await screen.findByRole("heading", { name: "Projekte & Analysen" }),
+  ).toBeInTheDocument();
+  expect(screen.getByText("Local Owner")).toBeInTheDocument();
+  expect(
+    screen.queryByRole("heading", { name: "Lokaler Zugriff" }),
+  ).not.toBeInTheDocument();
+  expect(fetchMock).toHaveBeenCalledWith(
+    "/api/auth/me",
+    expect.objectContaining({ headers: expect.any(Headers) }),
+  );
+});
+
+test("clears a stored token when server validation rejects the session", async () => {
+  window.sessionStorage.setItem(sessionTokenStorageKey, "expired-token");
+  mockFetch((input, init) => {
+    const path = String(input);
+    const method = init?.method ?? "GET";
+    if (path === "/api/auth/me" && method === "GET") {
+      return jsonResponse(
+        { detail: "authentication required" },
+        { status: 401 },
+      );
+    }
+    throw new Error(`unexpected request ${method} ${path}`);
+  });
+
+  render(<App />);
+
+  expect(
+    await screen.findByRole("heading", { name: "Lokaler Zugriff" }),
+  ).toBeInTheDocument();
+  expect(window.sessionStorage.getItem(sessionTokenStorageKey)).toBeNull();
+  expect(
+    screen.queryByRole("heading", { name: "Projekte & Analysen" }),
+  ).not.toBeInTheDocument();
+});
+
+test("preserves a stored token after a transient validation failure and restores it on retry", async () => {
+  window.sessionStorage.setItem(sessionTokenStorageKey, "stored-token");
+  let validationAttempts = 0;
+  mockFetch((input, init) => {
+    const path = String(input);
+    const method = init?.method ?? "GET";
+    if (path === "/api/auth/me" && method === "GET") {
+      validationAttempts += 1;
+      if (validationAttempts === 1) {
+        return Promise.reject(new Error("backend unavailable"));
+      }
+      return jsonResponse(owner);
+    }
+    if (path === "/api/users" && method === "GET") {
+      return jsonResponse([owner]);
+    }
+    if (path === "/api/projects" && method === "GET") {
+      return jsonResponse([]);
+    }
+    if (path === "/api/providers" && method === "GET") {
+      return jsonResponse([]);
+    }
+    throw new Error(`unexpected request ${method} ${path}`);
+  });
+
+  const firstRender = render(<App />);
+
+  expect(
+    await screen.findByRole("heading", { name: "Lokaler Zugriff" }),
+  ).toBeInTheDocument();
+  expect(window.sessionStorage.getItem(sessionTokenStorageKey)).toBe(
+    "stored-token",
+  );
+
+  firstRender.unmount();
+  render(<App />);
+
+  expect(
+    await screen.findByRole("heading", { name: "Projekte & Analysen" }),
+  ).toBeInTheDocument();
+  expect(window.sessionStorage.getItem(sessionTokenStorageKey)).toBe(
+    "stored-token",
+  );
+});
+
+test("does not clear stored session state when a stale bootstrap rejects after unmount", async () => {
+  window.sessionStorage.setItem(sessionTokenStorageKey, "stored-token");
+  let rejectValidation: (reason?: unknown) => void = () => undefined;
+  const pendingValidation = new Promise<Response>((_resolve, reject) => {
+    rejectValidation = reject;
+  });
+  const fetchMock = mockFetch((input, init) => {
+    const path = String(input);
+    const method = init?.method ?? "GET";
+    if (path === "/api/auth/me" && method === "GET") {
+      return pendingValidation;
+    }
+    throw new Error(`unexpected request ${method} ${path}`);
+  });
+
+  const rendered = render(<App />);
+  await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+  rendered.unmount();
+  rejectValidation(new Error("stale validation failure"));
+  await pendingValidation.catch(() => undefined);
+  await new Promise((resolve) => window.setTimeout(resolve, 0));
+
+  expect(window.sessionStorage.getItem(sessionTokenStorageKey)).toBe(
+    "stored-token",
+  );
+});
+
+test("stores only the bearer token after sign-in", async () => {
+  const user = userEvent.setup();
+  mockFetch((input, init) => {
+    const path = String(input);
+    const method = init?.method ?? "GET";
+    if (path === "/api/auth/sign-in" && method === "POST") {
+      return jsonResponse({ access_token: "api-token", user: owner });
+    }
+    if (path === "/api/users" && method === "GET") {
+      return jsonResponse([owner]);
+    }
+    if (path === "/api/projects" && method === "GET") {
+      return jsonResponse([]);
+    }
+    if (path === "/api/providers" && method === "GET") {
+      return jsonResponse([]);
+    }
+    throw new Error(`unexpected request ${method} ${path}`);
+  });
+  render(<App />);
+
+  await signIn(user);
+
+  await screen.findByRole("heading", { name: "Projekte & Analysen" });
+  expect(window.sessionStorage).toHaveLength(1);
+  expect(window.sessionStorage.getItem(sessionTokenStorageKey)).toBe(
+    "api-token",
+  );
+  expect(JSON.stringify(window.sessionStorage)).not.toContain(
+    "owner@example.test",
+  );
+  expect(JSON.stringify(window.sessionStorage)).not.toContain("owner-password");
+});
+
+test("clears local session state even when server sign-out is unavailable", async () => {
+  const user = userEvent.setup();
+  const fetchMock = mockFetch((input, init) => {
+    const path = String(input);
+    const method = init?.method ?? "GET";
+    if (path === "/api/auth/sign-in" && method === "POST") {
+      return jsonResponse({ access_token: "api-token", user: owner });
+    }
+    if (path === "/api/users" && method === "GET") {
+      return jsonResponse([owner]);
+    }
+    if (path === "/api/projects" && method === "GET") {
+      return jsonResponse([]);
+    }
+    if (path === "/api/providers" && method === "GET") {
+      return jsonResponse([]);
+    }
+    if (path === "/api/auth/sign-out" && method === "POST") {
+      expect(new Headers(init?.headers).get("Authorization")).toBe(
+        "Bearer api-token",
+      );
+      return Promise.reject(new Error("backend unavailable"));
+    }
+    throw new Error(`unexpected request ${method} ${path}`);
+  });
+  render(<App />);
+  await signIn(user);
+  await screen.findByRole("heading", { name: "Projekte & Analysen" });
+
+  await user.click(screen.getByRole("button", { name: "Abmelden" }));
+
+  expect(
+    await screen.findByRole("heading", { name: "Lokaler Zugriff" }),
+  ).toBeInTheDocument();
+  expect(window.sessionStorage.getItem(sessionTokenStorageKey)).toBeNull();
+  await waitFor(() =>
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/auth/sign-out",
+      expect.objectContaining({ method: "POST" }),
+    ),
+  );
+  await expectErrorFeedback(
+    "Lokale Abmeldung abgeschlossen, aber die Serversitzung konnte nicht widerrufen werden.",
+    "backend unavailable",
+  );
+});
+
+test("shows a sanitized API detail when server-side sign-out revocation fails", async () => {
+  const user = userEvent.setup();
+  mockFetch((input, init) => {
+    const path = String(input);
+    const method = init?.method ?? "GET";
+    if (path === "/api/auth/sign-in" && method === "POST") {
+      return jsonResponse({ access_token: "api-token", user: owner });
+    }
+    if (path === "/api/users" && method === "GET") {
+      return jsonResponse([owner]);
+    }
+    if (path === "/api/projects" && method === "GET") {
+      return jsonResponse([]);
+    }
+    if (path === "/api/providers" && method === "GET") {
+      return jsonResponse([]);
+    }
+    if (path === "/api/auth/sign-out" && method === "POST") {
+      return jsonResponse(
+        { detail: "server session could not be revoked" },
+        { status: 503 },
+      );
+    }
+    throw new Error(`unexpected request ${method} ${path}`);
+  });
+  render(<App />);
+  await signIn(user);
+  await screen.findByRole("heading", { name: "Projekte & Analysen" });
+
+  await user.click(screen.getByRole("button", { name: "Abmelden" }));
+
+  expect(
+    await screen.findByRole("heading", { name: "Lokaler Zugriff" }),
+  ).toBeInTheDocument();
+  expect(window.sessionStorage.getItem(sessionTokenStorageKey)).toBeNull();
+  await expectErrorFeedback("server session could not be revoked");
 });
 
 test("keeps protected UI closed when backend rejects credentials", async () => {
@@ -339,7 +673,7 @@ test("keeps protected UI closed when backend rejects credentials", async () => {
   await signIn(user);
 
   expect(await screen.findByRole("alert")).toHaveTextContent(
-    "Anmeldung fehlgeschlagen oder Backend nicht erreichbar.",
+    "Fehler: invalid credentials",
   );
   expect(
     screen.queryByRole("heading", { name: "Projekte & Analysen" }),
@@ -353,13 +687,72 @@ test("keeps protected UI closed when backend is unavailable", async () => {
 
   await signIn(user);
 
-  expect(await screen.findByRole("alert")).toHaveTextContent(
-    "Backend nicht erreichbar",
+  const alert = await screen.findByRole("alert");
+  expect(alert).toHaveTextContent(
+    "Anmeldung fehlgeschlagen oder Backend nicht erreichbar.",
   );
+  expect(alert).not.toHaveTextContent("backend unavailable");
   expect(
     screen.queryByRole("heading", { name: "Projekte & Analysen" }),
   ).not.toBeInTheDocument();
 });
+
+test.each([
+  {
+    name: "sanitized API detail",
+    providerResponse: () =>
+      jsonResponse(
+        { detail: "provider list temporarily unavailable" },
+        { status: 503 },
+      ),
+    expected: "provider list temporarily unavailable",
+    rawText: "raw provider failure",
+  },
+  {
+    name: "safe network fallback",
+    providerResponse: () =>
+      Promise.reject(new Error("raw provider transport failure")),
+    expected:
+      "Angemeldet, aber Provider-Konfigurationen konnten nicht geladen werden.",
+    rawText: "raw provider transport failure",
+  },
+])(
+  "keeps the session and shows $name when provider loading after sign-in fails",
+  async ({ providerResponse, expected, rawText }) => {
+    const user = userEvent.setup();
+    mockFetch((input, init) => {
+      const path = String(input);
+      const method = init?.method ?? "GET";
+      if (path === "/api/auth/sign-in" && method === "POST") {
+        return jsonResponse({ access_token: "api-token", user: owner });
+      }
+      if (path === "/api/users" && method === "GET") {
+        return jsonResponse([owner]);
+      }
+      if (path === "/api/projects" && method === "GET") {
+        return jsonResponse([]);
+      }
+      if (path === "/api/providers" && method === "GET") {
+        return providerResponse();
+      }
+      throw new Error(`unexpected request ${method} ${path}`);
+    });
+    render(<App />);
+
+    await signIn(user);
+
+    expect(
+      await screen.findByRole("heading", { name: "Projekte & Analysen" }),
+    ).toBeInTheDocument();
+    expect(window.sessionStorage.getItem(sessionTokenStorageKey)).toBe(
+      "api-token",
+    );
+    await expectErrorFeedback(expected, rawText);
+    expect(
+      screen.queryByText("Angemeldet. Geschützte Workflows sind verfügbar."),
+    ).not.toBeInTheDocument();
+  },
+);
 
 test("opens user management only after API sign-in and uses bearer token for user actions", async () => {
   const user = userEvent.setup();
@@ -428,6 +821,11 @@ test("opens user management only after API sign-in and uses bearer token for use
   expect(
     await screen.findByDisplayValue("curator@example.test"),
   ).toBeInTheDocument();
+  const success = screen.getByRole("status");
+  expect(success).toHaveClass("feedback", "success");
+  expect(success).toHaveTextContent(
+    "Erfolg: User angelegt. Passwortwert bleibt write-only.",
+  );
   await user.click(screen.getByRole("button", { name: "User löschen" }));
   await waitFor(() =>
     expect(
@@ -654,6 +1052,7 @@ test("configures Ollama and refreshes local models", async () => {
 
 test("allows signed-in users to create open rename and delete projects with confirmation", async () => {
   const user = userEvent.setup();
+  let currentBetaProject = betaProject;
   mockFetch((input, init) => {
     const path = String(input);
     const method = init?.method ?? "GET";
@@ -674,7 +1073,19 @@ test("allows signed-in users to create open rename and delete projects with conf
       return jsonResponse(betaProject, { status: 201 });
     }
     if (path === "/api/projects/project-beta" && method === "GET") {
-      return jsonResponse(betaProject);
+      return jsonResponse(currentBetaProject);
+    }
+    if (path === "/api/projects/project-alpha" && method === "GET") {
+      return jsonResponse(alphaProject);
+    }
+    if (path === "/api/projects/project-alpha/imports" && method === "GET") {
+      return jsonResponse([]);
+    }
+    if (
+      path === "/api/projects/project-alpha/analysis-runs" &&
+      method === "GET"
+    ) {
+      return jsonResponse([]);
     }
     if (path === "/api/projects/project-beta/imports" && method === "GET") {
       return jsonResponse([]);
@@ -687,7 +1098,8 @@ test("allows signed-in users to create open rename and delete projects with conf
     }
     if (path === "/api/projects/project-beta" && method === "PATCH") {
       expect(String(init?.body)).toContain("Beta renamed");
-      return jsonResponse({ ...betaProject, name: "Beta renamed" });
+      currentBetaProject = { ...betaProject, name: "Beta renamed" };
+      return jsonResponse(currentBetaProject);
     }
     if (path === "/api/projects/project-beta" && method === "DELETE") {
       expect(String(init?.body)).toContain("Beta renamed");
@@ -709,32 +1121,80 @@ test("allows signed-in users to create open rename and delete projects with conf
   const projectList = screen.getByRole("region", {
     name: "Bestehende Projekte",
   });
+  expect(
+    screen.queryByRole("form", { name: "Import starten" }),
+  ).not.toBeInTheDocument();
   await waitFor(() =>
     expect(within(projectList).getByText("Beta")).toBeInTheDocument(),
   );
 
-  let betaCard = within(projectList).getByText("Beta").closest("article");
-  if (betaCard === null) {
-    throw new Error("project card missing");
-  }
-  const nameInput = within(betaCard).getByLabelText("Projektname");
-  await user.clear(nameInput);
-  await user.type(nameInput, "Beta renamed");
-  await user.tab();
-  await waitFor(() =>
-    expect(within(projectList).getByText("Beta renamed")).toBeInTheDocument(),
-  );
+  const formattedUpdatedAt = new Intl.DateTimeFormat(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(new Date(betaProject.updated_at));
+  const betaRow = getProjectRow(projectList, "Beta");
+  expect(betaRow).toHaveTextContent(formattedUpdatedAt);
+  expect(within(projectList).queryByRole("textbox")).not.toBeInTheDocument();
+  expect(
+    within(projectList).queryByRole("button", { name: "Projekt öffnen" }),
+  ).not.toBeInTheDocument();
 
-  betaCard = within(projectList).getByText("Beta renamed").closest("article");
-  if (betaCard === null) {
-    throw new Error("renamed project card missing");
-  }
+  await user.click(betaRow);
+  expect(
+    await screen.findByRole("form", { name: "Import starten" }),
+  ).toBeInTheDocument();
+  const projectTabs = screen.getByRole("tablist", {
+    name: "Projektbereiche",
+  });
+  expect(
+    within(projectTabs)
+      .getAllByRole("button")
+      .map((button) => button.textContent),
+  ).toEqual([
+    "Import",
+    "Profile",
+    "Runs",
+    "Cluster",
+    "Kandidaten",
+    "Export",
+    "Projekt löschen",
+  ]);
+
+  const sidebarProjectList = screen.getByLabelText("Projektliste");
   await user.click(
-    within(betaCard).getByRole("button", { name: "Projekt öffnen" }),
+    within(sidebarProjectList).getByRole("button", { name: "Alpha" }),
   );
   expect(
-    await screen.findByText(
-      "Status: active; zuletzt aktualisiert: 2026-07-22T00:00:00Z",
+    await screen.findByRole("heading", { name: "Alpha" }),
+  ).toBeInTheDocument();
+  expect(
+    within(
+      screen.getByRole("form", { name: "Projekt umbenennen" }),
+    ).getByLabelText("Projektname"),
+  ).toHaveValue("Alpha");
+
+  await user.click(
+    within(sidebarProjectList).getByRole("button", { name: "Beta" }),
+  );
+  expect(
+    await screen.findByRole("heading", { name: "Beta" }),
+  ).toBeInTheDocument();
+  const renameForm = screen.getByRole("form", {
+    name: "Projekt umbenennen",
+  });
+  const nameInput = within(renameForm).getByLabelText("Projektname");
+  expect(nameInput).toHaveValue("Beta");
+  await user.clear(nameInput);
+  await user.type(nameInput, "Beta renamed");
+  await user.click(
+    within(renameForm).getByRole("button", { name: "Umbenennen" }),
+  );
+  expect(
+    await screen.findByRole("heading", { name: "Beta renamed" }),
+  ).toBeInTheDocument();
+  expect(
+    screen.getByText(
+      `Status: active; zuletzt aktualisiert: ${formattedUpdatedAt}`,
     ),
   ).toBeInTheDocument();
   expect(
@@ -742,21 +1202,15 @@ test("allows signed-in users to create open rename and delete projects with conf
   ).not.toBeInTheDocument();
 
   await user.click(screen.getByRole("button", { name: "Projekte" }));
-  expect(
-    await screen.findByRole("region", { name: "Bestehende Projekte" }),
-  ).toBeInTheDocument();
-  const reopenedProjectList = screen.getByRole("region", {
+  const reopenedProjectList = await screen.findByRole("region", {
     name: "Bestehende Projekte",
   });
-  const reopenedBetaCard = within(reopenedProjectList)
-    .getByText("Beta renamed")
-    .closest("article");
-  if (reopenedBetaCard === null) {
-    throw new Error("reopened project card missing");
-  }
-  await user.click(
-    within(reopenedBetaCard).getByRole("button", { name: "Projekt öffnen" }),
-  );
+  const reopenedBetaRow = getProjectRow(reopenedProjectList, "Beta renamed");
+  reopenedBetaRow.focus();
+  await user.keyboard(" ");
+  expect(
+    await screen.findByRole("heading", { name: "Beta renamed" }),
+  ).toBeInTheDocument();
   await openProjectTab(user, "Projekt löschen");
   const deleteForm = screen.getByRole("form", { name: "Projekt löschen" });
   await user.type(
@@ -773,6 +1227,7 @@ test("allows signed-in users to create open rename and delete projects with conf
 
 test("imports a selected CSV file and shows persisted log details", async () => {
   const user = userEvent.setup();
+  let importPostCount = 0;
   mockFetch((input, init) => {
     const path = String(input);
     const method = init?.method ?? "GET";
@@ -798,10 +1253,15 @@ test("imports a selected CSV file and shows persisted log details", async () => 
       return jsonResponse([]);
     }
     if (path === "/api/projects/project-alpha/imports" && method === "POST") {
+      importPostCount += 1;
       expect(new Headers(init?.headers).get("Authorization")).toBe(
         "Bearer api-token",
       );
-      expect(String(init?.body)).toContain("ticketid");
+      expect(new Headers(init?.headers).get("Content-Type")).toBe("text/csv");
+      expect(new Headers(init?.headers).get("Content-Disposition")).toBe(
+        "attachment; filename*=UTF-8''fixture.csv",
+      );
+      expect(init?.body).toBeInstanceOf(File);
       return jsonResponse(
         {
           log: importLog,
@@ -819,9 +1279,10 @@ test("imports a selected CSV file and shows persisted log details", async () => 
             {
               source_location: "row 3",
               reason: "message must not be empty",
-              context: { ticketid: "T-2" },
+              context: { ticket_id: "T-2" },
             },
           ],
+          skipped_entries_truncated: false,
         },
         { status: 201 },
       );
@@ -834,7 +1295,7 @@ test("imports a selected CSV file and shows persisted log details", async () => 
         {
           source_location: "row 3",
           reason: "message must not be empty",
-          context: { ticketid: "T-2" },
+          context: { ticket_id: "T-2" },
         },
       ]);
     }
@@ -846,20 +1307,16 @@ test("imports a selected CSV file and shows persisted log details", async () => 
   const projectList = await screen.findByRole("region", {
     name: "Bestehende Projekte",
   });
-  const alphaCard = within(projectList).getByText("Alpha").closest("article");
-  if (alphaCard === null) {
-    throw new Error("alpha project card missing");
-  }
-  await user.click(
-    within(alphaCard).getByRole("button", { name: "Projekt öffnen" }),
-  );
-  await openProjectTab(user, "Import");
+  await user.click(getProjectRow(projectList, "Alpha"));
 
   const importForm = await screen.findByRole("form", {
     name: "Import starten",
   });
+  expect(
+    within(importForm).getByText(/Maximale Dateigröße: 512 MiB/),
+  ).toBeVisible();
   const file = new window.File(
-    ["ticketid,messagegroupid,message,answer\nT-1,G-1,Hi,A\n"],
+    ["ticket_id,message_group_id,message,answer\nT-1,G-1,Hi,A\n"],
     "fixture.csv",
     { type: "text/csv" },
   );
@@ -886,6 +1343,22 @@ test("imports a selected CSV file and shows persisted log details", async () => 
 
   await user.click(screen.getByRole("button", { name: "Logdetails anzeigen" }));
   expect(await screen.findByText("Import-Log geladen.")).toBeInTheDocument();
+
+  const oversizedFile = new window.File(["x"], "oversized.csv", {
+    type: "text/csv",
+  });
+  Object.defineProperty(oversizedFile, "size", {
+    value: 512 * 1024 * 1024 + 1,
+  });
+  await user.upload(
+    within(importForm).getByLabelText("Importdatei"),
+    oversizedFile,
+  );
+  await user.click(
+    within(importForm).getByRole("button", { name: "Import starten" }),
+  );
+  expect(await screen.findByText(/Datei ist zu groß/)).toBeInTheDocument();
+  expect(importPostCount).toBe(1);
 });
 
 test("configures providers and creates a project analysis profile", async () => {
@@ -952,7 +1425,20 @@ test("configures providers and creates a project analysis profile", async () => 
       path === "/api/projects/project-alpha/analysis-profiles" &&
       method === "POST"
     ) {
-      expect(String(init?.body)).toContain("local-embed");
+      const body = JSON.parse(String(init?.body));
+      expect(body).toMatchObject({
+        name: "Local profile",
+        provider: "vllm",
+        model: "local-embed",
+        thresholds: { similarity: 0.78 },
+        algorithm_settings: {
+          algorithm: "hdbscan",
+          min_cluster_size: 5,
+          cluster_selection_epsilon: 0,
+        },
+      });
+      expect(body.prompt_identifier).toBeUndefined();
+      expect(body.algorithm_settings.min_samples).toBeUndefined();
       return jsonResponse(analysisProfile, { status: 201 });
     }
     if (
@@ -997,8 +1483,8 @@ test("configures providers and creates a project analysis profile", async () => 
         {
           cluster_id: "cluster-1",
           message_pair_id: "pair-1",
-          ticketid: "T-1",
-          messagegroupid: "G-1",
+          ticket_id: "T-1",
+          message_group_id: "G-1",
           message: "How do I reset it?",
           answer: "Use the reset link.",
           membership_score: 0.91,
@@ -1038,8 +1524,8 @@ test("configures providers and creates a project analysis profile", async () => 
           candidate_id: "candidate-1",
           cluster_id: "cluster-1",
           message_pair_id: "pair-1",
-          ticketid: "T-1",
-          messagegroupid: "G-1",
+          ticket_id: "T-1",
+          message_group_id: "G-1",
           message: "How do I reset it?",
           answer: "Use the reset link.",
           message_segment_id: null,
@@ -1132,29 +1618,33 @@ test("configures providers and creates a project analysis profile", async () => 
   const projectList = await screen.findByRole("region", {
     name: "Bestehende Projekte",
   });
-  const alphaCard = within(projectList).getByText("Alpha").closest("article");
-  if (alphaCard === null) {
-    throw new Error("alpha project card missing");
-  }
-  await user.click(
-    within(alphaCard).getByRole("button", { name: "Projekt öffnen" }),
-  );
+  await user.click(getProjectRow(projectList, "Alpha"));
   await openProjectTab(user, "Profile");
 
   const profileForm = await screen.findByRole("form", {
     name: "Analyseprofil erstellen",
   });
+  expect(within(profileForm).getByLabelText("Profilname")).toHaveValue(
+    "analysis-1",
+  );
+  await user.clear(within(profileForm).getByLabelText("Profilname"));
   await user.type(
     within(profileForm).getByLabelText("Profilname"),
     "Local profile",
   );
-  await user.type(within(profileForm).getByLabelText("Modell"), "local-embed");
+  expect(within(profileForm).getByLabelText("Modell")).toHaveValue(
+    "local-embed",
+  );
   await user.type(
     within(profileForm).getByLabelText("Similarity Threshold"),
     "0.78",
   );
-  await user.type(within(profileForm).getByLabelText("Algorithmus"), "hdbscan");
-  await user.type(within(profileForm).getByLabelText("Prompt-ID"), "faq-v1");
+  expect(within(profileForm).getByLabelText("Algorithmus")).toHaveValue(
+    "hdbscan",
+  );
+  expect(
+    within(profileForm).queryByLabelText("Prompt-ID"),
+  ).not.toBeInTheDocument();
   await user.click(
     within(profileForm).getByRole("button", { name: "Profil speichern" }),
   );
@@ -1167,7 +1657,7 @@ test("configures providers and creates a project analysis profile", async () => 
   const runForm = await screen.findByRole("form", {
     name: "Analyse starten",
   });
-  await user.type(within(runForm).getByLabelText("Run-Modus"), "fixture");
+  expect(within(runForm).queryByLabelText("Run-Modus")).not.toBeInTheDocument();
   await user.click(
     within(runForm).getByRole("button", { name: "Analyse starten" }),
   );
@@ -1207,15 +1697,13 @@ test("configures providers and creates a project analysis profile", async () => 
     await within(clusterExplorer).findByText("Cluster H"),
   ).toBeInTheDocument();
   expect(
-    within(clusterExplorer).getByText(/Auto: Cluster H \/ deterministic-key/),
+    within(clusterExplorer).getByText(/Auto: Cluster H \/ hdbscan/),
   ).toBeInTheDocument();
   expect(
     within(clusterExplorer).getByText(/Manual: - \/ - \/ -/),
   ).toBeInTheDocument();
   expect(
-    within(clusterExplorer).getByText(
-      /Effective: Cluster H \/ deterministic-key/,
-    ),
+    within(clusterExplorer).getByText(/Effective: Cluster H \/ hdbscan/),
   ).toBeInTheDocument();
 
   const clusterCard = within(clusterExplorer)
@@ -1283,7 +1771,7 @@ test("configures providers and creates a project analysis profile", async () => 
   ).toBeInTheDocument();
   expect(
     within(candidateEditor).getByText(
-      /Auto: Cluster H \/ deterministic-key \/ unreviewed/,
+      /Auto: Cluster H \/ hdbscan \/ unreviewed/,
     ),
   ).toBeInTheDocument();
   expect(
@@ -1291,7 +1779,7 @@ test("configures providers and creates a project analysis profile", async () => 
   ).toBeInTheDocument();
   expect(
     within(candidateEditor).getByText(
-      /Effective: Cluster H \/ deterministic-key \/ unreviewed/,
+      /Effective: Cluster H \/ hdbscan \/ unreviewed/,
     ),
   ).toBeInTheDocument();
   expect(
@@ -1403,6 +1891,9 @@ test("configures providers and creates a project analysis profile", async () => 
   expect(
     await screen.findByText(/Export enthält Originaltext/),
   ).toBeInTheDocument();
+  const warning = screen.getByRole("status");
+  expect(warning).toHaveClass("feedback", "warning");
+  expect(warning).toHaveTextContent("Warnung: Export enthält Originaltext");
 
   const sourceExportForm = screen.getByRole("form", {
     name: "Source Assignment CSV exportieren",
@@ -1429,6 +1920,550 @@ test("configures providers and creates a project analysis profile", async () => 
   expect(
     within(exportHistory).getByText(/Originaltext: nein/),
   ).toBeInTheDocument();
+});
+
+test("disables meaningless cluster loads, explains empty results, and preserves safe API errors", async () => {
+  const user = userEvent.setup();
+  const safeBudgetDetail =
+    "clustering working set estimate 749211264 bytes for 1000 records with 900 dimensions exceeds the 536870912-byte (512 MiB) limit; reduce the dataset size or embedding dimensions, or select HDBSCAN";
+  mockFetch((input, init) => {
+    const path = String(input);
+    const method = init?.method ?? "GET";
+    if (path === "/api/auth/sign-in" && method === "POST") {
+      return jsonResponse({ access_token: "api-token", user: owner });
+    }
+    if (path === "/api/users" && method === "GET") {
+      return jsonResponse([owner]);
+    }
+    if (path === "/api/projects" && method === "GET") {
+      return jsonResponse([alphaProject]);
+    }
+    if (path === "/api/providers" && method === "GET") {
+      return jsonResponse([]);
+    }
+    if (path === "/api/projects/project-alpha" && method === "GET") {
+      return jsonResponse(alphaProject);
+    }
+    if (path === "/api/projects/project-alpha/imports" && method === "GET") {
+      return jsonResponse([]);
+    }
+    if (
+      path === "/api/projects/project-alpha/analysis-profiles" &&
+      method === "GET"
+    ) {
+      return jsonResponse([]);
+    }
+    if (path === "/api/projects/project-alpha/candidates" && method === "GET") {
+      return jsonResponse([]);
+    }
+    if (path === "/api/projects/project-alpha/exports" && method === "GET") {
+      return jsonResponse([]);
+    }
+    if (
+      path === "/api/projects/project-alpha/analysis-runs" &&
+      method === "GET"
+    ) {
+      return jsonResponse([analysisRun, completedAnalysisRun]);
+    }
+    if (
+      path ===
+        "/api/projects/project-alpha/analysis-runs/run-completed/clusters" &&
+      method === "GET"
+    ) {
+      return jsonResponse([]);
+    }
+    if (
+      path ===
+        "/api/projects/project-alpha/analysis-runs/run-completed/clusters/generate" &&
+      method === "POST"
+    ) {
+      return jsonResponse({ detail: safeBudgetDetail }, { status: 400 });
+    }
+    throw new Error(`unexpected request ${method} ${path}`);
+  });
+  render(<App />);
+
+  await signIn(user);
+  const projectList = await screen.findByRole("region", {
+    name: "Bestehende Projekte",
+  });
+  await user.click(getProjectRow(projectList, "Alpha"));
+  await openProjectTab(user, "Cluster");
+
+  const clusterActions = await screen.findByRole("region", {
+    name: "Cluster Aktionen",
+  });
+  const queuedCard = within(clusterActions)
+    .getByText("Run: run-1")
+    .closest("article");
+  const completedCard = within(clusterActions)
+    .getByText("Run: run-completed")
+    .closest("article");
+  if (queuedCard === null || completedCard === null) {
+    throw new Error("cluster action cards missing");
+  }
+  expect(
+    within(queuedCard).getByRole("button", { name: "Cluster laden" }),
+  ).toBeDisabled();
+  const loadCompleted = within(completedCard).getByRole("button", {
+    name: "Cluster laden",
+  });
+  expect(loadCompleted).toBeEnabled();
+
+  await user.click(loadCompleted);
+
+  const info = await screen.findByRole("status");
+  expect(info).toHaveClass("feedback", "info");
+  expect(info).toHaveTextContent(
+    "Hinweis: Für diesen abgeschlossenen Run wurden noch keine Cluster erzeugt.",
+  );
+  expect(
+    screen.getByText(
+      "Für den ausgewählten abgeschlossenen Run wurden noch keine Cluster erzeugt. Bitte zuerst „Cluster erzeugen“ ausführen.",
+    ),
+  ).toBeInTheDocument();
+
+  await user.click(
+    within(completedCard).getByRole("button", {
+      name: "Cluster erzeugen",
+    }),
+  );
+
+  const error = await screen.findByRole("alert");
+  expect(error).toHaveClass("feedback", "error");
+  expect(error).toHaveTextContent(`Fehler: ${safeBudgetDetail}`);
+  expect(
+    within(completedCard).getByRole("button", {
+      name: "Cluster erzeugen",
+    }),
+  ).toBeEnabled();
+});
+
+test("shows and guards cluster generation while the request is pending", async () => {
+  const user = userEvent.setup();
+  let generateRequests = 0;
+  let resolveGeneration: (response: Response) => void = () => undefined;
+  const pendingGeneration = new Promise<Response>((resolve) => {
+    resolveGeneration = resolve;
+  });
+  mockProjectFetch((path, method) => {
+    if (
+      path === "/api/projects/project-alpha/analysis-runs" &&
+      method === "GET"
+    ) {
+      return jsonResponse([completedAnalysisRun]);
+    }
+    if (
+      path ===
+        "/api/projects/project-alpha/analysis-runs/run-completed/clusters/generate" &&
+      method === "POST"
+    ) {
+      generateRequests += 1;
+      return pendingGeneration;
+    }
+    return undefined;
+  });
+  render(<App />);
+
+  await signIn(user);
+  const projectList = await screen.findByRole("region", {
+    name: "Bestehende Projekte",
+  });
+  await user.click(getProjectRow(projectList, "Alpha"));
+  await openProjectTab(user, "Cluster");
+
+  const clusterActions = await screen.findByRole("region", {
+    name: "Cluster Aktionen",
+  });
+  const completedCard = within(clusterActions)
+    .getByText("Run: run-completed")
+    .closest("article");
+  if (completedCard === null) {
+    throw new Error("completed cluster action card missing");
+  }
+
+  await user.click(
+    within(completedCard).getByRole("button", {
+      name: "Cluster erzeugen",
+    }),
+  );
+
+  const pendingButton = within(completedCard).getByRole("button", {
+    name: "Cluster werden erzeugt",
+  });
+  expect(pendingButton).toBeDisabled();
+  expect(within(completedCard).getByRole("status")).toHaveTextContent(
+    "Clustererzeugung läuft für Run run-completed.",
+  );
+  expect(
+    screen.getByText("Clustererzeugung für Run run-completed läuft."),
+  ).toBeInTheDocument();
+  fireEvent.click(pendingButton);
+  expect(generateRequests).toBe(1);
+
+  await act(async () => {
+    resolveGeneration(jsonResponse([cluster]));
+    await pendingGeneration;
+  });
+
+  expect(
+    await screen.findByText("Cluster erzeugt und geladen."),
+  ).toBeInTheDocument();
+  expect(
+    within(completedCard).getByRole("button", {
+      name: "Cluster erzeugen",
+    }),
+  ).toBeEnabled();
+  const clusterExplorer = screen.getByRole("region", {
+    name: "Cluster Explorer",
+  });
+  expect(within(clusterExplorer).getByText("Cluster H")).toBeInTheDocument();
+});
+
+test("ignores delayed cluster generation after switching projects", async () => {
+  const user = userEvent.setup();
+  const betaRun = {
+    ...completedAnalysisRun,
+    id: "run-beta",
+    project_id: "project-beta",
+  };
+  let resolveGeneration: (response: Response) => void = () => undefined;
+  const pendingGeneration = new Promise<Response>((resolve) => {
+    resolveGeneration = resolve;
+  });
+  mockProjectFetch((path, method) => {
+    if (
+      path === "/api/projects/project-alpha/analysis-runs" &&
+      method === "GET"
+    ) {
+      return jsonResponse([completedAnalysisRun]);
+    }
+    if (
+      path === "/api/projects/project-beta/analysis-runs" &&
+      method === "GET"
+    ) {
+      return jsonResponse([betaRun]);
+    }
+    if (
+      path ===
+        "/api/projects/project-alpha/analysis-runs/run-completed/clusters/generate" &&
+      method === "POST"
+    ) {
+      return pendingGeneration;
+    }
+    return undefined;
+  });
+  render(<App />);
+
+  await signIn(user);
+  const projectList = await screen.findByRole("region", {
+    name: "Bestehende Projekte",
+  });
+  await user.click(getProjectRow(projectList, "Alpha"));
+  await openProjectTab(user, "Cluster");
+  const clusterActions = await screen.findByRole("region", {
+    name: "Cluster Aktionen",
+  });
+  await user.click(
+    within(clusterActions).getByRole("button", {
+      name: "Cluster erzeugen",
+    }),
+  );
+
+  const navigation = screen.getByRole("navigation", {
+    name: "Hauptnavigation",
+  });
+  await user.click(within(navigation).getByRole("button", { name: "Beta" }));
+  await waitFor(() =>
+    expect(screen.getByLabelText("Projektname")).toHaveValue("Beta"),
+  );
+  expect(screen.getByText("Projekt geöffnet.")).toBeInTheDocument();
+
+  await act(async () => {
+    resolveGeneration(jsonResponse([cluster]));
+    await pendingGeneration;
+  });
+
+  expect(screen.getByText("Projekt geöffnet.")).toBeInTheDocument();
+  expect(
+    screen.queryByText("Cluster erzeugt und geladen."),
+  ).not.toBeInTheDocument();
+  await openProjectTab(user, "Cluster");
+  const betaClusterExplorer = await screen.findByRole("region", {
+    name: "Cluster Explorer",
+  });
+  expect(
+    within(betaClusterExplorer).queryByText("Cluster H"),
+  ).not.toBeInTheDocument();
+});
+
+test("restarts the feedback timeout when the same project error occurs again", async () => {
+  const user = userEvent.setup();
+  mockFetch((input, init) => {
+    const path = String(input);
+    const method = init?.method ?? "GET";
+    if (path === "/api/auth/sign-in" && method === "POST") {
+      return jsonResponse({ access_token: "api-token", user: owner });
+    }
+    if (path === "/api/users" && method === "GET") {
+      return jsonResponse([owner]);
+    }
+    if (path === "/api/projects" && method === "GET") {
+      return jsonResponse([]);
+    }
+    if (path === "/api/providers" && method === "GET") {
+      return jsonResponse([]);
+    }
+    if (path === "/api/projects" && method === "POST") {
+      return jsonResponse(
+        { detail: "project name already exists" },
+        { status: 409 },
+      );
+    }
+    throw new Error(`unexpected request ${method} ${path}`);
+  });
+  render(<App />);
+  await signIn(user);
+  await screen.findByRole("heading", { name: "Projekte & Analysen" });
+
+  const createForm = screen.getByRole("form", { name: "Projekt erstellen" });
+  await user.type(within(createForm).getByLabelText("Projektname"), "Alpha");
+  const createButton = within(createForm).getByRole("button", {
+    name: "Projekt erstellen",
+  });
+  vi.useFakeTimers();
+  await act(async () => {
+    fireEvent.click(createButton);
+  });
+  const firstAlert = screen.getByRole("alert");
+  expect(firstAlert).toHaveClass("feedback", "error");
+  expect(firstAlert).toHaveTextContent("Fehler: project name already exists");
+  expect(firstAlert).not.toHaveTextContent("raw exception");
+
+  await act(async () => {
+    vi.advanceTimersByTime(3000);
+  });
+  await act(async () => {
+    fireEvent.click(createButton);
+  });
+  expect(screen.getByRole("alert")).toHaveTextContent(
+    "Fehler: project name already exists",
+  );
+
+  await act(async () => {
+    vi.advanceTimersByTime(600);
+  });
+  expect(screen.getByRole("alert")).toHaveTextContent(
+    "project name already exists",
+  );
+
+  await act(async () => {
+    vi.advanceTimersByTime(2899);
+  });
+  expect(screen.getByRole("alert")).toBeInTheDocument();
+
+  await act(async () => {
+    vi.advanceTimersByTime(1);
+  });
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+});
+
+test("renders safe error feedback for user, provider, import, profile, run, candidate, and export actions", async () => {
+  const user = userEvent.setup();
+  mockFetch((input, init) => {
+    const path = String(input);
+    const method = init?.method ?? "GET";
+    if (path === "/api/auth/sign-in" && method === "POST") {
+      return jsonResponse({ access_token: "api-token", user: owner });
+    }
+    if (path === "/api/users" && method === "GET") {
+      return jsonResponse([owner]);
+    }
+    if (path === "/api/users" && method === "POST") {
+      return jsonResponse(
+        { detail: "user email is already registered" },
+        { status: 409 },
+      );
+    }
+    if (path === "/api/projects" && method === "GET") {
+      return jsonResponse([alphaProject]);
+    }
+    if (path === "/api/providers" && method === "GET") {
+      return jsonResponse([vllmProvider]);
+    }
+    if (path === "/api/providers/vllm" && method === "PUT") {
+      return jsonResponse(
+        { detail: "provider endpoint is not reachable" },
+        { status: 400 },
+      );
+    }
+    if (path === "/api/projects/project-alpha" && method === "GET") {
+      return jsonResponse(alphaProject);
+    }
+    if (path === "/api/projects/project-alpha/imports" && method === "GET") {
+      return jsonResponse([importLog]);
+    }
+    if (path === "/api/projects/project-alpha/imports" && method === "POST") {
+      return Promise.reject(new Error("raw import transport exception"));
+    }
+    if (
+      path === "/api/projects/project-alpha/analysis-profiles" &&
+      method === "GET"
+    ) {
+      return jsonResponse([analysisProfile]);
+    }
+    if (
+      path === "/api/projects/project-alpha/analysis-profiles" &&
+      method === "POST"
+    ) {
+      return jsonResponse(
+        { detail: "analysis profile is invalid" },
+        { status: 400 },
+      );
+    }
+    if (
+      path === "/api/projects/project-alpha/analysis-runs" &&
+      method === "GET"
+    ) {
+      return jsonResponse([completedAnalysisRun]);
+    }
+    if (
+      path === "/api/projects/project-alpha/analysis-runs" &&
+      method === "POST"
+    ) {
+      return jsonResponse(
+        { detail: "analysis run cannot be started" },
+        { status: 409 },
+      );
+    }
+    if (path === "/api/projects/project-alpha/candidates" && method === "GET") {
+      return jsonResponse([candidate]);
+    }
+    if (
+      path === "/api/projects/project-alpha/candidates/candidate-1" &&
+      method === "PATCH"
+    ) {
+      return jsonResponse(
+        { detail: "candidate update conflicts with current state" },
+        { status: 409 },
+      );
+    }
+    if (path === "/api/projects/project-alpha/exports" && method === "GET") {
+      return jsonResponse([]);
+    }
+    if (
+      path === "/api/projects/project-alpha/exports/candidates" &&
+      method === "POST"
+    ) {
+      return jsonResponse(
+        { detail: "candidate export cannot be created" },
+        { status: 400 },
+      );
+    }
+    throw new Error(`unexpected request ${method} ${path}`);
+  });
+  render(<App />);
+  await signIn(user);
+
+  await openSettingsTab(user, "Nutzer");
+  const userForm = await screen.findByRole("form", { name: "User anlegen" });
+  await user.type(within(userForm).getByLabelText("Name"), "Support Curator");
+  await user.type(
+    within(userForm).getByLabelText("E-Mail"),
+    "curator@example.test",
+  );
+  await user.type(
+    within(userForm).getByLabelText("Initiales Passwort"),
+    "curator-password",
+  );
+  await user.click(
+    within(userForm).getByRole("button", { name: "User erstellen" }),
+  );
+  await expectErrorFeedback(
+    "user email is already registered",
+    "raw exception",
+  );
+
+  await openSettingsTab(user, "Embedding-Provider");
+  const providerForm = await screen.findByRole("form", {
+    name: "vLLM Provider konfigurieren",
+  });
+  await user.click(
+    within(providerForm).getByRole("button", { name: "vLLM speichern" }),
+  );
+  await expectErrorFeedback(
+    "provider endpoint is not reachable",
+    "raw exception",
+  );
+
+  await user.click(screen.getByRole("button", { name: "Projekte" }));
+  const projectList = await screen.findByRole("region", {
+    name: "Bestehende Projekte",
+  });
+  await user.click(getProjectRow(projectList, "Alpha"));
+
+  const importForm = await screen.findByRole("form", {
+    name: "Import starten",
+  });
+  const file = new window.File(
+    ["ticket_id,message_group_id,message,answer\nT-1,G-1,Hi,A\n"],
+    "fixture.csv",
+    { type: "text/csv" },
+  );
+  await user.upload(within(importForm).getByLabelText("Importdatei"), file);
+  await user.click(
+    within(importForm).getByRole("button", { name: "Import starten" }),
+  );
+  await expectErrorFeedback(
+    "Import konnte nicht durchgeführt werden.",
+    "raw import transport exception",
+  );
+
+  await openProjectTab(user, "Profile");
+  const profileForm = await screen.findByRole("form", {
+    name: "Analyseprofil erstellen",
+  });
+  await user.click(
+    within(profileForm).getByRole("button", { name: "Profil speichern" }),
+  );
+  await expectErrorFeedback("analysis profile is invalid", "raw exception");
+
+  await openProjectTab(user, "Runs");
+  const runForm = await screen.findByRole("form", {
+    name: "Analyse starten",
+  });
+  await user.click(
+    within(runForm).getByRole("button", { name: "Analyse starten" }),
+  );
+  await expectErrorFeedback("analysis run cannot be started", "raw exception");
+
+  await openProjectTab(user, "Kandidaten");
+  const candidateEditor = await screen.findByRole("region", {
+    name: "Candidate Editor",
+  });
+  await user.click(
+    within(candidateEditor).getByRole("button", {
+      name: "Candidate speichern",
+    }),
+  );
+  await expectErrorFeedback(
+    "candidate update conflicts with current state",
+    "raw exception",
+  );
+
+  await openProjectTab(user, "Export");
+  const exportForm = await screen.findByRole("form", {
+    name: "Candidate CSV exportieren",
+  });
+  await user.click(
+    within(exportForm).getByRole("button", {
+      name: "Candidate CSV exportieren",
+    }),
+  );
+  await expectErrorFeedback(
+    "candidate export cannot be created",
+    "raw exception",
+  );
 });
 
 test("does not save untouched generated candidate multi-value fields as empty manual overrides", async () => {
@@ -1489,13 +2524,7 @@ test("does not save untouched generated candidate multi-value fields as empty ma
   const projectList = await screen.findByRole("region", {
     name: "Bestehende Projekte",
   });
-  const alphaCard = within(projectList).getByText("Alpha").closest("article");
-  if (alphaCard === null) {
-    throw new Error("alpha project card missing");
-  }
-  await user.click(
-    within(alphaCard).getByRole("button", { name: "Projekt öffnen" }),
-  );
+  await user.click(getProjectRow(projectList, "Alpha"));
   await openProjectTab(user, "Kandidaten");
 
   const candidateEditor = await screen.findByRole("region", {
@@ -1563,4 +2592,888 @@ test("does not save untouched generated candidate multi-value fields as empty ma
     manual_external_data_dependencies: null,
     notes: "Reviewed without multi-value edits.",
   });
+});
+
+test("suggests project-local profile names and sends only selected model and algorithm fields", async () => {
+  const user = userEvent.setup();
+  const alphaProfiles = [
+    { ...analysisProfile, id: "profile-analysis-1", name: "analysis-1" },
+    { ...analysisProfile, id: "profile-analysis-7", name: "analysis-7" },
+    {
+      ...analysisProfile,
+      id: "profile-historical",
+      name: "manuell",
+      algorithm_settings: { algorithm: "historical-legacy" },
+    },
+  ];
+  const betaProfiles = [
+    {
+      ...analysisProfile,
+      id: "profile-beta-2",
+      project_id: "project-beta",
+      name: "analysis-2",
+    },
+  ];
+  let createdBody: Record<string, unknown> | null = null;
+  let profileRequests = 0;
+  const runProfileIds: string[] = [];
+  let resolveBetaProject: (response: Response) => void = () => undefined;
+  const pendingBetaProject = new Promise<Response>((resolve) => {
+    resolveBetaProject = resolve;
+  });
+  let resolveBetaProfiles: (response: Response) => void = () => undefined;
+  const pendingBetaProfiles = new Promise<Response>((resolve) => {
+    resolveBetaProfiles = resolve;
+  });
+
+  mockFetch((input, init) => {
+    const path = String(input);
+    const method = init?.method ?? "GET";
+    if (path === "/api/auth/sign-in" && method === "POST") {
+      return jsonResponse({ access_token: "api-token", user: owner });
+    }
+    if (path === "/api/users" && method === "GET") {
+      return jsonResponse([owner]);
+    }
+    if (path === "/api/projects" && method === "GET") {
+      return jsonResponse([alphaProject, betaProject]);
+    }
+    if (path === "/api/providers" && method === "GET") {
+      return jsonResponse([
+        { ...vllmProvider, manual_models: [] },
+        { ...ollamaProvider, manual_models: ["embed-a", "embed-b"] },
+        openAiProvider,
+      ]);
+    }
+    if (path === "/api/projects/project-alpha" && method === "GET") {
+      return jsonResponse(alphaProject);
+    }
+    if (path === "/api/projects/project-beta" && method === "GET") {
+      return pendingBetaProject;
+    }
+    if (
+      path === "/api/projects/project-alpha/analysis-profiles" &&
+      method === "GET"
+    ) {
+      return jsonResponse(alphaProfiles);
+    }
+    if (
+      path === "/api/projects/project-beta/analysis-profiles" &&
+      method === "GET"
+    ) {
+      return pendingBetaProfiles;
+    }
+    if (
+      path === "/api/projects/project-alpha/analysis-profiles" &&
+      method === "POST"
+    ) {
+      profileRequests += 1;
+      createdBody = JSON.parse(String(init?.body));
+      return jsonResponse(
+        {
+          ...analysisProfile,
+          id: "profile-analysis-8",
+          name: "analysis-8",
+          provider: "ollama",
+          model: "embed-a",
+          algorithm_settings: {
+            algorithm: "agglomerative",
+            distance_threshold: 0.4,
+            linkage: "average",
+          },
+        },
+        { status: 201 },
+      );
+    }
+    if (path === "/api/projects/project-alpha/imports" && method === "GET") {
+      return jsonResponse([importLog]);
+    }
+    if (path === "/api/projects/project-beta/imports" && method === "GET") {
+      return jsonResponse([]);
+    }
+    if (
+      path === "/api/projects/project-alpha/analysis-runs" &&
+      method === "POST"
+    ) {
+      const body = JSON.parse(String(init?.body));
+      runProfileIds.push(String(body.analysis_profile_id));
+      return jsonResponse(
+        {
+          ...analysisRun,
+          analysis_profile_id: body.analysis_profile_id,
+          parameters: body.parameters,
+        },
+        { status: 201 },
+      );
+    }
+    if (
+      /^\/api\/projects\/project-(alpha|beta)\/analysis-runs$/.test(path) &&
+      method === "GET"
+    ) {
+      return jsonResponse([]);
+    }
+    if (
+      /^\/api\/projects\/project-(alpha|beta)\/candidates$/.test(path) &&
+      method === "GET"
+    ) {
+      return jsonResponse([]);
+    }
+    if (
+      /^\/api\/projects\/project-(alpha|beta)\/exports$/.test(path) &&
+      method === "GET"
+    ) {
+      return jsonResponse([]);
+    }
+    throw new Error(`unexpected request ${method} ${path}`);
+  });
+  render(<App />);
+
+  await signIn(user);
+  const projectList = await screen.findByRole("region", {
+    name: "Bestehende Projekte",
+  });
+  await user.click(getProjectRow(projectList, "Alpha"));
+  await openProjectTab(user, "Profile");
+
+  const profileForm = await screen.findByRole("form", {
+    name: "Analyseprofil erstellen",
+  });
+  await waitFor(() =>
+    expect(within(profileForm).getByLabelText("Profilname")).toHaveValue(
+      "analysis-8",
+    ),
+  );
+  expect(
+    within(profileForm).getByText(/noch kein Modell konfiguriert/i),
+  ).toBeInTheDocument();
+  expect(
+    within(profileForm).getByRole("button", { name: "Profil speichern" }),
+  ).toBeDisabled();
+  expect(screen.getByText(/historical-legacy/)).toBeInTheDocument();
+
+  await user.selectOptions(
+    within(profileForm).getByLabelText("Provider"),
+    "ollama",
+  );
+  const modelSelect = within(profileForm).getByLabelText("Modell");
+  await waitFor(() => expect(modelSelect).toHaveValue("embed-a"));
+  expect(
+    within(modelSelect)
+      .getAllByRole("option")
+      .map((option) => option.textContent),
+  ).toEqual(["embed-a", "embed-b"]);
+  expect(
+    within(profileForm).getByLabelText("Minimale Clustergröße"),
+  ).toBeInTheDocument();
+  expect(
+    within(profileForm).queryByLabelText("Anzahl Cluster"),
+  ).not.toBeInTheDocument();
+
+  await user.selectOptions(
+    within(profileForm).getByLabelText("Algorithmus"),
+    "agglomerative",
+  );
+  expect(
+    within(profileForm).queryByLabelText("Minimale Clustergröße"),
+  ).not.toBeInTheDocument();
+  expect(
+    within(profileForm).getByLabelText("Anzahl Cluster"),
+  ).toBeInTheDocument();
+  await user.selectOptions(
+    within(profileForm).getByLabelText("Abbruchkriterium"),
+    "distance_threshold",
+  );
+  await user.type(within(profileForm).getByLabelText("Distanzschwelle"), "0.4");
+  await user.selectOptions(
+    within(profileForm).getByLabelText("Linkage"),
+    "average",
+  );
+  await user.click(
+    within(profileForm).getByRole("button", { name: "Profil speichern" }),
+  );
+
+  expect(createdBody).toMatchObject({
+    name: "analysis-8",
+    provider: "ollama",
+    model: "embed-a",
+    algorithm_settings: {
+      algorithm: "agglomerative",
+      distance_threshold: 0.4,
+      linkage: "average",
+    },
+  });
+  const submittedAlgorithmSettings = (
+    createdBody as unknown as {
+      algorithm_settings: Record<string, unknown>;
+    }
+  ).algorithm_settings;
+  expect(submittedAlgorithmSettings.n_clusters).toBeUndefined();
+  expect(submittedAlgorithmSettings.min_cluster_size).toBeUndefined();
+  await waitFor(() =>
+    expect(within(profileForm).getByLabelText("Profilname")).toHaveValue(
+      "analysis-9",
+    ),
+  );
+
+  await openProjectTab(user, "Runs");
+  const formerAlphaRunForm = await screen.findByRole("form", {
+    name: "Analyse starten",
+  });
+  await openProjectTab(user, "Profile");
+  const formerAlphaProfileForm = await screen.findByRole("form", {
+    name: "Analyseprofil erstellen",
+  });
+  const navigation = screen.getByRole("navigation", {
+    name: "Hauptnavigation",
+  });
+  await user.click(
+    within(navigation).getByRole("button", {
+      name: "Beta",
+    }),
+  );
+  expect(
+    screen.queryByRole("region", { name: "Aktuelles Projekt" }),
+  ).not.toBeInTheDocument();
+  expect(
+    screen.queryByRole("form", { name: "Analyseprofil erstellen" }),
+  ).not.toBeInTheDocument();
+  expect(
+    screen.queryByRole("form", { name: "Analyse starten" }),
+  ).not.toBeInTheDocument();
+  fireEvent.submit(formerAlphaProfileForm);
+  fireEvent.submit(formerAlphaRunForm);
+  expect(profileRequests).toBe(1);
+  expect(runProfileIds).toEqual([]);
+
+  resolveBetaProject(jsonResponse(betaProject));
+  await waitFor(() =>
+    expect(screen.getByLabelText("Projektname")).toHaveValue("Beta"),
+  );
+  await openProjectTab(user, "Profile");
+  expect(
+    await screen.findByRole("status", {
+      name: "Analyseprofile werden geladen",
+    }),
+  ).toBeInTheDocument();
+  expect(
+    screen.queryByRole("form", { name: "Analyseprofil erstellen" }),
+  ).not.toBeInTheDocument();
+  expect(screen.queryByDisplayValue("analysis-9")).not.toBeInTheDocument();
+  expect(screen.queryByText(/historical-legacy/)).not.toBeInTheDocument();
+  expect(
+    screen.queryByRole("button", { name: "Profil speichern" }),
+  ).not.toBeInTheDocument();
+
+  await user.click(
+    within(navigation).getByRole("button", {
+      name: "Alpha",
+    }),
+  );
+  await waitFor(() =>
+    expect(screen.getByLabelText("Projektname")).toHaveValue("Alpha"),
+  );
+  await openProjectTab(user, "Profile");
+  const alphaProfileForm = await screen.findByRole("form", {
+    name: "Analyseprofil erstellen",
+  });
+  await waitFor(() =>
+    expect(within(alphaProfileForm).getByLabelText("Profilname")).toHaveValue(
+      "analysis-8",
+    ),
+  );
+
+  resolveBetaProfiles(jsonResponse(betaProfiles));
+  await waitFor(() => {
+    expect(screen.getByLabelText("Projektname")).toHaveValue("Alpha");
+    expect(screen.queryByText("analysis-2")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("status", {
+        name: "Analyseprofile werden geladen",
+      }),
+    ).not.toBeInTheDocument();
+  });
+
+  await openProjectTab(user, "Runs");
+  const runForm = await screen.findByRole("form", {
+    name: "Analyse starten",
+  });
+  const runProfileSelect = within(runForm).getByLabelText("Analyseprofil");
+  expect(
+    within(runProfileSelect).queryByRole("option", {
+      name: /analysis-2/,
+    }),
+  ).not.toBeInTheDocument();
+  expect(runProfileSelect).toHaveValue("profile-analysis-1");
+  await user.click(
+    within(runForm).getByRole("button", { name: "Analyse starten" }),
+  );
+  await waitFor(() => expect(runProfileIds).toEqual(["profile-analysis-1"]));
+});
+
+test("requires explicit OpenAI confirmation immediately before starting a run", async () => {
+  const user = userEvent.setup();
+  const localProfile = {
+    ...analysisProfile,
+    id: "profile-local",
+    name: "Local",
+  };
+  const cloudProfile = {
+    ...analysisProfile,
+    id: "profile-cloud",
+    name: "Cloud",
+    provider: "openai",
+    model: "gpt-4.1-mini",
+    is_cloud_provider: true,
+  };
+  let runRequests = 0;
+
+  mockFetch((input, init) => {
+    const path = String(input);
+    const method = init?.method ?? "GET";
+    if (path === "/api/auth/sign-in" && method === "POST") {
+      return jsonResponse({ access_token: "api-token", user: owner });
+    }
+    if (path === "/api/users" && method === "GET") {
+      return jsonResponse([owner]);
+    }
+    if (path === "/api/projects" && method === "GET") {
+      return jsonResponse([alphaProject]);
+    }
+    if (path === "/api/providers" && method === "GET") {
+      return jsonResponse([vllmProvider, openAiProvider]);
+    }
+    if (path === "/api/projects/project-alpha" && method === "GET") {
+      return jsonResponse(alphaProject);
+    }
+    if (path === "/api/projects/project-alpha/imports" && method === "GET") {
+      return jsonResponse([importLog]);
+    }
+    if (
+      path === "/api/projects/project-alpha/analysis-profiles" &&
+      method === "GET"
+    ) {
+      return jsonResponse([localProfile, cloudProfile]);
+    }
+    if (
+      path === "/api/projects/project-alpha/analysis-runs" &&
+      method === "GET"
+    ) {
+      return jsonResponse([]);
+    }
+    if (path === "/api/projects/project-alpha/candidates" && method === "GET") {
+      return jsonResponse([]);
+    }
+    if (path === "/api/projects/project-alpha/exports" && method === "GET") {
+      return jsonResponse([]);
+    }
+    if (
+      path === "/api/projects/project-alpha/analysis-runs" &&
+      method === "POST"
+    ) {
+      runRequests += 1;
+      const body = JSON.parse(String(init?.body));
+      expect(body.analysis_profile_id).toBe("profile-cloud");
+      expect(body.parameters.cloud_use_confirmed).toBe(true);
+      return jsonResponse(
+        {
+          ...analysisRun,
+          analysis_profile_id: "profile-cloud",
+          profile_snapshot: {
+            name: "Cloud",
+            provider: "openai",
+            model: "gpt-4.1-mini",
+          },
+          provider: "openai",
+          model: "gpt-4.1-mini",
+          parameters: body.parameters,
+        },
+        { status: 201 },
+      );
+    }
+    throw new Error(`unexpected request ${method} ${path}`);
+  });
+  render(<App />);
+
+  await signIn(user);
+  const projectList = await screen.findByRole("region", {
+    name: "Bestehende Projekte",
+  });
+  await user.click(getProjectRow(projectList, "Alpha"));
+  await openProjectTab(user, "Runs");
+
+  const runForm = await screen.findByRole("form", {
+    name: "Analyse starten",
+  });
+  const profileSelect = within(runForm).getByLabelText("Analyseprofil");
+  expect(
+    within(runForm).queryByLabelText(/Ich bestätige/),
+  ).not.toBeInTheDocument();
+  await user.selectOptions(profileSelect, "profile-cloud");
+  const confirmation = within(runForm).getByLabelText(/Ich bestätige/);
+  const startButton = within(runForm).getByRole("button", {
+    name: "Analyse starten",
+  });
+  expect(startButton).toBeDisabled();
+  expect(runRequests).toBe(0);
+
+  await user.click(confirmation);
+  expect(startButton).toBeEnabled();
+  await user.click(startButton);
+
+  await waitFor(() => expect(runRequests).toBe(1));
+  expect(confirmation).not.toBeChecked();
+});
+
+test("opens a project without an eager run request and gives the Runs view sole request ownership", async () => {
+  const user = userEvent.setup();
+  let runRequests = 0;
+  let activeRequests = 0;
+  let maximumActiveRequests = 0;
+  let completeRequest: (response: Response) => void = () => undefined;
+  mockProjectFetch((path, method, init) => {
+    if (
+      path === "/api/projects/project-alpha/analysis-runs" &&
+      method === "GET"
+    ) {
+      runRequests += 1;
+      activeRequests += 1;
+      maximumActiveRequests = Math.max(maximumActiveRequests, activeRequests);
+      const signal = init?.signal;
+      expect(signal).toBeInstanceOf(AbortSignal);
+      return new Promise<Response>((resolve, reject) => {
+        let settled = false;
+        signal?.addEventListener(
+          "abort",
+          () => {
+            if (!settled) {
+              settled = true;
+              activeRequests -= 1;
+              reject(new DOMException("Aborted", "AbortError"));
+            }
+          },
+          { once: true },
+        );
+        completeRequest = (response) => {
+          if (!settled) {
+            settled = true;
+            activeRequests -= 1;
+            resolve(response);
+          }
+        };
+      });
+    }
+    return undefined;
+  });
+  render(<App />);
+
+  await signIn(user);
+  const projectList = await screen.findByRole("region", {
+    name: "Bestehende Projekte",
+  });
+  await user.click(getProjectRow(projectList, "Alpha"));
+  await waitFor(() =>
+    expect(screen.getByLabelText("Projektname")).toHaveValue("Alpha"),
+  );
+  expect(runRequests).toBe(0);
+
+  await openProjectTab(user, "Runs");
+  await waitFor(() => expect(runRequests).toBe(1));
+  expect(activeRequests).toBe(1);
+  expect(maximumActiveRequests).toBe(1);
+
+  completeRequest(jsonResponse([completedAnalysisRun]));
+  const runsRegion = await screen.findByRole("region", {
+    name: "Analyse Runs",
+  });
+  expect(await within(runsRegion).findByText("completed")).toBeInTheDocument();
+  expect(activeRequests).toBe(0);
+});
+
+test("aborts a hidden in-flight poll before refreshing immediately on return", async () => {
+  const user = userEvent.setup();
+  let visibilityState: DocumentVisibilityState = "visible";
+  vi.spyOn(document, "visibilityState", "get").mockImplementation(
+    () => visibilityState,
+  );
+  let runRequests = 0;
+  let activeRequests = 0;
+  let maximumActiveRequests = 0;
+  const completeRequests: Array<(response: Response) => void> = [];
+  mockProjectFetch((path, method, init) => {
+    if (
+      path === "/api/projects/project-alpha/analysis-runs" &&
+      method === "GET"
+    ) {
+      runRequests += 1;
+      activeRequests += 1;
+      maximumActiveRequests = Math.max(maximumActiveRequests, activeRequests);
+      const signal = init?.signal;
+      expect(signal).toBeInstanceOf(AbortSignal);
+      return new Promise<Response>((resolve, reject) => {
+        let settled = false;
+        signal?.addEventListener(
+          "abort",
+          () => {
+            if (!settled) {
+              settled = true;
+              activeRequests -= 1;
+              reject(new DOMException("Aborted", "AbortError"));
+            }
+          },
+          { once: true },
+        );
+        completeRequests.push((response) => {
+          if (!settled) {
+            settled = true;
+            activeRequests -= 1;
+            resolve(response);
+          }
+        });
+      });
+    }
+    return undefined;
+  });
+  render(<App />);
+
+  await signIn(user);
+  const projectList = await screen.findByRole("region", {
+    name: "Bestehende Projekte",
+  });
+  await user.click(getProjectRow(projectList, "Alpha"));
+  expect(runRequests).toBe(0);
+  await openProjectTab(user, "Runs");
+  await waitFor(() => expect(runRequests).toBe(1));
+  expect(activeRequests).toBe(1);
+
+  visibilityState = "hidden";
+  document.dispatchEvent(new Event("visibilitychange"));
+  await waitFor(() => expect(activeRequests).toBe(0));
+
+  visibilityState = "visible";
+  document.dispatchEvent(new Event("visibilitychange"));
+  await waitFor(() => expect(runRequests).toBe(2));
+  expect(activeRequests).toBe(1);
+  expect(maximumActiveRequests).toBe(1);
+
+  completeRequests[1]?.(jsonResponse([completedAnalysisRun]));
+  const runsRegion = await screen.findByRole("region", {
+    name: "Analyse Runs",
+  });
+  expect(await within(runsRegion).findByText("completed")).toBeInTheDocument();
+  expect(activeRequests).toBe(0);
+});
+
+test("polls visible runs immediately and every two seconds without overlap and recovers after failure", async () => {
+  const user = userEvent.setup();
+  const runningRun = {
+    ...analysisRun,
+    status: "running",
+    progress: 40,
+    diagnostics: { embedded_messages: 4 },
+    started_at: "2026-07-22T00:00:02Z",
+    updated_at: "2026-07-22T00:00:03Z",
+  };
+  const completedRun = {
+    ...completedAnalysisRun,
+    error_message: null,
+    diagnostics: { embeddings_written: 2, clusters_written: 1 },
+    updated_at: "2026-07-22T00:00:06Z",
+  };
+  const laterRunningRun = {
+    ...runningRun,
+    progress: 70,
+    diagnostics: { embedded_messages: 8 },
+    updated_at: "2026-07-22T00:00:05Z",
+  };
+  let runRequests = 0;
+  let rejectPendingPoll: (reason?: unknown) => void = () => undefined;
+  const pendingPoll = new Promise<Response>((_resolve, reject) => {
+    rejectPendingPoll = reject;
+  });
+  mockProjectFetch((path, method) => {
+    if (
+      path === "/api/projects/project-alpha/analysis-runs" &&
+      method === "GET"
+    ) {
+      runRequests += 1;
+      if (runRequests === 1) {
+        return jsonResponse([runningRun]);
+      }
+      if (runRequests === 2) {
+        return pendingPoll;
+      }
+      if (runRequests === 3) {
+        return jsonResponse([laterRunningRun]);
+      }
+      return jsonResponse([completedRun]);
+    }
+    return undefined;
+  });
+  render(<App />);
+
+  await signIn(user);
+  const projectList = await screen.findByRole("region", {
+    name: "Bestehende Projekte",
+  });
+  await user.click(getProjectRow(projectList, "Alpha"));
+  await openProjectTab(user, "Runs");
+
+  const runsRegion = await screen.findByRole("region", {
+    name: "Analyse Runs",
+  });
+  expect(await within(runsRegion).findByText("running")).toBeInTheDocument();
+  expect(within(runsRegion).getByText("40%")).toBeInTheDocument();
+  expect(
+    within(runsRegion).getByText('Diagnose: {"embedded_messages":4}'),
+  ).toBeInTheDocument();
+  expect(runRequests).toBe(1);
+
+  await waitFor(() => expect(runRequests).toBe(2), { timeout: 3000 });
+  await new Promise((resolve) => window.setTimeout(resolve, 2100));
+  expect(runRequests).toBe(2);
+  expect(within(runsRegion).getByText("running")).toBeInTheDocument();
+
+  rejectPendingPoll(new Error("temporary backend failure"));
+  await pendingPoll.catch(() => undefined);
+
+  expect(
+    await within(runsRegion).findByText("70%", undefined, {
+      timeout: 3000,
+    }),
+  ).toBeInTheDocument();
+  expect(
+    await within(runsRegion).findByText("completed", undefined, {
+      timeout: 3000,
+    }),
+  ).toBeInTheDocument();
+  expect(within(runsRegion).getByText("100%")).toBeInTheDocument();
+  expect(
+    within(runsRegion).getByText(
+      'Diagnose: {"embeddings_written":2,"clusters_written":1}',
+    ),
+  ).toBeInTheDocument();
+  expect(runRequests).toBe(4);
+}, 15000);
+
+test("pauses run polling while hidden or outside the Runs tab and refreshes immediately when visible", async () => {
+  const user = userEvent.setup();
+  let visibilityState: DocumentVisibilityState = "visible";
+  vi.spyOn(document, "visibilityState", "get").mockImplementation(
+    () => visibilityState,
+  );
+  let runRequests = 0;
+  mockProjectFetch((path, method) => {
+    if (
+      path === "/api/projects/project-alpha/analysis-runs" &&
+      method === "GET"
+    ) {
+      runRequests += 1;
+      return jsonResponse([
+        runRequests < 2
+          ? { ...analysisRun, status: "running", progress: 20 }
+          : completedAnalysisRun,
+      ]);
+    }
+    return undefined;
+  });
+  render(<App />);
+
+  await signIn(user);
+  const projectList = await screen.findByRole("region", {
+    name: "Bestehende Projekte",
+  });
+  await user.click(getProjectRow(projectList, "Alpha"));
+  await openProjectTab(user, "Runs");
+  const runsRegion = await screen.findByRole("region", {
+    name: "Analyse Runs",
+  });
+  expect(await within(runsRegion).findByText("running")).toBeInTheDocument();
+  expect(runRequests).toBe(1);
+
+  visibilityState = "hidden";
+  document.dispatchEvent(new Event("visibilitychange"));
+  await new Promise((resolve) => window.setTimeout(resolve, 2100));
+  expect(runRequests).toBe(1);
+
+  visibilityState = "visible";
+  document.dispatchEvent(new Event("visibilitychange"));
+  expect(await within(runsRegion).findByText("completed")).toBeInTheDocument();
+  expect(runRequests).toBe(2);
+
+  await openProjectTab(user, "Profile");
+  await new Promise((resolve) => window.setTimeout(resolve, 2100));
+  expect(runRequests).toBe(2);
+}, 10000);
+
+test("ignores a delayed poll from a previously opened project", async () => {
+  const user = userEvent.setup();
+  const betaRun = {
+    ...completedAnalysisRun,
+    id: "run-beta",
+    project_id: "project-beta",
+    diagnostics: { project: "beta" },
+  };
+  let alphaRunRequests = 0;
+  let resolveAlphaPoll: (response: Response) => void = () => undefined;
+  const pendingAlphaPoll = new Promise<Response>((resolve) => {
+    resolveAlphaPoll = resolve;
+  });
+  mockProjectFetch((path, method) => {
+    if (
+      path === "/api/projects/project-alpha/analysis-runs" &&
+      method === "GET"
+    ) {
+      alphaRunRequests += 1;
+      return pendingAlphaPoll;
+    }
+    if (
+      path === "/api/projects/project-beta/analysis-runs" &&
+      method === "GET"
+    ) {
+      return jsonResponse([betaRun]);
+    }
+    return undefined;
+  });
+  render(<App />);
+
+  await signIn(user);
+  const projectList = await screen.findByRole("region", {
+    name: "Bestehende Projekte",
+  });
+  await user.click(getProjectRow(projectList, "Alpha"));
+  await openProjectTab(user, "Runs");
+  await waitFor(() => expect(alphaRunRequests).toBe(1));
+
+  const navigation = screen.getByRole("navigation", {
+    name: "Hauptnavigation",
+  });
+  await user.click(within(navigation).getByRole("button", { name: "Beta" }));
+  await waitFor(() =>
+    expect(screen.getByLabelText("Projektname")).toHaveValue("Beta"),
+  );
+  resolveAlphaPoll(
+    jsonResponse([
+      { ...analysisRun, status: "failed", error_message: "stale" },
+    ]),
+  );
+  await pendingAlphaPoll;
+  await openProjectTab(user, "Runs");
+
+  const runsRegion = await screen.findByRole("region", {
+    name: "Analyse Runs",
+  });
+  expect(await within(runsRegion).findByText("completed")).toBeInTheDocument();
+  expect(within(runsRegion).getByText(/"project":"beta"/)).toBeInTheDocument();
+  expect(within(runsRegion).queryByText("failed")).not.toBeInTheDocument();
+  expect(within(runsRegion).queryByText("stale")).not.toBeInTheDocument();
+});
+
+test("ignores a delayed poll after logout", async () => {
+  const user = userEvent.setup();
+  let runRequests = 0;
+  let resolvePoll: (response: Response) => void = () => undefined;
+  const pendingPoll = new Promise<Response>((resolve) => {
+    resolvePoll = resolve;
+  });
+  mockProjectFetch((path, method) => {
+    if (
+      path === "/api/projects/project-alpha/analysis-runs" &&
+      method === "GET"
+    ) {
+      runRequests += 1;
+      return pendingPoll;
+    }
+    return undefined;
+  });
+  render(<App />);
+
+  await signIn(user);
+  const projectList = await screen.findByRole("region", {
+    name: "Bestehende Projekte",
+  });
+  await user.click(getProjectRow(projectList, "Alpha"));
+  await openProjectTab(user, "Runs");
+  await waitFor(() => expect(runRequests).toBe(1));
+
+  await user.click(screen.getByRole("button", { name: "Abmelden" }));
+  resolvePoll(
+    jsonResponse([
+      { ...analysisRun, status: "failed", error_message: "stale" },
+    ]),
+  );
+  await pendingPoll;
+
+  expect(
+    await screen.findByRole("heading", { name: "Lokaler Zugriff" }),
+  ).toBeInTheDocument();
+  expect(screen.queryByText("failed")).not.toBeInTheDocument();
+  expect(screen.queryByText("stale")).not.toBeInTheDocument();
+});
+
+test("stops polling and ignores an in-flight response after unmount", async () => {
+  const user = userEvent.setup();
+  let runRequests = 0;
+  let resolvePoll: (response: Response) => void = () => undefined;
+  const pendingPoll = new Promise<Response>((resolve) => {
+    resolvePoll = resolve;
+  });
+  mockProjectFetch((path, method) => {
+    if (
+      path === "/api/projects/project-alpha/analysis-runs" &&
+      method === "GET"
+    ) {
+      runRequests += 1;
+      return pendingPoll;
+    }
+    return undefined;
+  });
+  const rendered = render(<App />);
+
+  await signIn(user);
+  const projectList = await screen.findByRole("region", {
+    name: "Bestehende Projekte",
+  });
+  await user.click(getProjectRow(projectList, "Alpha"));
+  await openProjectTab(user, "Runs");
+  await waitFor(() => expect(runRequests).toBe(1));
+
+  rendered.unmount();
+  vi.useFakeTimers();
+  resolvePoll(jsonResponse([completedAnalysisRun]));
+  await pendingPoll;
+  await vi.advanceTimersByTimeAsync(3000);
+
+  expect(runRequests).toBe(1);
+});
+
+test("returns to signed-out state when run polling establishes an invalid session", async () => {
+  const user = userEvent.setup();
+  let runRequests = 0;
+  mockProjectFetch((path, method) => {
+    if (
+      path === "/api/projects/project-alpha/analysis-runs" &&
+      method === "GET"
+    ) {
+      runRequests += 1;
+      return jsonResponse(
+        { detail: "authentication required" },
+        { status: 401 },
+      );
+    }
+    return undefined;
+  });
+  render(<App />);
+
+  await signIn(user);
+  const projectList = await screen.findByRole("region", {
+    name: "Bestehende Projekte",
+  });
+  await user.click(getProjectRow(projectList, "Alpha"));
+  await openProjectTab(user, "Runs");
+
+  expect(
+    await screen.findByRole("heading", { name: "Lokaler Zugriff" }),
+  ).toBeInTheDocument();
+  expect(window.sessionStorage.getItem(sessionTokenStorageKey)).toBeNull();
+  expect(runRequests).toBe(1);
 });

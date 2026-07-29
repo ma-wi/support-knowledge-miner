@@ -61,16 +61,16 @@ class CandidateConnection:
                 "membership_score": 0.82,
                 "message": "How do I reset my password?",
                 "answer": "Use the reset link.",
-                "ticketid": "T-1",
-                "messagegroupid": "G-1",
+                "ticket_id": "T-1",
+                "message_group_id": "G-1",
             },
             {
                 "message_pair_id": PAIR_B,
                 "membership_score": 0.75,
                 "message": "Password reset failed",
                 "answer": "Request a new reset link.",
-                "ticketid": "T-2",
-                "messagegroupid": "G-2",
+                "ticket_id": "T-2",
+                "message_group_id": "G-2",
             },
         ]
 
@@ -204,8 +204,8 @@ class CandidateConnection:
                         rows.append(
                             {
                                 **assignment,
-                                "ticketid": source["ticketid"],
-                                "messagegroupid": source["messagegroupid"],
+                                "ticket_id": source["ticket_id"],
+                                "message_group_id": source["message_group_id"],
                                 "message": source["message"],
                                 "answer": source["answer"],
                                 "message_segment_id": None,
@@ -462,8 +462,8 @@ def test_candidate_source_traceability_reaches_original_pair_fields(
 
     sources = service.list_sources(PROJECT_ID, candidate.id)
 
-    assert sources[0].ticketid == "T-1"
-    assert sources[0].messagegroupid == "G-1"
+    assert sources[0].ticket_id == "T-1"
+    assert sources[0].message_group_id == "G-1"
     assert sources[0].message == "How do I reset my password?"
     assert sources[0].answer == "Use the reset link."
     assert sources[0].cluster_id == CLUSTER_ID

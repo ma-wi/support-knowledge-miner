@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from http.client import HTTPConnection, HTTPSConnection, HTTPException
 import json
+import math
 import os
 from typing import Any
 from urllib.parse import urlparse
@@ -14,6 +15,7 @@ from uuid import UUID, uuid4
 from psycopg.types.json import Jsonb
 
 from backend.audit import AuditService
+from backend.clusters.service import ClusterError, validate_algorithm_settings
 from backend.config import DatabaseSettings
 from backend.db.connection import open_database_connection
 from backend.providers.secrets import (
@@ -27,10 +29,23 @@ MAX_MODELS = 200
 MAX_MODEL_LENGTH = 160
 MAX_ENDPOINT_LENGTH = 500
 PROVIDER_CHECK_TIMEOUT_SECONDS = 2.0
+PROVIDER_EMBEDDING_TIMEOUT_SECONDS = 60.0
+MAX_EMBEDDING_BATCH_SIZE = 64
+MAX_EMBEDDING_TEXT_LENGTH = 100_000
+MAX_EMBEDDING_BATCH_CHARACTERS = 500_000
+MAX_EMBEDDING_RESPONSE_BYTES = 16 * 1024 * 1024
+MAX_EMBEDDING_DIMENSIONS = 8_192
 OLLAMA_PULL_TIMEOUT_SECONDS = 1800.0
 OPENAI_API_HOST = "api.openai.com"
 DEFAULT_OLLAMA_BASE_URL = "http://localhost:11434"
-LOCAL_OLLAMA_HOSTS = {"localhost", "127.0.0.1", "::1", "ollama"}
+LOCAL_PROVIDER_HOSTS = {
+    "localhost",
+    "127.0.0.1",
+    "::1",
+    "ollama",
+    "vllm-cpu",
+    "vllm-gpu",
+}
 
 
 class ProviderError(ValueError):
@@ -70,7 +85,6 @@ class AnalysisProfileInput:
     model: str
     thresholds: dict[str, Any]
     algorithm_settings: dict[str, Any]
-    prompt_identifier: str | None = None
     prompt_template: str | None = None
 
 
@@ -84,7 +98,6 @@ class AnalysisProfile:
     is_cloud_provider: bool
     thresholds: dict[str, Any]
     algorithm_settings: dict[str, Any]
-    prompt_identifier: str | None
     prompt_template: str | None
     created_at: datetime
     updated_at: datetime
@@ -141,21 +154,56 @@ def _clean_endpoint(endpoint_url: str | None) -> str | None:
     return cleaned.rstrip("/") + "/"
 
 
-def _require_local_ollama_endpoint(endpoint_url: str) -> None:
+def _require_local_endpoint(provider: str, endpoint_url: str) -> None:
     parsed = urlparse(endpoint_url)
     hostname = parsed.hostname.casefold() if parsed.hostname is not None else None
     if (
-        hostname not in LOCAL_OLLAMA_HOSTS
+        hostname not in LOCAL_PROVIDER_HOSTS
         or parsed.username is not None
         or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
     ):
-        raise ProviderError("ollama requires an explicitly allowed local endpoint")
+        raise ProviderError(f"{provider} requires an explicitly allowed local endpoint")
+
+
+def _require_local_ollama_endpoint(endpoint_url: str) -> None:
+    _require_local_endpoint("ollama", endpoint_url)
+
+
+def _openai_compatible_path(base_path: str, resource: str) -> str:
+    cleaned = base_path.rstrip("/")
+    prefix = cleaned if cleaned.endswith("/v1") else f"{cleaned}/v1"
+    return f"{prefix}/{resource}".removeprefix("//")
 
 
 def _object(value: dict[str, Any], field: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ProviderError(f"{field} must be an object")
     return value
+
+
+def _safe_embedding_http_error(status: int, raw: bytes) -> str:
+    diagnostic = raw[:64_000].decode("utf-8", errors="ignore").casefold()
+    context_markers = (
+        "context length",
+        "context window",
+        "maximum context",
+        "max context",
+        "too many tokens",
+        "input length exceeds",
+    )
+    if any(marker in diagnostic for marker in context_markers):
+        return "embedding input exceeds the model context window"
+    if status in {401, 403}:
+        return "embedding provider rejected authentication"
+    if status == 404:
+        return "embedding model or endpoint was not found"
+    if status == 429:
+        return "embedding provider capacity is exhausted; retry later"
+    if status >= 500:
+        return "embedding provider is temporarily unavailable"
+    return f"embedding provider rejected the request (HTTP {status})"
 
 
 def _configuration_from_row(row: dict[str, object]) -> ProviderConfiguration:
@@ -184,11 +232,6 @@ def _profile_from_row(row: dict[str, object]) -> AnalysisProfile:
         thresholds=dict(thresholds) if isinstance(thresholds, dict) else {},
         algorithm_settings=(
             dict(algorithm_settings) if isinstance(algorithm_settings, dict) else {}
-        ),
-        prompt_identifier=(
-            str(row["prompt_identifier"])
-            if row["prompt_identifier"] is not None
-            else None
         ),
         prompt_template=(
             str(row["prompt_template"]) if row["prompt_template"] is not None else None
@@ -245,8 +288,8 @@ class ProviderService:
     ) -> ProviderConfiguration:
         provider = _provider(payload.provider)
         endpoint_url = _clean_endpoint(payload.endpoint_url)
-        if provider == "ollama" and endpoint_url is not None:
-            _require_local_ollama_endpoint(endpoint_url)
+        if provider in {"ollama", "vllm"} and endpoint_url is not None:
+            _require_local_endpoint(provider, endpoint_url)
         manual_models = _clean_models(payload.manual_models)
         clean_api_key = payload.api_key.strip() if payload.api_key is not None else None
         if clean_api_key == "":
@@ -364,13 +407,83 @@ class ProviderService:
             actor_user_id=actor_user_id,
         )
 
+    def embed_texts(
+        self, provider: str, model: str, texts: list[str]
+    ) -> list[list[float]]:
+        """Generate exactly one validated embedding per input without fallback."""
+        clean_provider = _provider(provider)
+        clean_model = _clean_model(model)
+        if not texts or len(texts) > MAX_EMBEDDING_BATCH_SIZE:
+            raise ProviderError(
+                f"embedding batch must contain 1 to {MAX_EMBEDDING_BATCH_SIZE} texts"
+            )
+        if any(not isinstance(text, str) for text in texts):
+            raise ProviderError("embedding input must contain strings")
+        if any(len(text) > MAX_EMBEDDING_TEXT_LENGTH for text in texts):
+            raise ProviderError("embedding input is too long")
+        if sum(len(text) for text in texts) > MAX_EMBEDDING_BATCH_CHARACTERS:
+            raise ProviderError("embedding batch is too large")
+
+        config = self._get_configuration(clean_provider)
+        if config is None or clean_model not in config.manual_models:
+            raise ProviderError("model is not configured for provider")
+        headers = {
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        }
+        if clean_provider == "openai":
+            secret = self._get_api_key_secret(clean_provider)
+            if secret is None:
+                raise ProviderError("OpenAI API key is not configured")
+            try:
+                api_key = decrypt_provider_secret(secret)
+            except ProviderSecretError as exc:
+                raise ProviderError("OpenAI API key could not be loaded") from exc
+            headers["Authorization"] = f"Bearer {api_key}"
+            payload = self._post_embedding_request(
+                scheme="https",
+                netloc=OPENAI_API_HOST,
+                path="/v1/embeddings",
+                body={"model": clean_model, "input": texts},
+                headers=headers,
+            )
+            embeddings = self._openai_compatible_embeddings(payload, len(texts))
+        else:
+            if config.endpoint_url is None:
+                raise ProviderError(f"{clean_provider} endpoint_url is required")
+            _require_local_endpoint(clean_provider, config.endpoint_url)
+            parsed = urlparse(config.endpoint_url)
+            base_path = parsed.path.rstrip("/")
+            path = (
+                f"{base_path}/api/embed"
+                if clean_provider == "ollama"
+                else _openai_compatible_path(parsed.path, "embeddings")
+            )
+            payload = self._post_embedding_request(
+                scheme=parsed.scheme,
+                netloc=parsed.netloc,
+                path=path,
+                body={
+                    "model": clean_model,
+                    "input": texts,
+                    **({"keep_alive": "5m"} if clean_provider == "ollama" else {}),
+                },
+                headers=headers,
+            )
+            embeddings = (
+                self._ollama_embeddings(payload, len(texts))
+                if clean_provider == "ollama"
+                else self._openai_compatible_embeddings(payload, len(texts))
+            )
+        return self._validate_embeddings(embeddings, len(texts))
+
     def list_profiles(self, project_id: UUID) -> list[AnalysisProfile]:
         with open_database_connection(self._settings) as connection:
             rows = connection.execute(
                 """
                 SELECT id, project_id, name, provider, model, is_cloud_provider,
-                       thresholds, algorithm_settings, prompt_identifier,
-                       prompt_template, created_at, updated_at
+                       thresholds, algorithm_settings, prompt_template,
+                       created_at, updated_at
                 FROM analysis_profiles
                 WHERE project_id = %s
                 ORDER BY updated_at DESC, name ASC
@@ -398,13 +511,13 @@ class ProviderService:
                     """
                     INSERT INTO analysis_profiles (
                         id, project_id, name, provider, model, is_cloud_provider,
-                        thresholds, algorithm_settings, prompt_identifier,
-                        prompt_template, created_by_user_id, updated_by_user_id
+                        thresholds, algorithm_settings, prompt_template,
+                        created_by_user_id, updated_by_user_id
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     RETURNING id, project_id, name, provider, model,
                               is_cloud_provider, thresholds, algorithm_settings,
-                              prompt_identifier, prompt_template, created_at, updated_at
+                              prompt_template, created_at, updated_at
                     """,
                     (
                         profile_id,
@@ -415,7 +528,6 @@ class ProviderService:
                         _is_cloud_provider(clean_payload.provider),
                         Jsonb(clean_payload.thresholds),
                         Jsonb(clean_payload.algorithm_settings),
-                        clean_payload.prompt_identifier,
                         clean_payload.prompt_template,
                         actor_user_id,
                         actor_user_id,
@@ -461,14 +573,13 @@ class ProviderService:
                         is_cloud_provider = %s,
                         thresholds = %s,
                         algorithm_settings = %s,
-                        prompt_identifier = %s,
                         prompt_template = %s,
                         updated_by_user_id = %s,
                         updated_at = now()
                     WHERE id = %s AND project_id = %s
                     RETURNING id, project_id, name, provider, model,
                               is_cloud_provider, thresholds, algorithm_settings,
-                              prompt_identifier, prompt_template, created_at, updated_at
+                              prompt_template, created_at, updated_at
                     """,
                     (
                         clean_payload.name,
@@ -477,7 +588,6 @@ class ProviderService:
                         _is_cloud_provider(clean_payload.provider),
                         Jsonb(clean_payload.thresholds),
                         Jsonb(clean_payload.algorithm_settings),
-                        clean_payload.prompt_identifier,
                         clean_payload.prompt_template,
                         actor_user_id,
                         profile_id,
@@ -533,20 +643,19 @@ class ProviderService:
         name = payload.name.strip()
         if not name:
             raise ProviderError("profile name must not be empty")
+        algorithm_settings = _object(payload.algorithm_settings, "algorithm_settings")
+        try:
+            normalized_algorithm = validate_algorithm_settings(
+                algorithm_settings
+            ).as_settings()
+        except ClusterError as exc:
+            raise ProviderError(str(exc)) from exc
         return AnalysisProfileInput(
             name=name,
             provider=_provider(payload.provider),
             model=_clean_model(payload.model),
             thresholds=_object(payload.thresholds, "thresholds"),
-            algorithm_settings=_object(
-                payload.algorithm_settings, "algorithm_settings"
-            ),
-            prompt_identifier=(
-                payload.prompt_identifier.strip()
-                if payload.prompt_identifier is not None
-                and payload.prompt_identifier.strip()
-                else None
-            ),
+            algorithm_settings=normalized_algorithm,
             prompt_template=(
                 payload.prompt_template.strip()
                 if payload.prompt_template is not None
@@ -602,7 +711,7 @@ class ProviderService:
         try:
             connection.request("GET", path, headers={"Accept": "application/json"})
             response = connection.getresponse()
-            if response.status >= 400:
+            if response.status >= 300:
                 raise ProviderError(f"Ollama returned HTTP {response.status}")
             payload = json.loads(response.read(1024 * 1024).decode("utf-8"))
         except (
@@ -657,7 +766,7 @@ class ProviderService:
             )
             response = connection.getresponse()
             payload = json.loads(response.read(1024 * 1024).decode("utf-8"))
-            if response.status >= 400:
+            if response.status >= 300:
                 message = (
                     payload.get("error")
                     if isinstance(payload, dict)
@@ -682,11 +791,12 @@ class ProviderService:
     def _check_vllm(
         self, endpoint_url: str, manual_models: list[str]
     ) -> ProviderCheckResult:
+        _require_local_endpoint("vllm", endpoint_url)
         parsed = urlparse(endpoint_url)
         connection_class = (
             HTTPSConnection if parsed.scheme == "https" else HTTPConnection
         )
-        path = f"{parsed.path.rstrip('/')}/v1/models" if parsed.path else "/v1/models"
+        path = _openai_compatible_path(parsed.path, "models")
         connection = connection_class(
             parsed.netloc,
             timeout=PROVIDER_CHECK_TIMEOUT_SECONDS,
@@ -694,7 +804,7 @@ class ProviderService:
         try:
             connection.request("GET", path, headers={"Accept": "application/json"})
             response = connection.getresponse()
-            if response.status >= 400:
+            if response.status >= 300:
                 raise ProviderError(f"vLLM returned HTTP {response.status}")
             payload = json.loads(response.read(1024 * 1024).decode("utf-8"))
         except (
@@ -737,7 +847,7 @@ class ProviderService:
                 },
             )
             response = connection.getresponse()
-            if response.status >= 400:
+            if response.status >= 300:
                 raise ProviderError(f"OpenAI returned HTTP {response.status}")
             payload = json.loads(response.read(2 * 1024 * 1024).decode("utf-8"))
         except (
@@ -781,6 +891,122 @@ class ProviderService:
             models=models,
             message="OpenAI models discovered",
         )
+
+    def _post_embedding_request(
+        self,
+        *,
+        scheme: str,
+        netloc: str,
+        path: str,
+        body: dict[str, object],
+        headers: dict[str, str],
+    ) -> Any:
+        connection_class = HTTPSConnection if scheme == "https" else HTTPConnection
+        connection = connection_class(
+            netloc, timeout=PROVIDER_EMBEDDING_TIMEOUT_SECONDS
+        )
+        try:
+            connection.request(
+                "POST",
+                path,
+                body=json.dumps(body).encode("utf-8"),
+                headers=headers,
+            )
+            response = connection.getresponse()
+            raw = response.read(MAX_EMBEDDING_RESPONSE_BYTES + 1)
+            if len(raw) > MAX_EMBEDDING_RESPONSE_BYTES:
+                raise ProviderError("embedding provider response is too large")
+            if response.status >= 300:
+                raise ProviderError(_safe_embedding_http_error(response.status, raw))
+            return json.loads(raw.decode("utf-8"))
+        except ProviderError:
+            raise
+        except (
+            HTTPException,
+            TimeoutError,
+            OSError,
+            UnicodeDecodeError,
+            json.JSONDecodeError,
+        ) as exc:
+            raise ProviderError(
+                f"embedding provider request failed: {exc.__class__.__name__}"
+            ) from exc
+        finally:
+            connection.close()
+
+    def _openai_compatible_embeddings(
+        self, payload: Any, expected_count: int
+    ) -> list[object]:
+        if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
+            raise ProviderError("embedding provider returned an invalid response")
+        data = payload["data"]
+        if len(data) != expected_count:
+            raise ProviderError(
+                "embedding provider returned the wrong number of vectors"
+            )
+        indexed: list[object | None] = [None] * expected_count
+        for position, item in enumerate(data):
+            if not isinstance(item, dict) or "embedding" not in item:
+                raise ProviderError("embedding provider returned an invalid response")
+            index = item.get("index", position)
+            if (
+                isinstance(index, bool)
+                or not isinstance(index, int)
+                or index < 0
+                or index >= expected_count
+                or indexed[index] is not None
+            ):
+                raise ProviderError(
+                    "embedding provider returned invalid vector indices"
+                )
+            indexed[index] = item["embedding"]
+        if any(item is None for item in indexed):
+            raise ProviderError("embedding provider returned incomplete vector indices")
+        return list(indexed)
+
+    def _ollama_embeddings(self, payload: Any, expected_count: int) -> list[object]:
+        if (
+            not isinstance(payload, dict)
+            or not isinstance(payload.get("embeddings"), list)
+            or len(payload["embeddings"]) != expected_count
+        ):
+            raise ProviderError(
+                "embedding provider returned the wrong number of vectors"
+            )
+        return list(payload["embeddings"])
+
+    def _validate_embeddings(
+        self, embeddings: list[object], expected_count: int
+    ) -> list[list[float]]:
+        if len(embeddings) != expected_count:
+            raise ProviderError(
+                "embedding provider returned the wrong number of vectors"
+            )
+        result: list[list[float]] = []
+        dimensions: int | None = None
+        for embedding in embeddings:
+            if not isinstance(embedding, list) or not embedding:
+                raise ProviderError("embedding provider returned an invalid vector")
+            if len(embedding) > MAX_EMBEDDING_DIMENSIONS:
+                raise ProviderError("embedding vector has too many dimensions")
+            vector: list[float] = []
+            for item in embedding:
+                if isinstance(item, bool) or not isinstance(item, (int, float)):
+                    raise ProviderError("embedding provider returned an invalid vector")
+                number = float(item)
+                if not math.isfinite(number):
+                    raise ProviderError(
+                        "embedding provider returned a non-finite vector"
+                    )
+                vector.append(number)
+            if dimensions is None:
+                dimensions = len(vector)
+            elif len(vector) != dimensions:
+                raise ProviderError(
+                    "embedding provider returned inconsistent dimensions"
+                )
+            result.append(vector)
+        return result
 
     def _models_from_openai_compatible_payload(self, payload: Any) -> list[str]:
         if isinstance(payload, list):

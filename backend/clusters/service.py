@@ -1,24 +1,63 @@
-"""Cluster persistence, deterministic scaffold clustering, and source traceability."""
+"""Validated clustering over persisted run embeddings and source traceability."""
 
 from __future__ import annotations
 
-from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+import math
+from typing import Any, cast
 from uuid import UUID, uuid4
 
+import numpy as np
+from pgvector import Vector
 from psycopg.types.json import Jsonb
+from scipy.sparse.csgraph import connected_components  # type: ignore[import-untyped]
+from sklearn import config_context  # type: ignore[import-untyped]
+from sklearn.cluster import AgglomerativeClustering, HDBSCAN  # type: ignore[import-untyped]
+from sklearn.neighbors import kneighbors_graph  # type: ignore[import-untyped]
 
 from backend.audit import AuditService
 from backend.config import DatabaseSettings
 from backend.db.connection import open_database_connection
 
 VALID_STATUSES = {"unreviewed", "in_progress", "reviewed", "rejected", "outlier"}
+AGGLOMERATIVE_MAX_RECORDS = 10_000
+HDBSCAN_MAX_RECORDS = 100_000
+MAX_CLUSTER_DIMENSIONS = 8_192
+MAX_CLUSTER_WORKING_SET_BYTES = 512 * 1024 * 1024
+NATIVE_VECTOR_FETCH_BATCH_SIZE = 64
+NATIVE_MATRIX_BYTES_PER_VALUE = np.dtype(np.float32).itemsize
+ESTIMATOR_MATRIX_BYTES_PER_VALUE = np.dtype(np.float64).itemsize
+NATIVE_FETCH_BYTES_PER_VALUE = np.dtype(np.float32).itemsize
+HDBSCAN_BYTES_PER_VECTOR_VALUE = (
+    NATIVE_MATRIX_BYTES_PER_VALUE + ESTIMATOR_MATRIX_BYTES_PER_VALUE
+)
+AGGLOMERATIVE_ESTIMATOR_BYTES_PER_VALUE = 2 * ESTIMATOR_MATRIX_BYTES_PER_VALUE
+AGGLOMERATIVE_BYTES_PER_VECTOR_VALUE = (
+    NATIVE_MATRIX_BYTES_PER_VALUE + AGGLOMERATIVE_ESTIMATOR_BYTES_PER_VALUE
+)
+HDBSCAN_NEIGHBOR_BYTES_PER_CELL = 16
+HDBSCAN_FIXED_BYTES_PER_RECORD = 256
+AGGLOMERATIVE_NEIGHBOR_COUNT = 30
+AGGLOMERATIVE_NEIGHBOR_WORKING_BYTES = 64 * 1024 * 1024
+AGGLOMERATIVE_GRAPH_BYTES_PER_CELL = 256
+AGGLOMERATIVE_DISTANCE_BYTES_PER_CELL_VALUE = 3 * NATIVE_MATRIX_BYTES_PER_VALUE
+AGGLOMERATIVE_FIXED_BYTES_PER_RECORD = 512
+SUPPORTED_ALGORITHMS = {"hdbscan", "agglomerative"}
+AGGLOMERATIVE_LINKAGES = {"ward", "complete", "average", "single"}
 
 
 class ClusterError(ValueError):
     """Raised when cluster input or state is invalid."""
+
+
+@dataclass(frozen=True)
+class AlgorithmConfiguration:
+    name: str
+    parameters: dict[str, int | float | str | None]
+
+    def as_settings(self) -> dict[str, int | float | str | None]:
+        return {"algorithm": self.name, **self.parameters}
 
 
 @dataclass(frozen=True)
@@ -56,8 +95,8 @@ class Cluster:
 class ClusterSource:
     cluster_id: UUID
     message_pair_id: UUID
-    ticketid: str
-    messagegroupid: str
+    ticket_id: str
+    message_group_id: str
     message: str
     answer: str
     membership_score: float
@@ -72,12 +111,199 @@ def _clean_optional(value: str | None) -> str | None:
     return cleaned or None
 
 
-def _cluster_key(message: str) -> str:
-    cleaned = message.strip().lower()
-    if not cleaned:
-        return "empty"
-    token = cleaned.split(maxsplit=1)[0]
-    return token[:1] if token else "empty"
+def _integer(
+    settings: dict[str, Any],
+    field: str,
+    *,
+    default: int | None = None,
+    minimum: int = 1,
+    maximum: int | None = None,
+) -> int | None:
+    value = settings.get(field, default)
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+        raise ClusterError(f"{field} must be an integer >= {minimum}")
+    if maximum is not None and value > maximum:
+        raise ClusterError(f"{field} must be an integer <= {maximum}")
+    return value
+
+
+def _number(
+    settings: dict[str, Any], field: str, *, default: float, minimum: float
+) -> float:
+    value = settings.get(field, default)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ClusterError(f"{field} must be a number >= {minimum}")
+    result = float(value)
+    if not math.isfinite(result) or result < minimum:
+        raise ClusterError(f"{field} must be a number >= {minimum}")
+    return result
+
+
+def validate_algorithm_settings(settings: dict[str, Any]) -> AlgorithmConfiguration:
+    """Validate and normalize the accepted profile algorithm contract."""
+    if not isinstance(settings, dict):
+        raise ClusterError("algorithm_settings must be an object")
+    algorithm = settings.get("algorithm")
+    if not isinstance(algorithm, str) or algorithm not in SUPPORTED_ALGORITHMS:
+        raise ClusterError("algorithm must be hdbscan or agglomerative")
+
+    if algorithm == "hdbscan":
+        allowed = {
+            "algorithm",
+            "min_cluster_size",
+            "min_samples",
+            "cluster_selection_epsilon",
+        }
+        unknown = set(settings) - allowed
+        if unknown:
+            raise ClusterError(f"unknown hdbscan setting: {sorted(unknown)[0]}")
+        return AlgorithmConfiguration(
+            name=algorithm,
+            parameters={
+                "min_cluster_size": _integer(
+                    settings,
+                    "min_cluster_size",
+                    default=5,
+                    minimum=2,
+                    maximum=HDBSCAN_MAX_RECORDS,
+                ),
+                "min_samples": _integer(
+                    settings,
+                    "min_samples",
+                    maximum=HDBSCAN_MAX_RECORDS,
+                ),
+                "cluster_selection_epsilon": _number(
+                    settings,
+                    "cluster_selection_epsilon",
+                    default=0.0,
+                    minimum=0.0,
+                ),
+            },
+        )
+
+    allowed = {
+        "algorithm",
+        "n_clusters",
+        "distance_threshold",
+        "linkage",
+    }
+    unknown = set(settings) - allowed
+    if unknown:
+        raise ClusterError(f"unknown agglomerative setting: {sorted(unknown)[0]}")
+    n_clusters = _integer(settings, "n_clusters", default=2, minimum=1)
+    distance_threshold_value = settings.get("distance_threshold")
+    distance_threshold: float | None = None
+    if distance_threshold_value is not None:
+        distance_threshold = _number(
+            settings, "distance_threshold", default=0.0, minimum=0.0
+        )
+        if "n_clusters" in settings:
+            raise ClusterError(
+                "n_clusters and distance_threshold cannot be used together"
+            )
+        n_clusters = None
+    linkage = settings.get("linkage", "ward")
+    if not isinstance(linkage, str) or linkage not in AGGLOMERATIVE_LINKAGES:
+        raise ClusterError("linkage must be ward, complete, average, or single")
+    return AlgorithmConfiguration(
+        name=algorithm,
+        parameters={
+            "n_clusters": n_clusters,
+            "distance_threshold": distance_threshold,
+            "linkage": linkage,
+        },
+    )
+
+
+def validate_cluster_input_budget(
+    config: AlgorithmConfiguration,
+    *,
+    record_count: int,
+    embedding_count: int,
+    minimum_dimensions: int | None,
+    maximum_dimensions: int | None,
+) -> int:
+    """Validate completeness and a conservative total estimator working set."""
+    if record_count < 1:
+        raise ClusterError("analysis run has no message embeddings")
+    if embedding_count != record_count:
+        raise ClusterError("analysis run has missing message embeddings")
+    if (
+        minimum_dimensions is None
+        or maximum_dimensions is None
+        or minimum_dimensions != maximum_dimensions
+    ):
+        raise ClusterError("analysis run has inconsistent embedding dimensions")
+    dimensions = minimum_dimensions
+    if dimensions < 1 or dimensions > MAX_CLUSTER_DIMENSIONS:
+        raise ClusterError("embedding dimensionality is outside safe limits")
+    if config.name == "agglomerative" and record_count > AGGLOMERATIVE_MAX_RECORDS:
+        raise ClusterError(
+            "agglomerative supports at most 10000 records; select hdbscan"
+        )
+    if config.name == "hdbscan" and record_count > HDBSCAN_MAX_RECORDS:
+        raise ClusterError("hdbscan supports at most 100000 records")
+    bytes_per_value = (
+        AGGLOMERATIVE_BYTES_PER_VECTOR_VALUE
+        if config.name == "agglomerative"
+        else HDBSCAN_BYTES_PER_VECTOR_VALUE
+    )
+    estimated_bytes = record_count * dimensions * bytes_per_value
+    estimated_bytes += (
+        min(record_count, NATIVE_VECTOR_FETCH_BATCH_SIZE)
+        * dimensions
+        * NATIVE_FETCH_BYTES_PER_VALUE
+    )
+    if config.name == "hdbscan":
+        min_samples = config.parameters["min_samples"]
+        effective_neighbor_count = (
+            cast(int, config.parameters["min_cluster_size"])
+            if min_samples is None
+            else cast(int, min_samples)
+        )
+        if effective_neighbor_count > record_count:
+            raise ClusterError(
+                "effective HDBSCAN min_samples cannot exceed the number of records"
+            )
+        estimated_bytes += (
+            record_count * effective_neighbor_count * HDBSCAN_NEIGHBOR_BYTES_PER_CELL
+        )
+        estimated_bytes += record_count * HDBSCAN_FIXED_BYTES_PER_RECORD
+    else:
+        estimated_bytes += AGGLOMERATIVE_NEIGHBOR_WORKING_BYTES
+        neighbor_count = min(
+            AGGLOMERATIVE_NEIGHBOR_COUNT,
+            max(record_count - 1, 0),
+        )
+        directed_neighbor_cells = record_count * neighbor_count
+        symmetric_neighbor_cells = min(
+            2 * directed_neighbor_cells,
+            record_count * max(record_count - 1, 0),
+        )
+        estimated_bytes += symmetric_neighbor_cells * AGGLOMERATIVE_GRAPH_BYTES_PER_CELL
+        if config.parameters["linkage"] != "ward":
+            estimated_bytes += (
+                symmetric_neighbor_cells
+                * dimensions
+                * AGGLOMERATIVE_DISTANCE_BYTES_PER_CELL_VALUE
+            )
+        estimated_bytes += record_count * AGGLOMERATIVE_FIXED_BYTES_PER_RECORD
+    if estimated_bytes > MAX_CLUSTER_WORKING_SET_BYTES:
+        recommendation = (
+            "reduce the dataset size, embedding dimensions, or HDBSCAN min_samples"
+            if config.name == "hdbscan"
+            else "reduce the dataset size or embedding dimensions, or select HDBSCAN"
+        )
+        raise ClusterError(
+            "clustering working set estimate "
+            f"{estimated_bytes} bytes for {record_count} records with "
+            f"{dimensions} dimensions exceeds the "
+            f"{MAX_CLUSTER_WORKING_SET_BYTES}-byte (512 MiB) limit; "
+            f"{recommendation}"
+        )
+    return dimensions
 
 
 def _cluster_from_row(row: dict[str, object]) -> Cluster:
@@ -122,8 +348,8 @@ def _source_from_row(row: dict[str, object]) -> ClusterSource:
     return ClusterSource(
         cluster_id=UUID(str(row["cluster_id"])),
         message_pair_id=UUID(str(row["message_pair_id"])),
-        ticketid=str(row["ticketid"]),
-        messagegroupid=str(row["messagegroupid"]),
+        ticket_id=str(row["ticket_id"]),
+        message_group_id=str(row["message_group_id"]),
         message=str(row["message"]),
         answer=str(row["answer"]),
         membership_score=float(str(row["membership_score"])),
@@ -144,7 +370,8 @@ class ClusterService:
             with connection.transaction():
                 run = connection.execute(
                     """
-                    SELECT id, project_id, dataset_version_id, status
+                    SELECT id, project_id, dataset_version_id, status,
+                           profile_snapshot, provider, model
                     FROM analysis_runs
                     WHERE id = %s AND project_id = %s
                     """,
@@ -161,21 +388,75 @@ class ClusterService:
                     (project_id, run_id),
                 ).fetchone()
                 if existing is None:
-                    pairs = connection.execute(
+                    snapshot = run["profile_snapshot"]
+                    if not isinstance(snapshot, dict):
+                        raise ClusterError(
+                            "analysis run has an invalid profile snapshot"
+                        )
+                    settings = snapshot.get("algorithm_settings")
+                    config = validate_algorithm_settings(settings)  # type: ignore[arg-type]
+                    record_limit = (
+                        AGGLOMERATIVE_MAX_RECORDS
+                        if config.name == "agglomerative"
+                        else HDBSCAN_MAX_RECORDS
+                    )
+                    input_summary = connection.execute(
                         """
-                        SELECT id, ticketid, messagegroupid, message, answer
-                        FROM message_pairs
-                        WHERE project_id = %s AND dataset_version_id = %s
-                        ORDER BY ordinal ASC
+                        SELECT COUNT(mp.id) AS record_count,
+                               COUNT(e.id) AS embedding_count,
+                               MIN(e.dimensions) AS minimum_dimensions,
+                               MAX(e.dimensions) AS maximum_dimensions
+                        FROM message_pairs mp
+                        LEFT JOIN embeddings e
+                          ON e.project_id = mp.project_id
+                         AND e.analysis_run_id = %s
+                         AND e.dataset_version_id = mp.dataset_version_id
+                         AND e.source_object_type = 'message_pair'
+                         AND e.source_object_id = mp.id
+                         AND e.text_variant = 'message'
+                        WHERE mp.project_id = %s AND mp.dataset_version_id = %s
                         """,
-                        (project_id, run["dataset_version_id"]),
-                    ).fetchall()
-                    self._insert_deterministic_clusters(
+                        (run_id, project_id, run["dataset_version_id"]),
+                    ).fetchone()
+                    if input_summary is None:
+                        raise ClusterError(
+                            "analysis run embedding summary is unavailable"
+                        )
+                    expected_dimensions = validate_cluster_input_budget(
+                        config,
+                        record_count=int(str(input_summary["record_count"])),
+                        embedding_count=int(str(input_summary["embedding_count"])),
+                        minimum_dimensions=(
+                            int(str(input_summary["minimum_dimensions"]))
+                            if input_summary["minimum_dimensions"] is not None
+                            else None
+                        ),
+                        maximum_dimensions=(
+                            int(str(input_summary["maximum_dimensions"]))
+                            if input_summary["maximum_dimensions"] is not None
+                            else None
+                        ),
+                    )
+                    pair_ids, vectors = self._load_native_embedding_matrix(
                         connection,
                         project_id=project_id,
                         run_id=run_id,
                         dataset_version_id=UUID(str(run["dataset_version_id"])),
-                        pairs=[dict(pair) for pair in pairs],
+                        record_limit=record_limit,
+                        expected_record_count=int(str(input_summary["record_count"])),
+                        expected_dimensions=expected_dimensions,
+                    )
+                    self._validate_and_insert_clusters(
+                        connection,
+                        project_id=project_id,
+                        run_id=run_id,
+                        dataset_version_id=UUID(str(run["dataset_version_id"])),
+                        provider=str(run["provider"]),
+                        model=str(run["model"]),
+                        config=config,
+                        pair_ids=pair_ids,
+                        vectors=vectors,
+                        expected_dimensions=expected_dimensions,
                     )
                     self._audit.record_event(
                         connection,
@@ -183,7 +464,11 @@ class ClusterService:
                         action="clusters.generate",
                         target_type="analysis_run",
                         target_id=run_id,
-                        metadata={"project_id": str(project_id), "pairs": len(pairs)},
+                        metadata={
+                            "project_id": str(project_id),
+                            "pairs": len(pair_ids),
+                            "algorithm": config.name,
+                        },
                     )
         return self.list_clusters(project_id, run_id)
 
@@ -259,8 +544,8 @@ class ClusterService:
         with open_database_connection(self._settings) as connection:
             rows = connection.execute(
                 """
-                SELECT cm.cluster_id, cm.message_pair_id, mp.ticketid,
-                       mp.messagegroupid, mp.message, mp.answer,
+                SELECT cm.cluster_id, cm.message_pair_id, mp.ticket_id,
+                       mp.message_group_id, mp.message, mp.answer,
                        cm.membership_score, cm.is_outlier, cm.assignment_type
                 FROM cluster_memberships cm
                 JOIN clusters c ON c.id = cm.cluster_id AND c.project_id = %s
@@ -272,24 +557,182 @@ class ClusterService:
             ).fetchall()
         return [_source_from_row(dict(row)) for row in rows]
 
-    def _insert_deterministic_clusters(
+    def _load_native_embedding_matrix(
         self,
         connection: Any,
         *,
         project_id: UUID,
         run_id: UUID,
         dataset_version_id: UUID,
-        pairs: list[dict[str, object]],
+        record_limit: int,
+        expected_record_count: int,
+        expected_dimensions: int,
+    ) -> tuple[list[object], np.ndarray[Any, np.dtype[np.float32]]]:
+        pair_ids: list[object] = []
+        seen_pair_ids: set[object] = set()
+        vectors = np.empty(
+            (expected_record_count, expected_dimensions),
+            dtype=np.float32,
+            order="C",
+        )
+        loaded = 0
+        with connection.cursor(
+            name=f"cluster_vectors_{run_id.hex}",
+            binary=True,
+        ) as cursor:
+            cursor.execute(
+                """
+                SELECT mp.id AS message_pair_id, e.embedding, e.dimensions
+                FROM message_pairs mp
+                LEFT JOIN embeddings e
+                  ON e.project_id = mp.project_id
+                 AND e.analysis_run_id = %s
+                 AND e.dataset_version_id = mp.dataset_version_id
+                 AND e.source_object_type = 'message_pair'
+                 AND e.source_object_id = mp.id
+                 AND e.text_variant = 'message'
+                WHERE mp.project_id = %s AND mp.dataset_version_id = %s
+                ORDER BY mp.ordinal ASC
+                LIMIT %s
+                """,
+                (
+                    run_id,
+                    project_id,
+                    dataset_version_id,
+                    record_limit + 1,
+                ),
+            )
+            while rows := cursor.fetchmany(NATIVE_VECTOR_FETCH_BATCH_SIZE):
+                for row in rows:
+                    if loaded >= expected_record_count:
+                        raise ClusterError(
+                            "analysis run embedding summary changed during clustering"
+                        )
+                    embedding = row["embedding"]
+                    if embedding is None:
+                        raise ClusterError(
+                            "analysis run has missing message embeddings"
+                        )
+                    if not isinstance(embedding, Vector):
+                        raise ClusterError("run contains a non-native embedding vector")
+                    pair_id = row["message_pair_id"]
+                    if pair_id in seen_pair_ids:
+                        raise ClusterError(
+                            "analysis run has duplicate message embeddings"
+                        )
+                    seen_pair_ids.add(pair_id)
+                    try:
+                        declared_dimensions = int(str(row["dimensions"]))
+                    except (TypeError, ValueError) as exc:
+                        raise ClusterError(
+                            "embedding dimensionality metadata is invalid"
+                        ) from exc
+                    if (
+                        declared_dimensions < 1
+                        or declared_dimensions > MAX_CLUSTER_DIMENSIONS
+                    ):
+                        raise ClusterError(
+                            "embedding dimensionality is outside safe limits"
+                        )
+                    native_vector = embedding.to_numpy()
+                    if (
+                        native_vector.ndim != 1
+                        or native_vector.shape[0] != declared_dimensions
+                    ):
+                        raise ClusterError(
+                            "embedding dimensionality does not match metadata"
+                        )
+                    if declared_dimensions != expected_dimensions:
+                        raise ClusterError(
+                            "analysis run has inconsistent embedding dimensions"
+                        )
+                    if not np.isfinite(native_vector).all():
+                        raise ClusterError("run contains a non-finite embedding vector")
+                    pair_ids.append(pair_id)
+                    vectors[loaded] = native_vector
+                    loaded += 1
+        if loaded != expected_record_count:
+            raise ClusterError(
+                "analysis run embedding summary changed during clustering"
+            )
+        return pair_ids, vectors
+
+    def _validate_and_insert_clusters(
+        self,
+        connection: Any,
+        *,
+        project_id: UUID,
+        run_id: UUID,
+        dataset_version_id: UUID,
+        provider: str,
+        model: str,
+        config: AlgorithmConfiguration,
+        pair_ids: list[object],
+        vectors: np.ndarray[Any, np.dtype[np.float32]],
+        expected_dimensions: int,
     ) -> None:
-        grouped: dict[str, list[dict[str, object]]] = defaultdict(list)
-        for pair in pairs:
-            grouped[_cluster_key(str(pair["message"]))].append(pair)
-        for key, members in grouped.items():
-            is_outlier = len(members) == 1
+        if config.name == "hdbscan":
+            estimator = HDBSCAN(
+                min_cluster_size=cast(int, config.parameters["min_cluster_size"]),
+                min_samples=config.parameters["min_samples"],  # type: ignore[arg-type]
+                cluster_selection_epsilon=cast(
+                    float, config.parameters["cluster_selection_epsilon"]
+                ),
+                copy=False,
+            )
+            labels = estimator.fit_predict(vectors)
+            probabilities = [float(value) for value in estimator.probabilities_]
+        else:
+            n_clusters = config.parameters["n_clusters"]
+            if isinstance(n_clusters, int) and n_clusters > len(vectors):
+                raise ClusterError("n_clusters cannot exceed the number of records")
+            if len(vectors) == 1:
+                labels = [0]
+            else:
+                with config_context(
+                    working_memory=AGGLOMERATIVE_NEIGHBOR_WORKING_BYTES // (1024 * 1024)
+                ):
+                    connectivity = kneighbors_graph(
+                        vectors,
+                        n_neighbors=min(
+                            AGGLOMERATIVE_NEIGHBOR_COUNT,
+                            len(vectors) - 1,
+                        ),
+                        include_self=False,
+                    )
+                component_count = connected_components(
+                    connectivity,
+                    directed=False,
+                    return_labels=False,
+                )
+                if component_count != 1:
+                    raise ClusterError(
+                        "agglomerative neighbor graph has "
+                        f"{component_count} disconnected components; "
+                        "select HDBSCAN or adjust the dataset"
+                    )
+                estimator = AgglomerativeClustering(
+                    n_clusters=n_clusters,  # type: ignore[arg-type]
+                    distance_threshold=config.parameters["distance_threshold"],  # type: ignore[arg-type]
+                    linkage=str(config.parameters["linkage"]),
+                    connectivity=connectivity,
+                )
+                labels = estimator.fit_predict(vectors)
+            probabilities = [1.0] * len(vectors)
+
+        grouped: dict[int, list[tuple[object, float]]] = {}
+        for pair_id, label, probability in zip(
+            pair_ids, labels, probabilities, strict=True
+        ):
+            grouped.setdefault(int(label), []).append((pair_id, probability))
+
+        for label in sorted(grouped):
+            members = grouped[label]
+            is_outlier = label == -1
             cluster_id = uuid4()
-            title = f"Outlier {key.upper()}" if is_outlier else f"Cluster {key.upper()}"
+            title = "Outliers" if is_outlier else f"Cluster {label + 1}"
             status = "outlier" if is_outlier else "unreviewed"
-            score = 0.0 if is_outlier else min(1.0, len(members) / max(1, len(pairs)))
+            score = sum(item[1] for item in members) / len(members)
             connection.execute(
                 """
                 INSERT INTO clusters (
@@ -305,15 +748,24 @@ class ClusterService:
                     run_id,
                     dataset_version_id,
                     title,
-                    "outlier" if is_outlier else "deterministic-key",
+                    "outlier" if is_outlier else config.name,
                     status,
                     score,
                     is_outlier,
-                    "linear-prefix-scaffold",
-                    Jsonb({"key": key, "non_quadratic": True}),
+                    config.name,
+                    Jsonb(
+                        {
+                            "label": label,
+                            "parameters": config.parameters,
+                            "provider": provider,
+                            "model": model,
+                            "dimensions": expected_dimensions,
+                            "non_quadratic": True,
+                        }
+                    ),
                 ),
             )
-            for member in members:
+            for pair_id, membership_score in members:
                 connection.execute(
                     """
                     INSERT INTO cluster_memberships (
@@ -328,8 +780,8 @@ class ClusterService:
                         project_id,
                         cluster_id,
                         run_id,
-                        member["id"],
-                        score,
+                        pair_id,
+                        membership_score,
                         is_outlier,
                     ),
                 )
