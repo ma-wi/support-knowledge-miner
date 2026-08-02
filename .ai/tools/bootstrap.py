@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import argparse
 import json
 import re
 import shlex
@@ -19,17 +20,18 @@ from _common import get, load_yaml_subset, runtime_versions  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 CONFIG = ROOT / ".ai" / "project.yaml"
+POLICY_PROFILE = ROOT / ".ai" / "policy-profile.yaml"
 
 # Pinned tool versions. These are intentionally exact for reproducible bootstraps.
 # When updating, bump every copy together and re-run template verification:
 #   - UV_VERSION here and `version:` in .github/workflows/ci.yml
 #   - PYTHON_DEV_DEPENDENCIES here and the pinned ruff/mypy/bandit in
-#     .ai/tools/verify-template.sh
+#     tools/verify.sh
 #   - VITE_VERSION / PNPM_VERSION / YARN_VERSION /
 #     REACT_QUALITY_DEPENDENCIES here
 #   - runtime pins in .ai/project.yaml
 # Verify each version resolves on its registry before committing the bump.
-UV_VERSION = "0.12.0"
+UV_VERSION = "0.11.29"
 VITE_VERSION = "9.1.1"
 PNPM_VERSION = "11.15.0"
 YARN_VERSION = "4.17.1"
@@ -123,6 +125,18 @@ CONFIG_SCHEMA = {
             "active_work_context_words": None,
         }
     },
+    "quality_gates": {
+        "commands": {
+            "setup": None,
+            "format_check": None,
+            "format_apply": None,
+            "lint": None,
+            "test": None,
+            "security": None,
+            "dependency_scan": None,
+            "build": None,
+        }
+    },
 }
 
 
@@ -140,6 +154,16 @@ def reject_unknown_keys(data: object, schema: object, path: str = "") -> None:
 def validate_config(data: dict) -> None:
     reject_unknown_keys(data, CONFIG_SCHEMA)
     runtime_versions(data)
+    project_name = get(data, "project", "name", default="CHANGE_ME")
+    if (
+        not isinstance(project_name, str)
+        or not project_name.strip()
+        or any(ord(character) < 32 for character in project_name)
+        or len(project_name) > 128
+    ):
+        raise SystemExit(
+            "project.name must be a non-empty single-line string up to 128 characters"
+        )
     react_managers = {"npm", "pnpm", "yarn"}
     review_cadences = {"per-task", "batch", "feature"}
 
@@ -365,6 +389,91 @@ def validate_config(data: dict) -> None:
         )
     validate_ui_quality_config(data)
     validate_user_facing_errors_config(data)
+    commands = get(data, "quality_gates", "commands", default={})
+    if not isinstance(commands, dict):
+        raise SystemExit("quality_gates.commands must be a mapping")
+    for name, command in commands.items():
+        if (
+            not isinstance(command, str)
+            or any(ord(character) < 32 for character in command)
+            or len(command) > 2_000
+        ):
+            raise SystemExit(
+                f"quality_gates.commands.{name} must be a bounded single-line string"
+            )
+
+
+POLICY_VALUES = {
+    "static_security": {"required", "not_applicable"},
+    "secret_scanning": {"required", "not_applicable"},
+    "dependency_scanning": {"required", "not_applicable"},
+    "dependency_vulnerability_threshold": {"moderate", "high", "critical"},
+    "warning_treatment": {"errors", "warnings"},
+    "authentication": {"required", "not_applicable"},
+    "availability": {"required", "not_applicable"},
+}
+
+
+def load_policy_profile(root: Path | None = None) -> dict | None:
+    """Load the optional project-owned profile; absence preserves legacy behavior."""
+    root = ROOT if root is None else root
+    path = root / ".ai/policy-profile.yaml"
+    if not path.is_file():
+        return None
+    if path.is_symlink():
+        raise SystemExit(".ai/policy-profile.yaml must not be a symbolic link")
+    try:
+        path.resolve().relative_to(root.resolve())
+    except ValueError as error:
+        raise SystemExit(
+            ".ai/policy-profile.yaml must stay below the repository root"
+        ) from error
+    if path.stat().st_size > 1_048_576:
+        raise SystemExit(".ai/policy-profile.yaml must not exceed 1048576 bytes")
+    data = load_yaml_subset(path)
+    if data.get("schema_version") != 1:
+        raise SystemExit(".ai/policy-profile.yaml schema_version must be 1")
+    if data.get("mode") not in {"defaults", "recommended", "custom"}:
+        raise SystemExit(
+            ".ai/policy-profile.yaml mode must be defaults, recommended, or custom"
+        )
+    controls = data.get("controls")
+    if not isinstance(controls, dict):
+        raise SystemExit(".ai/policy-profile.yaml controls must be a mapping")
+    unknown = sorted(set(controls) - set(POLICY_VALUES))
+    if unknown:
+        raise SystemExit("Unknown policy profile control(s): " + ", ".join(unknown))
+    missing = sorted(set(POLICY_VALUES) - set(controls))
+    if missing:
+        raise SystemExit("Missing policy profile control(s): " + ", ".join(missing))
+    for control, allowed in POLICY_VALUES.items():
+        decision = controls[control]
+        if not isinstance(decision, dict):
+            raise SystemExit(f"Policy control {control} must be a mapping")
+        value = decision.get("value")
+        if value not in allowed:
+            raise SystemExit(
+                f"Unsupported policy value {control}={value!r}; allowed: "
+                f"{sorted(allowed)}"
+            )
+        for field in ("source", "rationale", "scope"):
+            if (
+                not isinstance(decision.get(field), str)
+                or not decision[field].strip()
+                or any(ord(character) < 32 for character in decision[field])
+                or len(decision[field]) > 500
+            ):
+                raise SystemExit(
+                    f"Policy control {control}.{field} must be a bounded "
+                    "single-line string"
+                )
+    return data
+
+
+def policy_value(profile: dict | None, control: str, default: str) -> str:
+    if profile is None:
+        return default
+    return str(get(profile, "controls", control, "value", default=default))
 
 
 def require_string_list(value: object, label: str, allowed: set[str]) -> list[str]:
@@ -565,16 +674,13 @@ def validate_repository_path(
 
 def validate_python_package_directory(value: str) -> None:
     path = Path(value.strip())
-    if len(path.parts) != 1:
+    if not path.parts or any(
+        not part.isidentifier() or part.startswith("_") for part in path.parts
+    ):
         raise SystemExit(
-            "stacks.python.directory must be one top-level importable Python package "
-            f"name, for example 'backend': {value!r}"
-        )
-    package_name = path.name
-    if not package_name.isidentifier() or package_name.startswith("_"):
-        raise SystemExit(
-            "stacks.python.directory must be one top-level importable Python package "
-            f"name, for example 'backend': {value!r}"
+            "stacks.python.directory must be a repository-relative Python "
+            "source/package path whose segments are importable identifiers, "
+            f"for example 'backend' or 'src/myapp': {value!r}"
         )
 
 
@@ -607,7 +713,7 @@ def project_shell_scripts() -> list[Path]:
     ]
 
 
-def generate_env(data: dict) -> str:
+def generate_env(data: dict, policy_profile: dict | None = None) -> str:
     setup: list[str] = []
     fmt_check: list[str] = []
     fmt_apply: list[str] = []
@@ -616,6 +722,12 @@ def generate_env(data: dict) -> str:
     security: list[str] = []
     dependency_scans: list[str] = []
     build: list[str] = []
+    dependency_threshold = policy_value(
+        policy_profile, "dependency_vulnerability_threshold", "high"
+    )
+    warnings_as_errors = (
+        policy_value(policy_profile, "warning_treatment", "errors") == "errors"
+    )
 
     if get(data, "stacks", "python", "enabled", default=False):
         python_version = runtime_versions(data)["python"]
@@ -652,7 +764,12 @@ def generate_env(data: dict) -> str:
         fmt_apply += [prefix + runner + " format"]
         lint += [prefix + runner + " lint", prefix + runner + " typecheck"]
         tests += [prefix + runner + " test"]
-        dependency_scans += [prefix + manager + " audit --audit-level=high"]
+        audit_command = {
+            "npm": f"npm audit --audit-level={dependency_threshold}",
+            "pnpm": f"pnpm audit --audit-level={dependency_threshold}",
+            "yarn": f"yarn npm audit --severity {dependency_threshold}",
+        }[manager]
+        dependency_scans += [prefix + audit_command]
         build += [prefix + runner + " build"]
 
     if get(data, "stacks", "bash", "enabled", default=False):
@@ -673,7 +790,8 @@ def generate_env(data: dict) -> str:
         setup += [f"dotnet restore {target} --locked-mode"]
         fmt_check += [f"dotnet format {target} --verify-no-changes"]
         fmt_apply += [f"dotnet format {target}"]
-        lint += [f"dotnet build {target} --no-restore -warnaserror"]
+        warning_flag = " -warnaserror" if warnings_as_errors else ""
+        lint += [f"dotnet build {target} --no-restore{warning_flag}"]
         tests += [
             "result_dir=$(mktemp -d) && "
             "trap 'rm -rf \"$result_dir\"' EXIT && "
@@ -705,6 +823,35 @@ def generate_env(data: dict) -> str:
                 'pwsh -NoProfile -Command "Invoke-Pester tests/powershell -CI"'
             ]
 
+    if policy_profile is not None:
+        if (
+            policy_value(policy_profile, "static_security", "required")
+            == "not_applicable"
+        ):
+            security = []
+        if policy_value(policy_profile, "secret_scanning", "required") == "required":
+            security += ["gitleaks detect --source . --no-banner"]
+        if (
+            policy_value(policy_profile, "dependency_scanning", "required")
+            == "not_applicable"
+        ):
+            dependency_scans = []
+
+    custom_commands = get(data, "quality_gates", "commands", default={})
+    command_lists = {
+        "setup": setup,
+        "format_check": fmt_check,
+        "format_apply": fmt_apply,
+        "lint": lint,
+        "test": tests,
+        "security": security,
+        "dependency_scan": dependency_scans,
+        "build": build,
+    }
+    for gate, command in custom_commands.items():
+        if command:
+            command_lists[gate].append(command)
+
     commands = {
         "SETUP_CMD": chain(setup),
         "FORMAT_CHECK_CMD": chain(fmt_check),
@@ -734,14 +881,25 @@ def generate_env(data: dict) -> str:
             else "0"
         ),
     }
+    require_security = bool(security)
+    require_dependency_scanners = bool(dependency_scans)
+    if policy_profile is not None:
+        require_security = any(
+            policy_value(policy_profile, control, "required") == "required"
+            for control in ("static_security", "secret_scanning")
+        )
+        require_dependency_scanners = (
+            policy_value(policy_profile, "dependency_scanning", "required")
+            == "required"
+        )
     flags = {
         "REQUIRE_SETUP": bool(setup),
         "REQUIRE_FORMAT_CHECK": bool(fmt_check),
         "REQUIRE_LINT": bool(lint),
         "REQUIRE_TEST": bool(tests),
-        "REQUIRE_SECURITY": bool(security),
+        "REQUIRE_SECURITY": require_security,
         "REQUIRE_DEPENDENCY_POLICY": True,
-        "REQUIRE_DEPENDENCY_SCANNERS": bool(dependency_scans),
+        "REQUIRE_DEPENDENCY_SCANNERS": require_dependency_scanners,
         "REQUIRE_BUILD": bool(build),
     }
     result = [
@@ -778,16 +936,20 @@ def npm_package_name(specification: str) -> str:
     return specification.split("@", 1)[0]
 
 
-def ensure_setuptools_package_discovery(pyproject: Path, package_name: str) -> None:
+def ensure_setuptools_package_discovery(pyproject: Path, package_path: str) -> None:
     text = pyproject.read_text(encoding="utf-8")
     parsed = tomllib.loads(text)
     setuptools = parsed.get("tool", {}).get("setuptools", {})
     if "packages" in setuptools or "py-modules" in setuptools:
         return
+    path = Path(package_path)
+    source_root = path.parent.as_posix()
+    where = f'where = ["{source_root}"]\n' if source_root != "." else ""
     pyproject.write_text(
         text.rstrip()
         + "\n\n[tool.setuptools.packages.find]\n"
-        + f'include = ["{package_name}"]\n',
+        + where
+        + f'include = ["{path.name}"]\n',
         encoding="utf-8",
     )
 
@@ -810,6 +972,11 @@ def bootstrap_python(data: dict) -> None:
     backend = validate_repository_path(directory, "stacks.python.directory")
     if backend is None:
         raise SystemExit("stacks.python.directory must not be empty")
+    package_target_existed = backend.exists()
+    if package_target_existed and not backend.is_dir():
+        raise SystemExit(
+            f"Configured Python source/package path is not a directory: {backend}"
+        )
     python_version = runtime_versions(data)["python"]
 
     uv_path = shutil.which("uv")
@@ -841,6 +1008,7 @@ def bootstrap_python(data: dict) -> None:
                 python_version,
                 "--bare",
                 "--no-workspace",
+                "--no-pin-python",
                 ".",
             ],
             ROOT,
@@ -865,23 +1033,23 @@ def bootstrap_python(data: dict) -> None:
     else:
         run_command(["uv", "sync", "--python", python_version], ROOT)
 
-    backend.mkdir(parents=True, exist_ok=True)
-    init_file = backend / "__init__.py"
-    if not init_file.exists():
+    if not package_target_existed:
+        backend.mkdir(parents=True)
+        init_file = backend / "__init__.py"
         init_file.write_text('"""Application backend package."""\n', encoding="utf-8")
 
-    tests_dir = ROOT / "tests"
-    tests_dir.mkdir(exist_ok=True)
-    smoke_test = tests_dir / "test_backend.py"
-    package_name = backend.name
-    ensure_setuptools_package_discovery(pyproject, package_name)
-    if not smoke_test.exists():
-        smoke_test.write_text(
-            f"import {package_name}\n\n\n"
-            "def test_backend_package_imports() -> None:\n"
-            f"    assert {package_name} is not None\n",
-            encoding="utf-8",
-        )
+        tests_dir = ROOT / "tests"
+        tests_dir.mkdir(exist_ok=True)
+        package_name = backend.name
+        smoke_test = tests_dir / f"test_{package_name}.py"
+        ensure_setuptools_package_discovery(pyproject, directory)
+        if not smoke_test.exists():
+            smoke_test.write_text(
+                f"import {package_name}\n\n\n"
+                "def test_backend_package_imports() -> None:\n"
+                f"    assert {package_name} is not None\n",
+                encoding="utf-8",
+            )
 
 
 def package_manager_commands(
@@ -935,24 +1103,34 @@ def configure_react_quality(frontend: Path, manager: str = "npm") -> None:
     package_json = frontend / "package.json"
     if not package_json.exists():
         raise SystemExit(f"React bootstrap did not create {package_json}")
-    data = json.loads(package_json.read_text(encoding="utf-8"))
+    original = package_json.read_text(encoding="utf-8")
+    data = json.loads(original)
+    changed = False
     if manager == "pnpm":
-        data["packageManager"] = f"pnpm@{PNPM_VERSION}"
+        if "packageManager" not in data:
+            data["packageManager"] = f"pnpm@{PNPM_VERSION}"
+            changed = True
     elif manager == "yarn":
-        data["packageManager"] = f"yarn@{YARN_VERSION}"
+        if "packageManager" not in data:
+            data["packageManager"] = f"yarn@{YARN_VERSION}"
+            changed = True
     scripts = data.setdefault("scripts", {})
-    scripts.update(
-        {
-            "format": "prettier --write .",
-            "format:check": "prettier --check .",
-            "typecheck": "tsc -b",
-            "test": "vitest run",
-            "test:watch": "vitest",
-        }
-    )
-    package_json.write_text(
-        json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
-    )
+    if not isinstance(scripts, dict):
+        raise SystemExit(f"package.json scripts must be an object: {package_json}")
+    for name, command in {
+        "format": "prettier --write .",
+        "format:check": "prettier --check .",
+        "typecheck": "tsc -b",
+        "test": "vitest run",
+        "test:watch": "vitest",
+    }.items():
+        if name not in scripts:
+            scripts[name] = command
+            changed = True
+    if changed:
+        package_json.write_text(
+            json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+        )
 
     test_dir = frontend / "src" / "test"
     test_dir.mkdir(parents=True, exist_ok=True)
@@ -1247,36 +1425,76 @@ def create_idea() -> None:
     )
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(
+        description="Bootstrap configured project stacks and generated defaults."
+    )
+    parser.add_argument(
+        "--steps",
+        default="configure,python,react",
+        help="Comma-separated subset of configure,python,react (default: all).",
+    )
+    parser.add_argument(
+        "--no-install",
+        action="store_true",
+        help="Skip stack scaffolding and dependency installation.",
+    )
+    arguments = parser.parse_args(argv)
+    steps = {item.strip() for item in arguments.steps.split(",") if item.strip()}
+    unknown = steps - {"configure", "python", "react"}
+    if unknown or not steps:
+        parser.error(
+            "--steps must contain configure, python, and/or react; unknown: "
+            + ", ".join(sorted(unknown))
+        )
+    if CONFIG.is_symlink():
+        raise SystemExit(".ai/project.yaml must not be a symbolic link")
+    try:
+        CONFIG.resolve().relative_to(ROOT.resolve())
+    except ValueError as error:
+        raise SystemExit(
+            ".ai/project.yaml must stay below the repository root"
+        ) from error
+    if CONFIG.stat().st_size > 1_048_576:
+        raise SystemExit(".ai/project.yaml must not exceed 1048576 bytes")
     data = load_yaml_subset(CONFIG)
     validate_config(data)
-    created_readme = create_project_readme(data)
-    bootstrap_python(data)
-    bootstrap_react(data)
-    (ROOT / ".ai/config/project.defaults.env").write_text(
-        generate_env(data), encoding="utf-8"
-    )
-    update_context(data)
-    update_next_steps()
-    create_decisions_scaffold()
-    create_idea()
-    for path in (ROOT / ".ai/tools").glob("*.sh"):
-        path.chmod(path.stat().st_mode | 0o111)
-    print(
-        "[bootstrap] Created README.md"
-        if created_readme
-        else "[bootstrap] Kept existing README.md"
-    )
-    print("[bootstrap] Initialized configured Python and React project tooling")
-    print("[bootstrap] Generated versioned .ai/config/project.defaults.env")
-    print("[bootstrap] Updated .ai/PROJECT_CONTEXT.md")
-    print("[bootstrap] Updated project-readiness next steps")
-    print("[bootstrap] Created .ai/DECISIONS.md when missing")
-    print("[bootstrap] Created .idea/vcs.xml")
+    policy_profile = load_policy_profile()
+    installed: list[str] = []
+    if not arguments.no_install and "python" in steps:
+        bootstrap_python(data)
+        installed.append("python")
+    if not arguments.no_install and "react" in steps:
+        bootstrap_react(data)
+        installed.append("react")
+    if "configure" in steps:
+        created_readme = create_project_readme(data)
+        (ROOT / ".ai/config/project.defaults.env").write_text(
+            generate_env(data, policy_profile), encoding="utf-8"
+        )
+        update_context(data)
+        update_next_steps()
+        create_decisions_scaffold()
+        create_idea()
+        for path in (ROOT / ".ai/tools").glob("*.sh"):
+            path.chmod(path.stat().st_mode | 0o111)
+        print(
+            "[bootstrap] Created README.md"
+            if created_readme
+            else "[bootstrap] Kept existing README.md"
+        )
+        print("[bootstrap] Generated versioned .ai/config/project.defaults.env")
+        print("[bootstrap] Updated project context and readiness files")
+        print("[bootstrap] Created local IDE state and decisions when missing")
+    if installed:
+        print("[bootstrap] Initialized project tooling for: " + ", ".join(installed))
+    elif arguments.no_install:
+        print("[bootstrap] Skipped scaffolding and dependency installation")
     print("[bootstrap] AI rules are ready under .aiassistant/rules/")
-    print("[bootstrap] One manual IntelliJ setting remains:")
-    print("  Settings > Tools > AI Assistant > Project Settings")
-    print(f"  Path to rules for AI Self-Review: $PROJECT_DIR$/{SELF_REVIEW_RULES}")
+    if "configure" in steps:
+        print("[bootstrap] One manual IntelliJ setting remains:")
+        print("  Settings > Tools > AI Assistant > Project Settings")
+        print(f"  Path to rules for AI Self-Review: $PROJECT_DIR$/{SELF_REVIEW_RULES}")
     print("[bootstrap] Install the required tools, then run ./.ai/tools/verify.sh")
 
 
