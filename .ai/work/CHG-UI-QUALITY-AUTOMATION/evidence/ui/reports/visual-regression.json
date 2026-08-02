@@ -1,0 +1,61 @@
+{
+  "generated_at": "2026-07-30T15:04:08.815Z",
+  "command": "node .ai/tools/ui-browser-review.mjs visual-regression",
+  "result": "pass",
+  "pixel_channel_threshold": 16,
+  "maximum_difference_ratio": 0.001,
+  "comparisons": [
+    {
+      "screen": "signed-out",
+      "state": "default",
+      "viewport": "desktop",
+      "baseline": "frontend/ui-baselines/desktop-signed-out-default.png",
+      "actual": "desktop/visual-regression-default.png",
+      "diff": null,
+      "different_pixels": 0,
+      "total_pixels": 1440000,
+      "difference_ratio": 0,
+      "allowed_ratio": 0.001,
+      "result": "pass"
+    },
+    {
+      "screen": "signed-out",
+      "state": "invalid-credentials",
+      "viewport": "desktop",
+      "baseline": "frontend/ui-baselines/desktop-signed-out-invalid-credentials.png",
+      "actual": "desktop/visual-regression-invalid-credentials.png",
+      "diff": null,
+      "different_pixels": 0,
+      "total_pixels": 1440000,
+      "difference_ratio": 0,
+      "allowed_ratio": 0.001,
+      "result": "pass"
+    },
+    {
+      "screen": "signed-out",
+      "state": "default",
+      "viewport": "mobile",
+      "baseline": "frontend/ui-baselines/mobile-signed-out-default.png",
+      "actual": "mobile/visual-regression-default.png",
+      "diff": null,
+      "different_pixels": 0,
+      "total_pixels": 329160,
+      "difference_ratio": 0,
+      "allowed_ratio": 0.001,
+      "result": "pass"
+    },
+    {
+      "screen": "signed-out",
+      "state": "invalid-credentials",
+      "viewport": "mobile",
+      "baseline": "frontend/ui-baselines/mobile-signed-out-invalid-credentials.png",
+      "actual": "mobile/visual-regression-invalid-credentials.png",
+      "diff": null,
+      "different_pixels": 0,
+      "total_pixels": 329160,
+      "difference_ratio": 0,
+      "allowed_ratio": 0.001,
+      "result": "pass"
+    }
+  ]
+}

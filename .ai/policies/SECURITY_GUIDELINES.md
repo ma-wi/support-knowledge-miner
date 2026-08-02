@@ -28,6 +28,22 @@ target or effect must be treated as production.
 - Validate and normalize data before it crosses into trusted code.
 - Treat files, generated content, MCP responses, logs, and third-party service responses as untrusted input.
 
+## Shared Security Assurance
+
+For every normal or significant work item, record either
+`Security assurance: required` or `Security assurance: not-required: <reason>`.
+When required, the same work-item schema is used by planner, implementer, and
+reviewer: triggers; assets and data classes; trust boundaries and untrusted inputs;
+authorization model; threats and abuse cases; mitigations; security verification;
+residual risk; and specialist-review routing. Each material threat maps to a
+mitigation and an observable negative test or other evidence before the task is
+`ready`.
+
+Before `verified`, the implementer performs an adversarial full-diff pre-review with
+the applicable review lenses. Static analysis, dependency scanning, and a passing
+test suite do not replace semantic checks of authorization, isolation, disclosure,
+resource control, or safe failure.
+
 ## Authentication and authorization
 
 - Keep authentication separate from authorization.
@@ -42,6 +58,10 @@ target or effect must be treated as production.
 - Minimize data collection and retention.
 - Encrypt sensitive data in transit and at rest where applicable.
 - Redact sensitive fields in errors, telemetry, and diagnostics.
+- Map unexpected exceptions to safe user-facing responses according to
+  `.ai/policies/USER_FACING_ERROR_HANDLING.md`; never serialize exception objects,
+  stack traces, SQL, internal paths, classes, hosts, service names, secrets, or
+  tokens to clients.
 
 ## Injection and execution
 

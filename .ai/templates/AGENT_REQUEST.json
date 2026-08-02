@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "item_id": "REQ-001",
+  "summary": "Implement the accepted queue item objective.",
+  "phase": "planning",
+  "role": "planner",
+  "invocation_id": "00000000-0000-0000-0000-000000000000",
+  "head_revision": "0000000000000000000000000000000000000000",
+  "source_branch": "agent/req-001-implement-the-accepted-queue-item-objective",
+  "source_digest": "0000000000000000000000000000000000000000000000000000000000000000",
+  "workspace": ".",
+  "allowed_paths": [
+    "docs/requirements/REQ-001.md",
+    "docs/specifications/",
+    "docs/architecture/decisions/",
+    ".ai/work/REQ-001/",
+    ".ai/CURRENT_PLAN.md"
+  ],
+  "owner_authorized_paths": [],
+  "instructions": "Follow the named role and canonical repository policies.",
+  "task_ids": []
+}

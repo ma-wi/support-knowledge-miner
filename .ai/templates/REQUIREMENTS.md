@@ -24,6 +24,11 @@ Use this section only for user-visible workflows where an actor, goal, and outco
 
 - FR-1:
 
+## Conditional requirement annexes
+
+Append `.ai/templates/REQUIREMENTS_ERRORS.md` only when user-facing error handling is
+enabled and the requirement changes a user-triggered or user-observable action.
+
 ## Non-functional requirements
 
 - Security:

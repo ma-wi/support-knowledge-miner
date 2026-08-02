@@ -4,6 +4,17 @@ Review selected changes against `AGENTS.md`, `.ai/project.yaml`, the active requ
 
 Check for unmet acceptance criteria, regressions, incompatible API/schema/configuration changes, missing tests, security defects, risky dependencies, Python typing and error handling, React accessibility and client-side trust, Bash/PowerShell quoting and error propagation, .NET/VB analyzer and compatibility defects, stale documentation, unrelated changes, and unnecessary complexity. For incremental work, verify the accepted desired end state across every applicable layer, complete impact classification, existing-responsibility reuse, removal or tracking of superseded artifacts, and current capability specifications.
 
+When UI quality is enabled and the change has UI impact, also verify design-class
+integrity, design approval, component reuse, selected tool installation and lockfiles,
+prototype isolation and promotion, current revision-bound evidence, independent
+visual-review status, and classified closeout. Never substitute code inspection for
+browser or visual review.
+
+When user-facing error handling is enabled and the change affects a user-triggered
+or user-observable action, trace every changed action and known failure across the
+applicable layers. Check unknown-code fallback, input preservation, false-success
+impossibility, raw technical-detail exposure, stale codes, and duplicate mappers.
+
 Reject any proposed agent action or verification step that accesses production or could execute against or affect production. Check changes for accidental automatic production effects. Deployment or operations artifacts may be prepared for later controlled use by authorized humans, but agents must not execute them against production or wire ordinary development actions to trigger production. Confirm examples and verification steps use explicitly non-production targets and non-production data; ambiguity is a failure.
 
 Severity:

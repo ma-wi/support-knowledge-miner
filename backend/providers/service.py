@@ -119,6 +119,14 @@ def _clean_model(value: str) -> str:
     return cleaned
 
 
+def _clean_discovered_model(value: str) -> str | None:
+    """Normalize an untrusted discovered model ID or explicitly reject it."""
+    try:
+        return _clean_model(value)
+    except ProviderError:
+        return None
+
+
 def _split_env_models(value: str | None) -> list[str]:
     if value is None:
         return []
@@ -1029,10 +1037,9 @@ class ProviderService:
                 model_id = item["model"]
             else:
                 continue
-            try:
-                models.append(_clean_model(model_id))
-            except ProviderError:
-                continue
+            model = _clean_discovered_model(model_id)
+            if model is not None:
+                models.append(model)
         return _clean_models(models)
 
     def _models_from_ollama_tags_payload(self, payload: Any) -> list[str]:
@@ -1049,10 +1056,9 @@ class ProviderService:
                 model_id = item["model"]
             else:
                 continue
-            try:
-                models.append(_clean_model(model_id))
-            except ProviderError:
-                continue
+            model = _clean_discovered_model(model_id)
+            if model is not None:
+                models.append(model)
         return _clean_models(models)
 
 

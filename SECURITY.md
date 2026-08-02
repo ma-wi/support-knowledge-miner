@@ -1,18 +1,36 @@
-# Security Policy
+# Security
 
-## Supported Scope
+## Reporting a vulnerability
 
-Support Knowledge Miner MVP 1 is local-only. Server deployment, production operations, production data, production credentials, and production-control paths are out of scope.
+Report suspected vulnerabilities privately to: mathias.wilhelm@ma-wi.eu
 
-## Reporting
+Do not open a public issue for an unpatched vulnerability. Include the affected
+version or revision, reproduction steps using non-production data, expected impact,
+and any known mitigations. Do not send credentials, secrets, production data, or
+sensitive personal data.
 
-Report security issues through the project issue or pull-request workflow available to the repository maintainers. Do not include secrets, production data, customer data, or sensitive personal data in reports. Use minimal synthetic reproduction data.
+## Response expectations
 
-## Security Expectations
+- Acknowledgement target: Within 7 calendar days.
+- Triage target: Within 14 calendar days.
+- Supported versions: Only the latest revision of the main branch.
+- Disclosure and coordination process: Coordinate disclosure privately with the maintainer. Public disclosure occurs only after a fix or mitigation is available.
 
-- Never connect the application, tests, scripts, or diagnostics to production resources.
-- Use only local, development, test, or sandbox resources with no production data.
-- Store passwords only as hashes.
-- Treat OpenAI keys as write-only secrets after save.
-- Treat imported text and original-text exports as potentially sensitive.
-- Run `./.ai/tools/verify.sh` before merging changes.
+Replace the contact placeholder and complete the response expectations before
+configured-project CI is expected to pass.
+
+<!-- guided-setup:policy-profile:start -->
+## Guided setup policy profile
+
+- Decision mode: `recommended`
+- Risk profile: `public-service-review`
+- Decisions:
+  - `authentication` = `required` (assistant-recommendation): Network service evidence may include protected operations
+  - `availability` = `required` (assistant-recommendation): Network service or external input evidence was detected
+  - `dependency_scanning` = `required` (assistant-recommendation): Dependency manifests were detected
+  - `dependency_vulnerability_threshold` = `high` (assistant-recommendation): Retain the versioned high-severity blocking baseline
+  - `secret_scanning` = `required` (assistant-recommendation): Dependencies, deployment, or network exposure can carry secrets
+  - `static_security` = `required` (assistant-recommendation): Supported code or external inputs need static security analysis
+  - `warning_treatment` = `errors` (assistant-recommendation): Detected code should keep warnings actionable
+- Canonical structured source: `.ai/policy-profile.yaml`
+<!-- guided-setup:policy-profile:end -->

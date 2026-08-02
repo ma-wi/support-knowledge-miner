@@ -59,13 +59,12 @@ Use current-state capability files such as
 - Rollback or recovery:
 - Deprecation window, if any:
 
-## Design classification
+## Conditional change annexes
 
-- Class: 0 | 1 | 2 | 3
-- Rationale:
-- Existing pattern/components reused:
-- `DESIGN_DELTA.md` required: yes | no
-- Design decision owner, when required:
+Append `.ai/templates/CHANGE_REQUEST_ERRORS.md` when user-facing error handling
+applies. Append `.ai/templates/CHANGE_REQUEST_UI.md` only when UI quality applies.
+The phase-aware validators require their exact headings for applicable configured
+surfaces.
 
 ## Acceptance criteria
 
@@ -78,8 +77,8 @@ Use current-state capability files such as
 ## Readiness decision
 
 Implementation may begin only when current and desired state are unambiguous, impact
-analysis is complete, required design decisions are accepted, and criteria are
-testable.
+analysis and applicable error/UI annexes are complete, required decisions are
+accepted, and criteria are testable.
 
 - Shared understanding confirmed: yes | no | not-required
 - Confirmed by:

@@ -12,13 +12,21 @@
     "format:check": "prettier --check .",
     "typecheck": "tsc -b",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "test:ui-quality-runner": "node --test ../.ai/tools/tests/ui-browser-review.test.mjs",
+    "visual:evidence": "node ../.ai/tools/ui-browser-review.mjs browser",
+    "accessibility": "node ../.ai/tools/ui-browser-review.mjs accessibility",
+    "visual:regression": "node ../.ai/tools/ui-browser-review.mjs visual-regression",
+    "visual:update-baselines": "node ../.ai/tools/ui-browser-review.mjs update-baselines"
   },
   "dependencies": {
     "react": "^19.2.7",
     "react-dom": "^19.2.7"
   },
   "devDependencies": {
+    "@axe-core/playwright": "4.12.1",
+    "@playwright/browser-chromium": "1.62.0",
+    "playwright-core": "1.62.0",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
     "@testing-library/user-event": "^14.6.1",

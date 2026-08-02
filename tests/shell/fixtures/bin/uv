@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -u
+
+printf 'args=%s | SKM_DATABASE_URL=%s | FRESH_DATABASE_URL=%s | UPGRADE_DATABASE_URL=%s | SKM_INITIAL_EMAIL=%s\n' \
+  "$*" \
+  "${SKM_DATABASE_URL-}" \
+  "${FRESH_DATABASE_URL-}" \
+  "${UPGRADE_DATABASE_URL-}" \
+  "${SKM_INITIAL_EMAIL-}" >>"${FAKE_UV_LOG:?}"
+printf '%s\n' '--- python payload ---' >>"${FAKE_UV_PAYLOAD_LOG:?}"
+tee -a "${FAKE_UV_PAYLOAD_LOG}" >/dev/null
+
+exit "${FAKE_UV_STATUS:-0}"
+

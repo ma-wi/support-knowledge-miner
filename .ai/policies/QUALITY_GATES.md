@@ -19,8 +19,16 @@ verification can pass.
 | Static security analysis | Conditional | `./.ai/tools/security.sh` | Mandatory for security-sensitive code |
 | License policy | Conditional | Project-specific | Required when distribution demands it |
 | Migration validation | Conditional | Project-specific | Include upgrade and rollback behavior |
-| Documentation check | Mandatory | Review | Changed behavior must be documented |
+| Documentation check | Mandatory | `./.ai/tools/check-docs.py` through `verify.sh` | Changed behavior and canonical references must be consistent |
+| Work-state consistency | Mandatory when `.ai/work/` or `CURRENT_PLAN.md` is active | `./.ai/tools/check-work-state.py` through `verify.sh` | Phase/status/artifact cross-check |
+| Incremental-change impact | Conditional for active incremental changes | `./.ai/tools/check-change-impact.py` through `verify.sh` | CHANGE/IMPACT/plan/task consistency |
 | Independent review | Mandatory for normal/significant work | PR or review report | Fresh context required |
+| UI structure and isolation | Conditional when UI quality is enabled and active work has UI impact | `./.ai/tools/check-ui-quality.py` | Phase-aware static checks |
+| Browser and screenshot evidence | Conditional for UI design class 1–3 | Configured command or documented manual gate | Identifies revision, state, and viewport |
+| Independent visual review | Conditional for UI design class 1–3 | Visual-review report | Does not replace code review |
+| Accessibility and visual regression | Project-configured | `.ai/tools/ui-quality.sh` | Empty command is not a pass |
+| User-facing error contract | Conditional when error handling is enabled and active work changes an affected action | `./.ai/tools/check-user-facing-errors.py` | Phase-aware catalog, matrix, mapping, recovery, negative-test, and source-pattern checks |
+| Orchestration state | Mandatory when orchestration is enabled or runtime state exists | `./.ai/tools/check-orchestration-state.py` through `verify.sh` | Read-only schema, queue, checkpoint, lease/event, Git-digest, and lifecycle consistency |
 
 ## Gate execution policy
 
@@ -34,7 +42,19 @@ A non-mandatory gate may be skipped only when:
 A skipped mandatory gate fails immediately. Gate commands and required flags are
 committed in `.ai/config/project.defaults.env`. Ignored `.ai/config/project.env`
 may customize focused gate commands but cannot weaken committed requiredness and is
-ignored by full `verify.sh`.
+ignored by full `verify.sh`; the latter sets
+`AGENT_TEMPLATE_IGNORE_LOCAL_OVERRIDES=1` internally. Do not set that variable
+manually.
+
+UI-tool dependencies selected by a project or change must be installed through the
+configured package manager, committed with the applicable lockfile, and checked by
+the dependency and build gates. Prototype-only dependencies remain in the private
+prototype package and are removed with it.
+
+Error-handling static checks do not prove message comprehension, complete runtime
+coverage, accessibility, or correct recovery. Required backend, contract, frontend,
+browser, visual, and independent-review evidence remains mandatory and a skipped
+required browser/visual check is not a pass.
 
 ## Failure policy
 
@@ -50,6 +70,7 @@ Do not disable rules, delete tests, reduce coverage, suppress findings, or chang
 
 ## Required project decisions
 
+- Project decisions reviewed: yes
 - Minimum coverage policy: Neue Funktionen und Bugfixes brauchen passende automatische Tests. Es gibt vorerst keine feste Prozentzahl.
 - Supported runtime matrix: Unterstützt wird nur die Umgebung, die in GitHub Actions läuft und durch die Dateien im Repository festgelegt ist.
 - Warning-as-error policy: Warnungen aus Linting, Typprüfung, Build oder Security-Checks sollen wie Fehler behandelt und behoben werden.
@@ -58,9 +79,29 @@ Do not disable rules, delete tests, reduce coverage, suppress findings, or chang
 - Flaky-test policy: Unzuverlässige Tests werden repariert; sie dürfen nicht einfach ignoriert oder gelöscht werden.
 - CI required checks: Vor dem Merge muss GitHub Actions mit `./.ai/tools/verify.sh` erfolgreich durchlaufen.
 
+Review and adapt every decision for the concrete project, then set
+`Project decisions reviewed: yes`. The seeded examples are not an implicit project
+decision, and configured-project verification fails while this field is not `yes`.
+
 ## Dependency and package gate
 
 Run `./.ai/tools/check-dependencies.sh` for changes to manifests, lockfiles, build
 logic, registries, or generated dependency metadata. It enforces source and lockfile
 policy and invokes configured vulnerability, license, or reputation scanners. Manual
 provenance and license review remains required where automation cannot decide.
+
+<!-- guided-setup:policy-profile:start -->
+## Guided setup policy profile
+
+- Decision mode: `recommended`
+- Risk profile: `public-service-review`
+- Decisions:
+  - `authentication` = `required` (assistant-recommendation): Network service evidence may include protected operations
+  - `availability` = `required` (assistant-recommendation): Network service or external input evidence was detected
+  - `dependency_scanning` = `required` (assistant-recommendation): Dependency manifests were detected
+  - `dependency_vulnerability_threshold` = `high` (assistant-recommendation): Retain the versioned high-severity blocking baseline
+  - `secret_scanning` = `required` (assistant-recommendation): Dependencies, deployment, or network exposure can carry secrets
+  - `static_security` = `required` (assistant-recommendation): Supported code or external inputs need static security analysis
+  - `warning_treatment` = `errors` (assistant-recommendation): Detected code should keep warnings actionable
+- Canonical structured source: `.ai/policy-profile.yaml`
+<!-- guided-setup:policy-profile:end -->

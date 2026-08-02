@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "item_id": "REQ-001",
+  "phase": "planning",
+  "role": "planner",
+  "invocation_id": "00000000-0000-0000-0000-000000000000",
+  "result": "completed",
+  "head_revision": "0000000000000000000000000000000000000000",
+  "source_digest": "0000000000000000000000000000000000000000000000000000000000000000",
+  "staged_digest": "0000000000000000000000000000000000000000000000000000000000000000",
+  "task_ids": [],
+  "changed_paths": [],
+  "checks": [],
+  "findings": [],
+  "owner_requests": [],
+  "next_phase": "implementation",
+  "diagnostic_code": "ok"
+}

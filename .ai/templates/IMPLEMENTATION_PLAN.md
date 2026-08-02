@@ -36,12 +36,30 @@ Link to the accepted behavior and summarize only what the implementation must ac
 - Deployment and operations:
 - Documentation:
 
+## Conditional plan annexes
+
+Append `.ai/templates/IMPLEMENTATION_PLAN_UI.md` only when UI quality applies.
+Append `.ai/templates/IMPLEMENTATION_PLAN_ERRORS.md` only when user-facing error
+handling applies. For incremental work, the annexes summarize and link to
+`CHANGE.md`, which remains authoritative.
+
 ## Risks and recovery
 
-- Security/privacy:
 - Compatibility/migration:
 - Performance/reliability:
 - Rollback/recovery:
+
+## Security Assurance routing
+
+- Security assurance: required | not-required: <reason>
+- Security triggers: <data, identity, files, network, commands, parsing, secrets,
+  public/admin API, dependency/build chain, irreversible change, or none with reason>
+- Threat model: `.ai/work/<id>/THREAT_MODEL.md` | not-required: <reason>
+- Specialist security review: required: <scope/timing> | not-required: <reason>
+
+When assurance is required, every affected work item completes the shared Security
+Assurance schema before it becomes `ready`. Link threats to mitigations and negative
+tests or other observable evidence; do not rely on a scanner result alone.
 
 ## Review cadence
 

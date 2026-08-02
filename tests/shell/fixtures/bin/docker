@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -u
+
+printf 'POSTGRES_DB=%s POSTGRES_USER=%s POSTGRES_PASSWORD=%s POSTGRES_PORT=%s | docker %s\n' \
+  "${POSTGRES_DB-}" \
+  "${POSTGRES_USER-}" \
+  "${POSTGRES_PASSWORD-}" \
+  "${POSTGRES_PORT-}" \
+  "$*" >>"${FAKE_DOCKER_LOG:?}"
+
+if [[ -n "${FAKE_DOCKER_FAIL_MATCH-}" && "$*" == *"${FAKE_DOCKER_FAIL_MATCH}"* ]]; then
+  exit "${FAKE_DOCKER_FAIL_STATUS:-1}"
+fi
+

@@ -32,6 +32,9 @@ Use exactly one action per located responsibility: `keep`, `modify`, `migrate`,
 Remove genuinely irrelevant example rows only after recording how irrelevance was
 verified. Add project-specific rows where necessary.
 
+For enabled user-facing error handling, insert the rows from
+`.ai/templates/CHANGE_IMPACT_ERRORS.md` into this matrix before the next heading.
+
 ## New or parallel artifacts
 
 | Proposed artifact | Existing responsibility searched | Why extension/replacement is insufficient | Compatibility need | Removal criterion |
@@ -39,6 +42,12 @@ verified. Add project-specific rows where necessary.
 | | | | | |
 
 Use `none` when no new or parallel artifact is proposed.
+
+## Conditional impact annexes
+
+Append `.ai/templates/CHANGE_IMPACT_UI.md` only for UI work. Error rows must remain
+inside the main Impact matrix as described above so the impact validator can classify
+them with the core rows.
 
 ## Superseded artifacts
 

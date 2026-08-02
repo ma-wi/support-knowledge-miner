@@ -30,7 +30,12 @@ run_gate() {
 
 run_gate "work-state" "${SCRIPT_DIR}/check-work-state.py"
 run_gate "incremental change" "${SCRIPT_DIR}/check-change-impact.py"
+run_gate "user-facing errors" "${SCRIPT_DIR}/check-user-facing-errors.py"
+run_gate "UI browser procedure" "${SCRIPT_DIR}/ui-quality.sh" verify
+run_gate "UI quality" "${SCRIPT_DIR}/check-ui-quality.py"
 run_gate "documentation" "${SCRIPT_DIR}/check-docs.py"
+run_gate "orchestration state" env AGENT_ORCHESTRATION_SKIP_WORK_STATE=1 \
+  "${SCRIPT_DIR}/check-orchestration-state.py"
 run_gate "setup" "${SCRIPT_DIR}/ci-setup.sh"
 run_gate "format" "${SCRIPT_DIR}/format.sh" --check
 run_gate "lint" "${SCRIPT_DIR}/lint.sh"

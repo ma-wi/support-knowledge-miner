@@ -14,6 +14,20 @@
 - [ ] Capability specifications describe the resulting current state
 - [ ] Design classification and required visual evidence are complete
 
+## UI quality
+
+- UI quality enabled:
+- Design class:
+- Design Delta:
+- Approved design artifact/revision:
+- Prototype strategy:
+- Screenshot manifest:
+- Code-review status:
+- Visual-review status/report:
+- Design-system impact:
+- Component-catalog impact:
+- Prototype cleanup/classification:
+
 ## Acceptance criteria
 
 - [ ]
@@ -25,6 +39,41 @@
 | `./.ai/tools/verify.sh` | |
 
 ## Security, compatibility, migration, and operations
+
+- Security assurance: required | not-required: <reason>
+- Security triggers:
+- Threats/abuse cases and mitigations:
+- Negative verification:
+- Residual security risk:
+- Specialist security review:
+- Implementer adversarial pre-review:
+
+## Error-handling impact
+
+- New error codes:
+- Changed error codes:
+- Removed error codes:
+- Error catalog updated:
+- Capability specs updated:
+- API contract updated:
+- Frontend mappings updated:
+- Input-preservation behavior:
+- Retry and recovery behavior:
+- Correlation behavior:
+
+## Negative-path verification
+
+- Backend:
+- Contract:
+- Frontend:
+- Browser:
+- Visual evidence:
+
+## Error security review
+
+- Raw technical details exposed:
+- Permission information disclosure checked:
+- Unexpected-error fallback checked:
 
 ## Documentation
 

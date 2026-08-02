@@ -1,0 +1,102 @@
+{
+  "schema_version": 1,
+  "immutable_floor": [
+    {
+      "id": "no_production_access",
+      "description": "Agents never access production systems or production-derived data.",
+      "tailorable": false
+    },
+    {
+      "id": "protect_secrets_and_sensitive_data",
+      "description": "Secrets and sensitive data are never committed or disclosed.",
+      "tailorable": false
+    },
+    {
+      "id": "contain_untrusted_input_commands_paths",
+      "description": "Untrusted input, commands, and paths remain contained.",
+      "tailorable": false
+    },
+    {
+      "id": "truthful_verification",
+      "description": "Verification results are reported truthfully.",
+      "tailorable": false
+    },
+    {
+      "id": "unresolved_p0_p1_block",
+      "description": "Contextually classified unresolved P0/P1 findings cannot be waived.",
+      "tailorable": false
+    }
+  ],
+  "controls": [
+    {
+      "id": "static_security",
+      "default": "required",
+      "allowed": ["required", "not_applicable"],
+      "applicability": ["python", "dotnet", "external_inputs"],
+      "owner": ".ai/policy-profile.yaml",
+      "tailorable": true,
+      "minimum": "not_applicable",
+      "relaxation_requires_rationale": true
+    },
+    {
+      "id": "secret_scanning",
+      "default": "required",
+      "allowed": ["required", "not_applicable"],
+      "applicability": ["dependencies", "credentials", "deployment"],
+      "owner": ".ai/policy-profile.yaml",
+      "tailorable": true,
+      "minimum": "not_applicable",
+      "relaxation_requires_rationale": true
+    },
+    {
+      "id": "dependency_scanning",
+      "default": "required",
+      "allowed": ["required", "not_applicable"],
+      "applicability": ["dependency_manifests"],
+      "owner": ".ai/policy-profile.yaml",
+      "tailorable": true,
+      "minimum": "not_applicable",
+      "relaxation_requires_rationale": true
+    },
+    {
+      "id": "dependency_vulnerability_threshold",
+      "default": "high",
+      "allowed": ["moderate", "high", "critical"],
+      "applicability": ["dependency_manifests"],
+      "owner": ".ai/policy-profile.yaml",
+      "tailorable": true,
+      "minimum": "critical",
+      "relaxation_requires_rationale": true
+    },
+    {
+      "id": "warning_treatment",
+      "default": "errors",
+      "allowed": ["errors", "warnings"],
+      "applicability": ["code"],
+      "owner": ".ai/policy-profile.yaml",
+      "tailorable": true,
+      "minimum": "warnings",
+      "relaxation_requires_rationale": true
+    },
+    {
+      "id": "authentication",
+      "default": "required",
+      "allowed": ["required", "not_applicable"],
+      "applicability": ["network_service", "protected_operations"],
+      "owner": ".ai/policy-profile.yaml",
+      "tailorable": true,
+      "minimum": "not_applicable",
+      "relaxation_requires_rationale": true
+    },
+    {
+      "id": "availability",
+      "default": "required",
+      "allowed": ["required", "not_applicable"],
+      "applicability": ["network_service", "external_inputs"],
+      "owner": ".ai/policy-profile.yaml",
+      "tailorable": true,
+      "minimum": "not_applicable",
+      "relaxation_requires_rationale": true
+    }
+  ]
+}

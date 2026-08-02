@@ -470,6 +470,16 @@ class ImportService:
             answer=_clean_required(row.get("answer"), "answer"),
         )
 
+    def _record_for_persistence(
+        self, row: dict[str, object], source_location: str
+    ) -> ValidRecord | None:
+        """Return a valid record or the explicit rejection used by the second pass."""
+        try:
+            return self._record_from_row(row, source_location)
+        except ImportError:
+            # The validation pass already records this row and its rejection reason.
+            return None
+
     def _skipped_entry(
         self, location: str, row: dict[str, object], error: ImportError
     ) -> ImportLogEntry:
@@ -514,9 +524,8 @@ class ImportService:
         batch: list[ValidRecord] = []
         batch_bytes = 0
         for location, row in self._iter_rows(source_type, source_path):
-            try:
-                record = self._record_from_row(row, location)
-            except ImportError:
+            record = self._record_for_persistence(row, location)
+            if record is None:
                 continue
             record_bytes = self._record_size_bytes(record)
             if batch and batch_bytes + record_bytes > DATABASE_BATCH_BYTES:

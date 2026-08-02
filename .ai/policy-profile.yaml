@@ -1,0 +1,39 @@
+schema_version: 1
+mode: "recommended"
+risk_profile: "public-service-review"
+controls:
+  authentication:
+    value: "required"
+    source: "assistant-recommendation"
+    rationale: "Network service evidence may include protected operations"
+    scope: "repository"
+  availability:
+    value: "required"
+    source: "assistant-recommendation"
+    rationale: "Network service or external input evidence was detected"
+    scope: "repository"
+  dependency_scanning:
+    value: "required"
+    source: "assistant-recommendation"
+    rationale: "Dependency manifests were detected"
+    scope: "repository"
+  dependency_vulnerability_threshold:
+    value: "high"
+    source: "assistant-recommendation"
+    rationale: "Retain the versioned high-severity blocking baseline"
+    scope: "repository"
+  secret_scanning:
+    value: "required"
+    source: "assistant-recommendation"
+    rationale: "Dependencies, deployment, or network exposure can carry secrets"
+    scope: "repository"
+  static_security:
+    value: "required"
+    source: "assistant-recommendation"
+    rationale: "Supported code or external inputs need static security analysis"
+    scope: "repository"
+  warning_treatment:
+    value: "errors"
+    source: "assistant-recommendation"
+    rationale: "Detected code should keep warnings actionable"
+    scope: "repository"

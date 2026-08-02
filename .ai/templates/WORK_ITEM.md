@@ -24,7 +24,7 @@ incremental change, state which impact rows reach their desired end state.
 
 ## Impact and responsibility
 
-- `IMPACT.md` rows closed:
+- `IMPACT.md` rows closed: <!-- manually maintained; verified by the reviewer, not by tooling -->
 - Existing responsibility extended/replaced/deprecated/removed:
 - New or parallel artifacts and accepted justification:
 - Superseded artifacts assigned to this task:
@@ -34,6 +34,30 @@ incremental change, state which impact rows reach their desired end state.
 ## Acceptance criteria
 
 - [ ] <criterion linked to the parent requirement>
+
+## Security Assurance
+
+- Security assurance: required | not-required: <reason>
+- Security triggers:
+- Assets and data classes:
+- Trust boundaries and untrusted inputs:
+- Authorization model:
+- Threats and abuse cases:
+- Mitigations:
+- Security verification:
+- Residual security risk:
+- Specialist security review:
+
+Complete every field when assurance is `required`. Each threat or abuse case must
+map to a mitigation and a negative test or other observable evidence. Use
+`not-applicable: <reason>` only for individual fields that genuinely do not apply.
+When assurance is `not-required`, the routing reason is sufficient.
+
+## Conditional task annexes
+
+Append `.ai/templates/WORK_ITEM_ERRORS.md` when user-facing error handling applies.
+Append `.ai/templates/WORK_ITEM_UI.md` only for UI work. The phase-aware validators
+require their exact headings when the corresponding configured surface applies.
 
 ## Implementation constraints
 
@@ -58,12 +82,6 @@ Exact commands:
 # Add task-specific commands.
 ```
 
-## Design impact
-
-- Design class: 0 | 1 | 2 | 3 | not-applicable
-- Existing components/patterns reused:
-- Required visual or design evidence:
-
 ## Risks or blockers
 
 ## Result
@@ -71,3 +89,14 @@ Exact commands:
 Complete only after implementation. Summarize the resulting state, closed impact
 rows, orphan-search evidence, removed or retained superseded artifacts, deviations,
 and remaining risks. Do not write a chronological work diary.
+
+### Adversarial pre-review
+
+- Adversarial pre-review: pending | passed
+- Pre-review lenses:
+- Pre-review evidence:
+- Open P0/P1 findings:
+
+Before `verified`, inspect the full diff with `.aiassistant/review/self-review.md` and
+the applicable `REVIEW_LENSES.md`, fix all P0/P1 defects found, rerun affected
+checks, and record `Open P0/P1 findings: none`.

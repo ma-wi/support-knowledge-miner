@@ -1,0 +1,129 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "result",
+    "task_ids",
+    "checks",
+    "findings",
+    "owner_requests",
+    "next_phase",
+    "diagnostic_code"
+  ],
+  "properties": {
+    "result": {
+      "enum": [
+        "completed",
+        "needs-owner-decision",
+        "needs-remediation",
+        "retryable-failure",
+        "blocked",
+        "invalid-state"
+      ]
+    },
+    "task_ids": {
+      "type": "array",
+      "maxItems": 100,
+      "items": {"type": "string"}
+    },
+    "checks": {
+      "type": "array",
+      "maxItems": 100,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "outcome", "command"],
+        "properties": {
+          "name": {"type": "string"},
+          "outcome": {"enum": ["passed", "failed", "skipped"]},
+          "command": {
+            "type": "array",
+            "maxItems": 32,
+            "items": {"type": "string"}
+          }
+        }
+      }
+    },
+    "findings": {
+      "type": "array",
+      "maxItems": 100,
+      "items": {"type": "string"}
+    },
+    "owner_requests": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "decision_id",
+          "question",
+          "recommendation",
+          "alternatives",
+          "risks",
+          "allowed_answers",
+          "default",
+          "authorized_paths",
+          "authorizing_answers"
+        ],
+        "properties": {
+          "decision_id": {"type": "string"},
+          "question": {"type": "string"},
+          "recommendation": {"type": "string"},
+          "alternatives": {
+            "type": "array",
+            "maxItems": 100,
+            "items": {"type": "string"}
+          },
+          "risks": {"type": "string"},
+          "allowed_answers": {
+            "type": "array",
+            "maxItems": 10,
+            "items": {"type": "string"}
+          },
+          "default": {
+            "anyOf": [
+              {"type": "null"},
+              {"type": "string"}
+            ]
+          },
+          "authorized_paths": {
+            "type": "array",
+            "maxItems": 32,
+            "items": {"type": "string"}
+          },
+          "authorizing_answers": {
+            "type": "array",
+            "maxItems": 10,
+            "items": {"type": "string"}
+          }
+        }
+      }
+    },
+    "next_phase": {
+      "anyOf": [
+        {"type": "null"},
+        {
+          "enum": [
+            "intake",
+            "discovery",
+            "specification",
+            "design",
+            "planning",
+            "implementation",
+            "verification",
+            "code-review",
+            "visual-review",
+            "remediation",
+            "closeout",
+            "done"
+          ]
+        }
+      ]
+    },
+    "diagnostic_code": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+    }
+  }
+}
