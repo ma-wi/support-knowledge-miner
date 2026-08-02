@@ -18,3 +18,19 @@ sensitive personal data.
 
 Replace the contact placeholder and complete the response expectations before
 configured-project CI is expected to pass.
+
+<!-- guided-setup:policy-profile:start -->
+## Guided setup policy profile
+
+- Decision mode: `recommended`
+- Risk profile: `public-service-review`
+- Decisions:
+  - `authentication` = `required` (assistant-recommendation): Network service evidence may include protected operations
+  - `availability` = `required` (assistant-recommendation): Network service or external input evidence was detected
+  - `dependency_scanning` = `required` (assistant-recommendation): Dependency manifests were detected
+  - `dependency_vulnerability_threshold` = `high` (assistant-recommendation): Retain the versioned high-severity blocking baseline
+  - `secret_scanning` = `required` (assistant-recommendation): Dependencies, deployment, or network exposure can carry secrets
+  - `static_security` = `required` (assistant-recommendation): Supported code or external inputs need static security analysis
+  - `warning_treatment` = `errors` (assistant-recommendation): Detected code should keep warnings actionable
+- Canonical structured source: `.ai/policy-profile.yaml`
+<!-- guided-setup:policy-profile:end -->

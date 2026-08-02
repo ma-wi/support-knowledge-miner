@@ -2,8 +2,8 @@
 
 This policy defines the optional deterministic controller for the existing agent
 lifecycle. `WORKFLOW.md` remains authoritative for product artifacts and task
-statuses; orchestration owns only queueing, invocations, checkpoints, leases,
-owner gates, and allowed phase transitions.
+statuses; orchestration owns queueing, invocations, checkpoints, leases, owner
+gates, allowed phase transitions, and its local item branches/closeout commits.
 
 ## Trust boundaries and limits
 
@@ -41,17 +41,23 @@ owner gates, and allowed phase transitions.
   or `RLIMIT_FSIZE`: npm/Node launchers can terminate silently under those limits.
   Memory containment must therefore come from the trusted host, container, or CI
   runner; stage and promotion limits remain enforced by the controller.
-- The controller has no network, deployment, credential, Git commit, push, pull
-  request, or branch-deletion feature.
+- The controller has no network, deployment, credential, remote-contact, push,
+  fetch, pull, merge, rebase, pull-request, or branch-deletion feature. Git is
+  limited to local observation, item branches, exact staging, and closeout commits.
 
 ## Configuration and compatibility
 
 Missing `orchestration` configuration means disabled. Disabled orchestration does not
 alter the manual workflow. Every mutating command, including `intake`, and the state
 gate require `enabled: true` with a non-empty argument-list executor. Agent execution
-also requires a clean initial Git worktree excluding `.ai/orchestration/`. Later
-queue items may start from the exact controller checkpoint of a completed item;
-foreign changes still fail closed.
+also requires attached `HEAD`, commit identity, and a clean initial worktree.
+Queue-only `intake` remains branch-neutral. Item activation requires a clean
+governed worktree and creates a collision-safe branch; each later item branches
+from the preceding closeout commit. Tracked `assume-unchanged` or `skip-worktree`
+entries are rejected before activation and closeout; the controller never rewrites
+those user-owned flags. Git correctness checks use command-scoped stat, filemode,
+fsmonitor, and untracked-cache overrides without changing repository or global
+configuration. Legacy runtime state is not migrated.
 
 `executor_kind: codex` is the template default. It requires
 `executor_isolation: codex-sandbox`, exactly one CLI executable, an optional exact
@@ -232,8 +238,9 @@ One unexpired lease is allowed and is renewed during long agent and verification
 runs. Resume acquires it before reconciliation. An expired lease is authorized only
 after reconciliation and the takeover is recorded; direct `run`, `intake`, and
 `decide` refuse an expired lease and require `resume` first. Resume validates queue,
-checkpoint, handoff, lifecycle artifacts, Git `HEAD`, source digest, and existing
-validators before reusing evidence. A digest-bound promotion marker is required
+checkpoint, handoff, lifecycle artifacts, the exact item branch, Git `HEAD`, source
+digest, and existing validators before reusing evidence. A digest-bound promotion
+marker is required
 before a persisted handoff can advance recovery. Contradiction pauses fail-closed.
 
 Only explicit retryable failures retry. Backoff is persisted rather than slept.
@@ -245,14 +252,13 @@ digest-bound review report.
 
 ## Closeout
 
-After all entries are complete, canonical decisions and documentation are reconciled,
-full verification and independent review have passed, and temporary work is closed
-according to `WORKFLOW.md`, the controller runs `check-docs.py` and the authoritative
-`verify.sh` once more against the actually closed source state before advancing to
-`done`. The controller first checkpoints that closed state, so the mandatory state
-gate validates the exact source being verified. Only then does orchestration state
-return to the absent/empty canonical
-state. Runtime state, prompts, output, secrets, personal data, and staged workspaces
-must never be committed or copied into another project. Final runtime cleanup keeps
-the lease fencing guard held outside the runtime root until that root has been
-removed.
+After review, closeout may add only validated temporary-work removal and
+`CURRENT_PLAN.md` reset; material change returns to verification and review. The
+controller checkpoints the closed state, runs final documentation/full verification,
+rejects runtime/secret/foreign paths and index entries, and stages the exact delta.
+
+Parent, tree, digest, deterministic subject and branch intent bind one noninteractive
+commit with hooks, signing, editors and prompting disabled. Resume adopts only that
+commit. After the queue completes, active runtime is removed under the lease fence;
+an ignored receipt retains branches/commits for `status`. Prompts, output, secrets,
+personal data, stages, and runtime state are never committed or copied.

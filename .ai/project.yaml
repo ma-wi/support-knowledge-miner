@@ -1,10 +1,8 @@
 project:
   name: "Support Knowledge Miner"
-
 runtimes:
   python: "3.13"
   node: "26.5.0"
-
 stacks:
   python:
     enabled: true
@@ -19,12 +17,10 @@ stacks:
     enabled: false
     solution: ""
     test_project: ""
-
 incremental_changes:
   default_review_cadence: "batch"
   max_tasks_per_review_batch: 3
   force_task_review_for: "migration public-api authentication authorization security dependency-change"
-
 orchestration:
   enabled: true
   executor_kind: "codex"
@@ -39,7 +35,6 @@ orchestration:
   max_identical_failures: 2
   lease_seconds: 3600
   owner: "mawi"
-
 ui_quality:
   enabled: true
   frontend:
@@ -69,14 +64,12 @@ ui_quality:
   accessibility:
     enabled: true
     command: "node .ai/tools/ui-browser-review.mjs accessibility"
-
 user_facing_errors:
   enabled: true
   catalog:
     path: "docs/errors/ERROR_CATALOG.md"
   frontend:
     enabled: true
-
 documentation:
   budgets:
     agents_md_lines: 240

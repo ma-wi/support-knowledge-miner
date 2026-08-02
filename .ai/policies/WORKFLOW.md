@@ -178,6 +178,10 @@ Any material closeout change returns to review. Lasting records are accepted dur
 inputs, code/tests, maintained documentation, and the pull request—not temporary task
 history.
 
+When repository-native orchestration is enabled, the trusted controller performs
+the local delivery step after this closeout: final validation, exact-delta staging,
+and one item-branch commit. Agent invocations never receive `.git` write access.
+
 ## Orchestrated invocations
 
 - Work only in the staged workspace and phase supplied by the controller.

@@ -16,6 +16,7 @@ from .model import Checkpoint, Phase
 IGNORED_ROOTS = {".ai/orchestration"}
 IGNORED_FILES = {
     ".ai/.orchestration.guard",
+    ".ai/orchestration-completed.json",
     "template-update.patch",
     "template-update.manual.patch",
 }
@@ -50,6 +51,7 @@ class RepositoryState:
     head_revision: str
     source_digest: str
     files: dict[str, FileState]
+    branch_name: str | None = None
 
 
 def _ignored(relative: str) -> bool:
@@ -161,7 +163,40 @@ def snapshot(
         head_revision=revision if revision is not None else head_revision(root),
         source_digest=aggregate.hexdigest(),
         files=files,
+        branch_name=(
+            current_branch(root, git_dir=git_dir)
+            if (resolved_root / ".git").exists() or git_dir is not None
+            else None
+        ),
     )
+
+
+def current_branch(root: Path, *, git_dir: Path | None = None) -> str | None:
+    git = shutil.which("git")
+    if git is None:
+        raise ReconcileError("Git is required for orchestration")
+    environment = None
+    if git_dir is not None:
+        environment = {
+            **os.environ,
+            "GIT_DIR": os.fspath(git_dir),
+            "GIT_WORK_TREE": os.fspath(root.resolve()),
+        }
+    result = subprocess.run(  # nosec B603
+        [git, "symbolic-ref", "--quiet", "--short", "HEAD"],
+        cwd=root,
+        env=environment,
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=10,
+    )
+    if result.returncode == 1:
+        return None
+    if result.returncode != 0:
+        raise ReconcileError("could not inspect the current Git branch")
+    return result.stdout.strip()
 
 
 def head_revision(root: Path) -> str:
@@ -253,6 +288,8 @@ def reconcile_checkpoint(
         return
     if validate_head and checkpoint.head_revision != observed.head_revision:
         raise ReconcileError("checkpoint HEAD differs from the repository")
+    if checkpoint.branch_name and checkpoint.branch_name != observed.branch_name:
+        raise ReconcileError("checkpoint branch differs from the repository checkout")
     if checkpoint.source_digest != observed.source_digest:
         raise ReconcileError("checkpoint digest differs from the repository")
 

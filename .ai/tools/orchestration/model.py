@@ -10,6 +10,7 @@ from pathlib import PurePosixPath
 from typing import Any, ClassVar
 
 SCHEMA_VERSION = 1
+STATE_SCHEMA_VERSION = 2
 MAX_TEXT = 16_384
 MAX_ITEMS = 100
 IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
@@ -17,6 +18,7 @@ GIT_REVISION = re.compile(r"^[0-9a-f]{40,64}$")
 DIGEST = re.compile(r"^[0-9a-f]{64}$")
 EVENT_TYPES = {
     "awaiting-owner",
+    "commit-created",
     "handoff-recovered",
     "host-visual-gate",
     "lease-takeover",
@@ -114,6 +116,21 @@ def _revision(value: object, label: str) -> str:
     result = _text(value, label)
     if not GIT_REVISION.fullmatch(result):
         raise ModelError(f"{label} is not a Git revision")
+    return result
+
+
+def _branch(value: object, label: str, *, empty: bool = False) -> str:
+    result = _text(value, label, empty=empty)
+    if not result and empty:
+        return result
+    if (
+        len(result) > 120
+        or result.startswith(("-", "/"))
+        or result.endswith(("/", "."))
+        or ".." in result
+        or any(ord(character) < 32 or character in " ~^:?*[\\" for character in result)
+    ):
+        raise ModelError(f"{label} is not a safe Git branch")
     return result
 
 
@@ -279,6 +296,13 @@ class QueueItem:
     identical_failure_count: int = 0
     failure_signature: str | None = None
     next_attempt_at: str | None = None
+    branch_name: str = ""
+    base_revision: str | None = None
+    branch_ready: bool = False
+    reviewed_source_digest: str | None = None
+    expected_closeout_digest: str | None = None
+    expected_commit_tree: str | None = None
+    commit_revision: str | None = None
 
     FIELDS: ClassVar[set[str]] = {
         "item_id",
@@ -293,6 +317,13 @@ class QueueItem:
         "identical_failure_count",
         "failure_signature",
         "next_attempt_at",
+        "branch_name",
+        "base_revision",
+        "branch_ready",
+        "reviewed_source_digest",
+        "expected_closeout_digest",
+        "expected_commit_tree",
+        "commit_revision",
     }
 
     @classmethod
@@ -316,6 +347,29 @@ class QueueItem:
             nullable["next_attempt_at"] = _timestamp(
                 nullable["next_attempt_at"], "queue_item.next_attempt_at"
             )
+        git_values: dict[str, str | None] = {}
+        for name in (
+            "base_revision",
+            "reviewed_source_digest",
+            "expected_closeout_digest",
+            "expected_commit_tree",
+            "commit_revision",
+        ):
+            raw = data[name]
+            git_values[name] = None if raw is None else _text(raw, f"queue_item.{name}")
+        for name in ("base_revision", "commit_revision"):
+            if git_values[name] is not None:
+                git_values[name] = _revision(git_values[name], f"queue_item.{name}")
+        for name in ("reviewed_source_digest", "expected_closeout_digest"):
+            if git_values[name] is not None:
+                git_values[name] = _digest(git_values[name], f"queue_item.{name}")
+        if git_values["expected_commit_tree"] is not None:
+            git_values["expected_commit_tree"] = _revision(
+                git_values["expected_commit_tree"], "queue_item.expected_commit_tree"
+            )
+        branch_ready = data["branch_ready"]
+        if not isinstance(branch_ready, bool):
+            raise ModelError("queue_item.branch_ready must be boolean")
         return cls(
             item_id=_identifier(data["item_id"], "queue_item.item_id"),
             summary=_text(data["summary"], "queue_item.summary"),
@@ -335,6 +389,15 @@ class QueueItem:
             ),
             failure_signature=nullable["failure_signature"],
             next_attempt_at=nullable["next_attempt_at"],
+            branch_name=_branch(
+                data["branch_name"], "queue_item.branch_name", empty=True
+            ),
+            base_revision=git_values["base_revision"],
+            branch_ready=branch_ready,
+            reviewed_source_digest=git_values["reviewed_source_digest"],
+            expected_closeout_digest=git_values["expected_closeout_digest"],
+            expected_commit_tree=git_values["expected_commit_tree"],
+            commit_revision=git_values["commit_revision"],
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -351,18 +414,72 @@ class QueueItem:
             "identical_failure_count": self.identical_failure_count,
             "failure_signature": self.failure_signature,
             "next_attempt_at": self.next_attempt_at,
+            "branch_name": self.branch_name,
+            "base_revision": self.base_revision,
+            "branch_ready": self.branch_ready,
+            "reviewed_source_digest": self.reviewed_source_digest,
+            "expected_closeout_digest": self.expected_closeout_digest,
+            "expected_commit_tree": self.expected_commit_tree,
+            "commit_revision": self.commit_revision,
+        }
+
+
+@dataclass
+class RunGitState:
+    initial_branch: str
+    initial_revision: str
+    latest_branch: str | None = None
+    latest_commit: str | None = None
+
+    @classmethod
+    def from_dict(cls, value: object) -> RunGitState:
+        data = _mapping(value, "run Git state")
+        _strict(
+            data,
+            {"initial_branch", "initial_revision", "latest_branch", "latest_commit"},
+        )
+        latest_branch = data["latest_branch"]
+        latest_commit = data["latest_commit"]
+        return cls(
+            initial_branch=_branch(data["initial_branch"], "run_git.initial_branch"),
+            initial_revision=_revision(
+                data["initial_revision"], "run_git.initial_revision"
+            ),
+            latest_branch=(
+                None
+                if latest_branch is None
+                else _branch(latest_branch, "run_git.latest_branch")
+            ),
+            latest_commit=(
+                None
+                if latest_commit is None
+                else _revision(latest_commit, "run_git.latest_commit")
+            ),
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "initial_branch": self.initial_branch,
+            "initial_revision": self.initial_revision,
+            "latest_branch": self.latest_branch,
+            "latest_commit": self.latest_commit,
         }
 
 
 @dataclass
 class Queue:
     items: list[QueueItem]
+    run_git: RunGitState | None = None
 
     @classmethod
     def from_dict(cls, value: object) -> Queue:
         data = _mapping(value, "queue")
-        _strict(data, {"schema_version", "items"})
-        _schema(data)
+        _strict(data, {"schema_version", "items", "run_git"})
+        if data.get("schema_version") != STATE_SCHEMA_VERSION:
+            raise ModelError(
+                f"unsupported orchestration state schema_version: "
+                f"{data.get('schema_version')!r}"
+            )
         raw_items = data["items"]
         if not isinstance(raw_items, list) or len(raw_items) > MAX_ITEMS:
             raise ModelError(f"queue.items must contain at most {MAX_ITEMS} entries")
@@ -370,12 +487,15 @@ class Queue:
         ids = [item.item_id for item in items]
         if len(ids) != len(set(ids)):
             raise ModelError("queue contains duplicate item IDs")
-        return cls(items)
+        run_git_raw = data["run_git"]
+        run_git = None if run_git_raw is None else RunGitState.from_dict(run_git_raw)
+        return cls(items, run_git)
 
     def to_dict(self) -> dict[str, object]:
         return {
-            "schema_version": SCHEMA_VERSION,
+            "schema_version": STATE_SCHEMA_VERSION,
             "items": [item.to_dict() for item in self.items],
+            "run_git": None if self.run_git is None else self.run_git.to_dict(),
         }
 
 
@@ -393,6 +513,7 @@ class AgentRequest:
     instructions: str
     task_ids: list[str]
     owner_authorized_paths: list[str] = field(default_factory=list)
+    source_branch: str = ""
 
     @classmethod
     def from_dict(cls, value: object) -> AgentRequest:
@@ -413,7 +534,7 @@ class AgentRequest:
                 "instructions",
                 "task_ids",
             },
-            {"owner_authorized_paths"},
+            {"owner_authorized_paths", "source_branch"},
         )
         _schema(data)
         try:
@@ -439,6 +560,9 @@ class AgentRequest:
                 data.get("owner_authorized_paths", []),
                 "request.owner_authorized_paths",
             ),
+            source_branch=_branch(
+                data.get("source_branch", ""), "request.source_branch", empty=True
+            ),
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -456,6 +580,7 @@ class AgentRequest:
             "instructions": self.instructions,
             "task_ids": self.task_ids,
             "owner_authorized_paths": self.owner_authorized_paths,
+            "source_branch": self.source_branch,
         }
 
 
@@ -667,6 +792,7 @@ class Checkpoint:
     source_digest: str
     invocation_id: str | None
     updated_at: str
+    branch_name: str = ""
 
     @classmethod
     def from_dict(cls, value: object) -> Checkpoint:
@@ -682,9 +808,14 @@ class Checkpoint:
                 "source_digest",
                 "invocation_id",
                 "updated_at",
+                "branch_name",
             },
         )
-        _schema(data)
+        if data.get("schema_version") != STATE_SCHEMA_VERSION:
+            raise ModelError(
+                f"unsupported checkpoint state schema_version: "
+                f"{data.get('schema_version')!r}"
+            )
         try:
             phase = Phase(_text(data["phase"], "checkpoint.phase"))
             status = QueueStatus(_text(data["queue_status"], "checkpoint.queue_status"))
@@ -703,11 +834,14 @@ class Checkpoint:
                 else _identifier(invocation, "checkpoint.invocation_id")
             ),
             updated_at=_timestamp(data["updated_at"], "checkpoint.updated_at"),
+            branch_name=_branch(
+                data["branch_name"], "checkpoint.branch_name", empty=True
+            ),
         )
 
     def to_dict(self) -> dict[str, object]:
         return {
-            "schema_version": SCHEMA_VERSION,
+            "schema_version": STATE_SCHEMA_VERSION,
             "item_id": self.item_id,
             "phase": self.phase.value,
             "queue_status": self.queue_status.value,
@@ -715,6 +849,7 @@ class Checkpoint:
             "source_digest": self.source_digest,
             "invocation_id": self.invocation_id,
             "updated_at": self.updated_at,
+            "branch_name": self.branch_name,
         }
 
 

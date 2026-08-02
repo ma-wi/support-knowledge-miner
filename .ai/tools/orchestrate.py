@@ -46,6 +46,10 @@ from orchestration.executor import (  # noqa: E402
     validate_codex_runtime,
     validate_remediation_findings,
 )
+from orchestration.git_lifecycle import (  # noqa: E402
+    GitLifecycle,
+    GitLifecycleError,
+)
 from orchestration.model import (  # noqa: E402
     AgentHandoff,
     AgentRequest,
@@ -60,6 +64,7 @@ from orchestration.model import (  # noqa: E402
     QueueItem,
     QueueStatus,
     Role,
+    RunGitState,
     SCHEMA_VERSION,
 )
 from orchestration.reconcile import (  # noqa: E402
@@ -328,6 +333,7 @@ def _checkpoint(store: StateStore, item: QueueItem) -> Checkpoint:
         source_digest=observed.source_digest,
         invocation_id=item.active_invocation_id,
         updated_at=iso_time(),
+        branch_name=item.branch_name or (observed.branch_name or ""),
     )
     store.save_checkpoint(checkpoint)
     return checkpoint
@@ -393,6 +399,7 @@ def _build_request(store: StateStore, item: QueueItem, role: Role) -> AgentReque
         instructions="",
         task_ids=task_ids,
         owner_authorized_paths=sorted(owner_authorized_paths),
+        source_branch=item.branch_name,
     )
 
 
@@ -815,6 +822,7 @@ def _run_host_visual_gate(
             source_digest=observed.source_digest,
             invocation_id=item.active_invocation_id,
             updated_at=iso_time(),
+            branch_name=item.branch_name,
         )
     )
     store.append_event(
@@ -847,6 +855,244 @@ def _run_final_closeout_verification() -> None:
         diagnostic = " | ".join(result.stdout.strip().splitlines()[-3:])
         raise CliError(f"final documentation check failed: {diagnostic}")
     _run_verification()
+
+
+def _activate_item(store: StateStore, queue: Queue, item: QueueItem) -> None:
+    git = GitLifecycle(ROOT)
+    position = git.preflight()
+    if queue.run_git is None:
+        queue.run_git = RunGitState(
+            initial_branch=position.branch,
+            initial_revision=position.revision,
+        )
+    base_revision = queue.run_git.latest_commit or queue.run_git.initial_revision
+    if position.revision != base_revision:
+        raise CliError("next item base does not match the linear branch chain")
+    if queue.run_git.latest_branch and position.branch != queue.run_git.latest_branch:
+        raise CliError("latest deliverable branch is not checked out")
+    if not item.branch_name:
+        item.branch_name = git.choose_branch(item.item_id, item.summary)
+        item.base_revision = base_revision
+        item.branch_ready = False
+        store.save_queue(queue)
+    elif item.base_revision != base_revision:
+        raise CliError("persisted item branch base contradicts the linear chain")
+    git.activate_branch(item.branch_name, base_revision)
+    item.branch_ready = True
+    item.status = QueueStatus.ACTIVE
+    store.save_queue(queue)
+    _checkpoint(store, item)
+
+
+def _unsafe_commit_path(relative: str) -> bool:
+    name = Path(relative).name
+    return (
+        relative == ".git"
+        or relative.startswith(".git/")
+        or relative == ".ai/orchestration"
+        or relative.startswith(".ai/orchestration/")
+        or relative
+        in {
+            ".ai/.orchestration.guard",
+            ".ai/orchestration-completed.json",
+            ".ai/config/project.env",
+        }
+        or name == ".env"
+        or (name.startswith(".env.") and name != ".env.example")
+    )
+
+
+def _complete_closeout_commit(
+    store: StateStore,
+    queue: Queue,
+    item: QueueItem,
+) -> str:
+    if (
+        not item.branch_ready
+        or not item.branch_name
+        or item.base_revision is None
+        or item.expected_closeout_digest is None
+        or item.reviewed_source_digest is None
+    ):
+        raise CliError("closeout commit lacks reviewed branch intent")
+    if item.active_invocation_id is None:
+        raise CliError("closeout commit lacks its bound invocation")
+    git = GitLifecycle(ROOT)
+    subject = git.commit_subject(item.item_id, item.summary)
+    position = git.position()
+    revision: str
+    if position.revision == item.base_revision:
+        if position.branch != item.branch_name:
+            raise CliError("closeout commit is on the wrong item branch")
+        observed = snapshot(ROOT)
+        if observed.source_digest != item.expected_closeout_digest:
+            raise CliError("closeout workspace differs from the verified commit intent")
+        expected_paths = git.changed_paths()
+        unsafe = [path for path in expected_paths if _unsafe_commit_path(path)]
+        if unsafe:
+            raise CliError(
+                "closeout delta contains runtime, secret, or Git paths: "
+                + ", ".join(unsafe[:8])
+            )
+        tree = git.stage_exact(
+            expected_paths,
+            expected_source_digest=item.expected_closeout_digest,
+            source_digest=lambda: snapshot(ROOT).source_digest,
+        )
+        if item.expected_commit_tree is None:
+            item.expected_commit_tree = tree
+            store.save_queue(queue)
+        elif item.expected_commit_tree != tree:
+            raise CliError("staged closeout tree contradicts persisted commit intent")
+        if snapshot(ROOT).source_digest != item.expected_closeout_digest:
+            raise CliError("closeout workspace changed after exact staging")
+        revision = git.create_commit(
+            subject,
+            branch=item.branch_name,
+            parent=item.base_revision,
+            tree=item.expected_commit_tree,
+        )
+    else:
+        if item.expected_commit_tree is None:
+            raise CliError("unexpected commit exists without a persisted expected tree")
+        revision = position.revision
+    if item.expected_commit_tree is None:
+        raise CliError("closeout commit lacks its expected tree")
+    git.verify_commit(
+        revision,
+        branch=item.branch_name,
+        parent=item.base_revision,
+        tree=item.expected_commit_tree,
+        subject=subject,
+    )
+    closed = snapshot(ROOT)
+    if closed.source_digest != item.expected_closeout_digest:
+        raise CliError("closeout commit changed the governed workspace")
+    invocation_id = item.active_invocation_id
+    events_path = store.resolve(f"runs/{item.item_id}/EVENTS.jsonl")
+    events = store.read_events(item.item_id) if events_path.is_file() else []
+    commit_events = [
+        event
+        for event in events
+        if event.get("type") == "commit-created"
+        and event.get("details", {}).get("commit_revision") == revision
+    ]
+    if len(commit_events) > 1:
+        raise CliError("closeout commit appears repeatedly in event history")
+    if not commit_events:
+        store.append_event(
+            item.item_id,
+            "commit-created",
+            invocation_id,
+            Phase.CLOSEOUT.value,
+            {
+                "branch": item.branch_name,
+                "parent_revision": item.base_revision,
+                "commit_revision": revision,
+                "commit_tree": item.expected_commit_tree,
+                "commit_subject": subject,
+            },
+        )
+    item.commit_revision = revision
+    if queue.run_git is None:
+        raise CliError("closeout commit lacks run Git metadata")
+    queue.run_git.latest_branch = item.branch_name
+    queue.run_git.latest_commit = revision
+    previous = item.phase
+    advance(item, Phase.DONE)
+    _set_current_phase(item.phase)
+    store.save_queue(queue)
+    _checkpoint(store, item)
+    store.append_event(
+        item.item_id,
+        "transition",
+        invocation_id,
+        previous.value,
+        {
+            "next_phase": Phase.DONE.value,
+            "branch": item.branch_name,
+            "commit_revision": revision,
+            "commit_tree": item.expected_commit_tree,
+            "commit_subject": subject,
+        },
+    )
+    return revision
+
+
+def _repair_completed_commit_transition(store: StateStore, queue: Queue) -> None:
+    if queue.run_git is None or queue.run_git.latest_commit is None:
+        return
+    matches = [
+        item
+        for item in queue.items
+        if item.commit_revision == queue.run_git.latest_commit
+        and item.status is QueueStatus.COMPLETED
+    ]
+    if len(matches) != 1:
+        return
+    item = matches[0]
+    events_path = store.resolve(f"runs/{item.item_id}/EVENTS.jsonl")
+    if not events_path.is_file():
+        return
+    events = store.read_events(item.item_id)
+    if not events or events[-1].get("type") != "commit-created":
+        return
+    event = events[-1]
+    details = event.get("details", {})
+    if details.get("commit_revision") != item.commit_revision:
+        raise CliError("completion event contradicts the latest closeout commit")
+    if (
+        item.commit_revision is None
+        or item.base_revision is None
+        or item.expected_commit_tree is None
+    ):
+        raise CliError("completed item lacks its persisted commit facts")
+    GitLifecycle(ROOT).verify_commit(
+        item.commit_revision,
+        branch=item.branch_name,
+        parent=item.base_revision,
+        tree=item.expected_commit_tree,
+        subject=GitLifecycle.commit_subject(item.item_id, item.summary),
+    )
+    _checkpoint(store, item)
+    store.append_event(
+        item.item_id,
+        "transition",
+        event["invocation_id"],
+        Phase.CLOSEOUT.value,
+        {
+            "next_phase": Phase.DONE.value,
+            "branch": item.branch_name,
+            "commit_revision": item.commit_revision,
+            "commit_tree": item.expected_commit_tree,
+            "commit_subject": details.get("commit_subject"),
+        },
+    )
+
+
+def _completion_receipt(queue: Queue) -> dict[str, object]:
+    if (
+        queue.run_git is None
+        or not queue.run_git.latest_branch
+        or not queue.run_git.latest_commit
+    ):
+        raise CliError("completed run lacks its latest deliverable Git state")
+    return {
+        "schema_version": 1,
+        "completed_at": iso_time(),
+        "initial_branch": queue.run_git.initial_branch,
+        "initial_revision": queue.run_git.initial_revision,
+        "latest_branch": queue.run_git.latest_branch,
+        "latest_commit": queue.run_git.latest_commit,
+        "items": [
+            {
+                "id": item.item_id,
+                "branch": item.branch_name,
+                "commit": item.commit_revision,
+            }
+            for item in queue.items
+        ],
+    }
 
 
 def _record_retry(
@@ -896,7 +1142,14 @@ def _reconcile_item_baseline(
     queue: Queue,
     checkpoint: Checkpoint | None,
     observed: RepositoryState,
+    item: QueueItem | None = None,
 ) -> None:
+    if (
+        item is not None
+        and item.branch_ready
+        and observed.branch_name != item.branch_name
+    ):
+        raise CliError("active item branch is not checked out")
     if checkpoint is None:
         completed_checkpoints: list[Checkpoint] = []
         for candidate in queue.items:
@@ -929,7 +1182,7 @@ def _run_once(
 ) -> str:
     checkpoint = store.load_checkpoint(item.item_id)
     observed = snapshot(ROOT)
-    _reconcile_item_baseline(store, queue, checkpoint, observed)
+    _reconcile_item_baseline(store, queue, checkpoint, observed, item)
     if item.phase is Phase.VISUAL_REVIEW:
         _run_host_visual_gate(store, item, config)
     if item.phase is Phase.VERIFICATION:
@@ -1036,9 +1289,23 @@ def _run_once(
         return "blocked" if item.status is QueueStatus.BLOCKED else "retry"
     if handoff.next_phase is None:
         raise CliError("successful handoff omitted next phase")
+    if (
+        item.phase in {Phase.CODE_REVIEW, Phase.VISUAL_REVIEW}
+        and handoff.next_phase is Phase.CLOSEOUT
+    ):
+        item.reviewed_source_digest = observed_after.source_digest
     if item.phase is Phase.CLOSEOUT:
         _checkpoint(store, item)
+        closed_before_verify = snapshot(ROOT)
         _run_final_closeout_verification()
+        closed = snapshot(ROOT)
+        if closed != closed_before_verify:
+            raise CliError("final closeout verification mutated the source workspace")
+        item.expected_closeout_digest = closed.source_digest
+        store.save_queue(queue)
+        _checkpoint(store, item)
+        _complete_closeout_commit(store, queue, item)
+        return "done"
     previous = item.phase
     advance(item, handoff.next_phase)
     _set_current_phase(item.phase)
@@ -1062,6 +1329,8 @@ def command_intake(arguments: argparse.Namespace) -> int:
     config = load_config()
     _require_runnable(config)
     store = StateStore(ROOT)
+    # Reject legacy state before lease acquisition writes any runtime file.
+    store.load_queue()
     content = _read_bounded_utf8(path, 262_144, "intake file")
     with _serialized_mutation(store, config.lease_seconds):
         existing = store.load_queue()
@@ -1080,8 +1349,9 @@ def command_intake(arguments: argparse.Namespace) -> int:
 def command_status(_arguments: argparse.Namespace) -> int:
     store = StateStore(ROOT)
     queue = store.load_queue()
+    receipt = store.completion_receipt() if not queue.items else None
     payload = {
-        "status": "ok",
+        "status": "completed" if receipt is not None else "ok",
         "items": [
             {
                 "id": item.item_id,
@@ -1089,9 +1359,28 @@ def command_status(_arguments: argparse.Namespace) -> int:
                 "phase": item.phase.value,
                 "priority": item.priority,
                 "depends_on": item.depends_on,
+                "branch": item.branch_name or None,
+                "base_revision": item.base_revision,
+                "commit_revision": item.commit_revision,
             }
             for item in queue.items
         ],
+        "initial_branch": (
+            queue.run_git.initial_branch if queue.run_git is not None else None
+        ),
+        "initial_revision": (
+            queue.run_git.initial_revision if queue.run_git is not None else None
+        ),
+        "latest_branch": (
+            receipt.get("latest_branch")
+            if receipt is not None
+            else (queue.run_git.latest_branch if queue.run_git is not None else None)
+        ),
+        "latest_commit": (
+            receipt.get("latest_commit")
+            if receipt is not None
+            else (queue.run_git.latest_commit if queue.run_git is not None else None)
+        ),
     }
     _write_output(payload, human=f"{len(queue.items)} queue item(s).")
     return EXIT_SUCCESS
@@ -1100,6 +1389,7 @@ def command_status(_arguments: argparse.Namespace) -> int:
 def command_doctor(_arguments: argparse.Namespace) -> int:
     config = load_config()
     _require_runnable(config)
+    git_position = GitLifecycle(ROOT).preflight()
     observed = snapshot(ROOT)
     if config.executor_kind == "codex":
         executor_config = _executor_config(config)
@@ -1126,13 +1416,13 @@ def command_doctor(_arguments: argparse.Namespace) -> int:
         "exec_probe": probe,
         "head_revision": observed.head_revision,
         "source_digest": observed.source_digest,
+        "branch": git_position.branch,
     }
     _write_output(payload, human="Orchestration runtime is ready.")
     return EXIT_SUCCESS
 
 
 def command_start(arguments: argparse.Namespace) -> int:
-    ensure_clean(ROOT)
     command_doctor(arguments)
     intake_result = command_intake(arguments)
     if intake_result != EXIT_SUCCESS:
@@ -1176,6 +1466,7 @@ def command_run(_arguments: argparse.Namespace) -> int:
     heartbeat_thread = threading.Thread(target=heartbeat, daemon=True)
     heartbeat_thread.start()
     try:
+        _repair_completed_commit_transition(store, queue)
         if takeover:
             for candidate in queue.items:
                 if candidate.status is QueueStatus.ACTIVE:
@@ -1206,9 +1497,14 @@ def command_run(_arguments: argparse.Namespace) -> int:
                         raise CliError("lease heartbeat did not stop before cleanup")
                     if heartbeat_errors:
                         raise CliError(f"lease heartbeat failed: {heartbeat_errors[0]}")
-                    store.fenced_cleanup()
+                    receipt = _completion_receipt(queue)
+                    store.fenced_cleanup(receipt)
                     _write_output(
-                        {"status": "completed"},
+                        {
+                            "status": "completed",
+                            "latest_branch": receipt["latest_branch"],
+                            "latest_commit": receipt["latest_commit"],
+                        },
                         human="All queue items completed.",
                     )
                     return EXIT_SUCCESS
@@ -1226,8 +1522,7 @@ def command_run(_arguments: argparse.Namespace) -> int:
                 )
                 return EXIT_BLOCKED
             if item.status is QueueStatus.PENDING:
-                item.status = QueueStatus.ACTIVE
-                store.save_queue(queue)
+                _activate_item(store, queue, item)
             if item.next_attempt_at is not None:
                 if parse_time(item.next_attempt_at) > utc_now():
                     _write_output(
@@ -1279,6 +1574,8 @@ def _recover_persisted_handoff(
     handoff = AgentHandoff.from_dict(
         store.read_json(f"runs/{item.item_id}/HANDOFF.json")
     )
+    if item.branch_name and request.source_branch != item.branch_name:
+        raise CliError("recoverable request is not bound to the item branch")
     promotion_path = f"runs/{item.item_id}/PROMOTION.json"
     if not store.resolve(promotion_path).is_file():
         return False
@@ -1346,9 +1643,26 @@ def _recover_persisted_handoff(
     else:
         if handoff.next_phase is None:
             raise CliError("recoverable handoff omitted next phase")
+        observed_recovered = snapshot(ROOT)
+        if (
+            item.phase in {Phase.CODE_REVIEW, Phase.VISUAL_REVIEW}
+            and handoff.next_phase is Phase.CLOSEOUT
+        ):
+            item.reviewed_source_digest = observed_recovered.source_digest
         if item.phase is Phase.CLOSEOUT:
             _checkpoint(store, item)
+            closed_before_verify = snapshot(ROOT)
             _run_final_closeout_verification()
+            closed = snapshot(ROOT)
+            if closed != closed_before_verify:
+                raise CliError(
+                    "final closeout verification mutated the source workspace"
+                )
+            item.expected_closeout_digest = closed.source_digest
+            store.save_queue(queue)
+            _checkpoint(store, item)
+            _complete_closeout_commit(store, queue, item)
+            return True
         advance(item, handoff.next_phase)
         _set_current_phase(item.phase)
         store.save_queue(queue)
@@ -1371,18 +1685,27 @@ def command_resume(arguments: argparse.Namespace) -> int:
     config = load_config()
     _require_runnable(config)
     store = StateStore(ROOT)
+    # Reject legacy state before lease acquisition writes any runtime file.
+    queue = store.load_queue()
     owner_id = f"{socket.gethostname()}:{os.getpid()}"
     lease_id = str(uuid.uuid4())
     lease, takeover = store.acquire_lease(owner_id, lease_id, config.lease_seconds)
-    queue = store.load_queue()
     try:
         item = select_next(queue)
         if item is not None:
-            if not _recover_persisted_handoff(store, queue, item, config):
+            if (
+                item.phase is Phase.CLOSEOUT
+                and item.expected_closeout_digest is not None
+            ):
+                _complete_closeout_commit(store, queue, item)
+                item = select_next(queue)
+            if item is not None and not _recover_persisted_handoff(
+                store, queue, item, config
+            ):
                 observed = snapshot(ROOT)
                 reconcile_checkpoint(store.load_checkpoint(item.item_id), observed)
                 run_lifecycle_validator(ROOT)
-            if takeover:
+            if takeover and item is not None:
                 store.append_event(
                     item.item_id,
                     "lease-takeover",
@@ -1441,6 +1764,8 @@ def command_decide(arguments: argparse.Namespace) -> int:
     if decision.owner != config.owner:
         raise CliError("decision owner does not match configured owner")
     store = StateStore(ROOT)
+    # Reject legacy state before lease acquisition writes any runtime file.
+    store.load_queue()
     with _serialized_mutation(store, config.lease_seconds):
         queue = store.load_queue()
         matches = [item for item in queue.items if item.item_id == decision.item_id]
@@ -1596,7 +1921,14 @@ def main() -> int:
     arguments = parser().parse_args()
     try:
         return int(arguments.handler(arguments))
-    except (CliError, EngineError, ExecutorError, ReconcileError, StoreError) as error:
+    except (
+        CliError,
+        EngineError,
+        ExecutorError,
+        GitLifecycleError,
+        ReconcileError,
+        StoreError,
+    ) as error:
         print(f"ERROR: {error}", file=sys.stderr)
         if isinstance(error, ConfigError):
             return EXIT_CONFIG

@@ -89,3 +89,19 @@ Run `./.ai/tools/check-dependencies.sh` for changes to manifests, lockfiles, bui
 logic, registries, or generated dependency metadata. It enforces source and lockfile
 policy and invokes configured vulnerability, license, or reputation scanners. Manual
 provenance and license review remains required where automation cannot decide.
+
+<!-- guided-setup:policy-profile:start -->
+## Guided setup policy profile
+
+- Decision mode: `recommended`
+- Risk profile: `public-service-review`
+- Decisions:
+  - `authentication` = `required` (assistant-recommendation): Network service evidence may include protected operations
+  - `availability` = `required` (assistant-recommendation): Network service or external input evidence was detected
+  - `dependency_scanning` = `required` (assistant-recommendation): Dependency manifests were detected
+  - `dependency_vulnerability_threshold` = `high` (assistant-recommendation): Retain the versioned high-severity blocking baseline
+  - `secret_scanning` = `required` (assistant-recommendation): Dependencies, deployment, or network exposure can carry secrets
+  - `static_security` = `required` (assistant-recommendation): Supported code or external inputs need static security analysis
+  - `warning_treatment` = `errors` (assistant-recommendation): Detected code should keep warnings actionable
+- Canonical structured source: `.ai/policy-profile.yaml`
+<!-- guided-setup:policy-profile:end -->

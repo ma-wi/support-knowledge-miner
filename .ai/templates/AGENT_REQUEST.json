@@ -6,6 +6,7 @@
   "role": "planner",
   "invocation_id": "00000000-0000-0000-0000-000000000000",
   "head_revision": "0000000000000000000000000000000000000000",
+  "source_branch": "agent/req-001-implement-the-accepted-queue-item-objective",
   "source_digest": "0000000000000000000000000000000000000000000000000000000000000000",
   "workspace": ".",
   "allowed_paths": [

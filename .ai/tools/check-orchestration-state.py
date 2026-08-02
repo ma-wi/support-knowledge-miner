@@ -22,6 +22,7 @@ from orchestration.executor import (  # noqa: E402
     ExecutorError,
     validate_remediation_findings,
 )
+from orchestration.git_lifecycle import GitLifecycle, GitLifecycleError  # noqa: E402
 from orchestration.model import (  # noqa: E402
     AgentHandoff,
     AgentRequest,
@@ -61,6 +62,12 @@ def _validate_run_state(store: StateStore, item: QueueItem) -> None:
         if store.resolve(handoff_path).is_file()
         else None
     )
+    if (
+        request is not None
+        and item.branch_name
+        and request.source_branch != item.branch_name
+    ):
+        raise StoreError("agent request is not bound to the active item branch")
     if handoff is not None:
         if request is None:
             raise StoreError("handoff exists without its request")
@@ -274,6 +281,23 @@ def main() -> int:
             )
         store = StateStore(ROOT)
         if not store.root.exists():
+            receipt = store.completion_receipt()
+            if receipt is not None:
+                lifecycle = GitLifecycle(ROOT)
+                if (
+                    lifecycle.ref_target(receipt["latest_branch"])
+                    != receipt["latest_commit"]
+                ):
+                    raise StoreError(
+                        "completion receipt differs from its latest deliverable branch"
+                    )
+                for item in receipt["items"]:
+                    if lifecycle.ref_target(item["branch"]) != item["commit"]:
+                        raise StoreError(
+                            "completion receipt contains a moved or removed item branch"
+                        )
+                print("PASS: orchestration is complete with a valid delivery receipt.")
+                return 0
             print(
                 "PASS: orchestration is "
                 + ("enabled with empty state." if enabled else "disabled.")
@@ -281,6 +305,36 @@ def main() -> int:
             return 0
         queue = store.load_queue()
         validate_queue(queue)
+        if queue.run_git is None and any(
+            item.status is not QueueStatus.PENDING for item in queue.items
+        ):
+            raise StoreError("activated orchestration state lacks run Git metadata")
+        if queue.run_git is not None:
+            lifecycle = GitLifecycle(ROOT)
+            if (
+                lifecycle.ref_target(queue.run_git.initial_branch)
+                != queue.run_git.initial_revision
+            ):
+                raise StoreError("initial run branch was moved or removed")
+            for item in queue.items:
+                if not item.branch_name:
+                    continue
+                expected_ref = item.commit_revision or item.base_revision
+                if lifecycle.ref_target(item.branch_name) != expected_ref:
+                    raise StoreError(
+                        f"item branch was moved or removed: {item.item_id}"
+                    )
+                if item.commit_revision is not None:
+                    facts = lifecycle.commit_facts(item.commit_revision)
+                    if (
+                        facts.parents != [item.base_revision]
+                        or facts.tree != item.expected_commit_tree
+                        or facts.subject
+                        != GitLifecycle.commit_subject(item.item_id, item.summary)
+                    ):
+                        raise StoreError(
+                            f"item closeout commit is inconsistent: {item.item_id}"
+                        )
         current = select_next(queue)
         for item in queue.items:
             _validate_run_state(store, item)
@@ -294,6 +348,7 @@ def main() -> int:
             if (
                 checkpoint.phase is not item.phase
                 or checkpoint.queue_status is not item.status
+                or checkpoint.branch_name != item.branch_name
             ):
                 raise StoreError("queue item and checkpoint state disagree")
             if item is current:
@@ -504,6 +559,23 @@ def main() -> int:
                             raise StoreError(
                                 "host visual-gate event has invalid details"
                             )
+                    elif event["type"] == "commit-created":
+                        details = event["details"]
+                        if (
+                            previous is not Phase.CLOSEOUT
+                            or not isinstance(details.get("branch"), str)
+                            or not isinstance(details.get("parent_revision"), str)
+                            or not REVISION.fullmatch(details["parent_revision"])
+                            or not isinstance(details.get("commit_revision"), str)
+                            or not REVISION.fullmatch(details["commit_revision"])
+                            or not isinstance(details.get("commit_tree"), str)
+                            or not REVISION.fullmatch(details["commit_tree"])
+                            or not isinstance(details.get("commit_subject"), str)
+                            or not details["commit_subject"]
+                        ):
+                            raise StoreError(
+                                "closeout commit event has invalid details"
+                            )
                 if event_phase is not item.phase:
                     raise StoreError("event history does not match the queue phase")
                 if event_status is not item.status:
@@ -530,6 +602,7 @@ def main() -> int:
         ModelError,
         ReconcileError,
         StoreError,
+        GitLifecycleError,
     ) as error:
         print(f"FAIL: orchestration state is invalid: {error}")
         return 1

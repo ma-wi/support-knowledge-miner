@@ -1646,6 +1646,10 @@ class CommandExecutor:
             if (
                 before_source.head_revision != request.head_revision
                 or before_source.source_digest != request.source_digest
+                or (
+                    request.source_branch
+                    and before_source.branch_name != request.source_branch
+                )
             ):
                 raise ExecutorError(
                     "request baseline no longer matches source workspace"

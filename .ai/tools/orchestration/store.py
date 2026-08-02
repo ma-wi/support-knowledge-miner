@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import socket
 import tempfile
@@ -14,7 +15,15 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable, TypeVar
 
-from .model import Checkpoint, Event, Lease, ModelError, Phase, Queue
+from .model import (
+    STATE_SCHEMA_VERSION,
+    Checkpoint,
+    Event,
+    Lease,
+    ModelError,
+    Phase,
+    Queue,
+)
 
 MAX_JSON_BYTES = 1_048_576
 MAX_EVENT_BYTES = 65_536
@@ -333,7 +342,17 @@ class StateStore:
     def load_queue(self) -> Queue:
         if not self.queue_exists():
             return Queue([])
-        return self.load("QUEUE.json", Queue.from_dict)
+        value = self.read_json("QUEUE.json")
+        if value.get("schema_version") != STATE_SCHEMA_VERSION:
+            raise StoreError(
+                "legacy orchestration runtime state cannot be resumed with autonomous "
+                "Git delivery; finish it with the previous controller or archive the "
+                "completed .ai/orchestration directory before starting a new run"
+            )
+        try:
+            return Queue.from_dict(value)
+        except ModelError as error:
+            raise StoreError(f"invalid state model in QUEUE.json: {error}") from error
 
     def save_queue(self, queue: Queue) -> None:
         self.write_json("QUEUE.json", queue.to_dict())
@@ -459,11 +478,90 @@ class StateStore:
             path.unlink()
             self._bound_lease = None
 
-    def fenced_cleanup(self) -> None:
+    def completion_receipt(self) -> dict[str, Any] | None:
+        path = self.repository_root / ".ai" / "orchestration-completed.json"
+        if not path.exists():
+            return None
+        if (
+            path.is_symlink()
+            or not path.is_file()
+            or path.stat().st_size > MAX_JSON_BYTES
+        ):
+            raise StoreError("orchestration completion receipt is unsafe")
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as error:
+            raise StoreError("orchestration completion receipt is invalid") from error
+        if not isinstance(value, dict):
+            raise StoreError("orchestration completion receipt must be an object")
+        if set(value) != {
+            "schema_version",
+            "completed_at",
+            "initial_branch",
+            "initial_revision",
+            "latest_branch",
+            "latest_commit",
+            "items",
+        }:
+            raise StoreError("orchestration completion receipt has invalid fields")
+        revision = re.compile(r"^[0-9a-f]{40,64}$")
+        if (
+            value.get("schema_version") != 1
+            or not all(
+                isinstance(value.get(name), str) and value[name]
+                for name in ("completed_at", "initial_branch", "latest_branch")
+            )
+            or not all(
+                isinstance(value.get(name), str)
+                and revision.fullmatch(value[name]) is not None
+                for name in ("initial_revision", "latest_commit")
+            )
+            or not isinstance(value.get("items"), list)
+        ):
+            raise StoreError("orchestration completion receipt has invalid values")
+        parse_time(value["completed_at"])
+        for item in value["items"]:
+            if (
+                not isinstance(item, dict)
+                or set(item) != {"id", "branch", "commit"}
+                or not all(
+                    isinstance(item.get(name), str) and item[name]
+                    for name in ("id", "branch")
+                )
+                or not isinstance(item.get("commit"), str)
+                or revision.fullmatch(item["commit"]) is None
+            ):
+                raise StoreError("orchestration completion receipt item is invalid")
+        return value
+
+    def _write_completion_receipt(self, receipt: dict[str, object]) -> None:
+        ai_root = self.repository_root / ".ai"
+        ai_root.mkdir(parents=True, exist_ok=True)
+        path = ai_root / "orchestration-completed.json"
+        encoded = (
+            json.dumps(receipt, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+        ).encode("utf-8")
+        if len(encoded) > MAX_JSON_BYTES:
+            raise StoreError("orchestration completion receipt exceeds its size limit")
+        descriptor, temporary_name = tempfile.mkstemp(prefix=".completed.", dir=ai_root)
+        temporary = Path(temporary_name)
+        try:
+            with os.fdopen(descriptor, "wb") as handle:
+                handle.write(encoded)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, path)
+            _fsync_directory(ai_root)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    def fenced_cleanup(self, receipt: dict[str, object] | None = None) -> None:
         """Remove completed runtime state while retaining the lease fence."""
         if self._bound_lease is None:
             raise StoreError("fenced cleanup requires a bound lease")
         with self._lease_guard():
             self._assert_fencing_token()
+            if receipt is not None:
+                self._write_completion_receipt(receipt)
             shutil.rmtree(self.root)
             self._bound_lease = None

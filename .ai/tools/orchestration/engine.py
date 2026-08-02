@@ -248,6 +248,12 @@ def validate_queue(queue: Queue) -> None:
     if len(sequences) != len(set(sequences)):
         raise EngineError("queue contains duplicate sequence numbers")
     graph = {item.item_id: item.depends_on for item in queue.items}
+    branches = [item.branch_name for item in queue.items if item.branch_name]
+    if len(branches) != len(set(branches)):
+        raise EngineError("queue contains duplicate item branches")
+    commits = [item.commit_revision for item in queue.items if item.commit_revision]
+    if len(commits) != len(set(commits)):
+        raise EngineError("queue contains duplicate closeout commits")
     for item in queue.items:
         if (item.status is QueueStatus.COMPLETED) != (item.phase is Phase.DONE):
             raise EngineError(f"{item.item_id} has inconsistent completed/done state")
@@ -259,6 +265,57 @@ def validate_queue(queue: Queue) -> None:
             )
         if item.item_id in item.depends_on:
             raise EngineError(f"{item.item_id} depends on itself")
+        has_branch_intent = bool(item.branch_name or item.base_revision)
+        if bool(item.branch_name) != (item.base_revision is not None):
+            raise EngineError(f"{item.item_id} has incomplete branch intent")
+        if item.branch_ready and not has_branch_intent:
+            raise EngineError(f"{item.item_id} is branch-ready without branch intent")
+        if (
+            queue.run_git is not None
+            and item.status is not QueueStatus.PENDING
+            and not item.branch_ready
+        ):
+            raise EngineError(f"{item.item_id} has no activated item branch")
+        if (
+            queue.run_git is not None
+            and item.status is QueueStatus.COMPLETED
+            and item.commit_revision is None
+        ):
+            raise EngineError(f"{item.item_id} completed without a closeout commit")
+        if (
+            queue.run_git is not None
+            and item.status is QueueStatus.COMPLETED
+            and any(
+                value is None
+                for value in (
+                    item.reviewed_source_digest,
+                    item.expected_closeout_digest,
+                    item.expected_commit_tree,
+                )
+            )
+        ):
+            raise EngineError(f"{item.item_id} completed without exact commit facts")
+        if (
+            item.commit_revision is not None
+            and item.status is not QueueStatus.COMPLETED
+        ):
+            raise EngineError(f"{item.item_id} has a commit before completion")
+        if (
+            item.expected_commit_tree is not None
+            and item.expected_closeout_digest is None
+        ):
+            raise EngineError(f"{item.item_id} has a tree without closeout intent")
+    if queue.run_git is not None:
+        if bool(queue.run_git.latest_branch) != bool(queue.run_git.latest_commit):
+            raise EngineError("latest deliverable branch and commit are incomplete")
+        if queue.run_git.latest_commit is not None and not any(
+            item.branch_name == queue.run_git.latest_branch
+            and item.commit_revision == queue.run_git.latest_commit
+            for item in queue.items
+        ):
+            raise EngineError(
+                "latest deliverable does not match a completed queue item"
+            )
     visiting: set[str] = set()
     visited: set[str] = set()
 
