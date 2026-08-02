@@ -27,7 +27,7 @@ orchestration:
   executor_isolation: "codex-sandbox"
   executor_command: ["codex"]
   codex_expected_version: ">=0.145.0,<1.0.0"
-  codex_model: ""
+  codex_model: "GPT-5.5"
   codex_reasoning_effort: "high"
   external_repository_processing_approved: true
   agent_timeout_seconds: 1800
