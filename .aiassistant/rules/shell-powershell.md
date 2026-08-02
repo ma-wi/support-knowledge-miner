@@ -1,5 +1,6 @@
 ---
-apply: always
+apply: by-file-patterns
+patterns: ["**/*.sh", "**/*.bash", "**/*.ps1", "**/*.psm1", "**/*.psd1"]
 ---
 
 # Shell and PowerShell rules

@@ -281,6 +281,20 @@ def test_openai_check_reports_empty_model_discovery(monkeypatch: Any) -> None:
     assert result.message == "OpenAI model discovery returned no model ids"
 
 
+def test_openai_model_discovery_explicitly_filters_invalid_ids() -> None:
+    service = ProviderService()
+
+    models = service._models_from_openai_model_items(
+        [
+            {"id": " "},
+            {"id": "valid-model"},
+            {"model": "x" * (provider_service_module.MAX_MODEL_LENGTH + 1)},
+        ]
+    )
+
+    assert models == ["valid-model"]
+
+
 def test_ollama_check_discovers_local_models(monkeypatch: Any) -> None:
     monkeypatch.setattr(
         provider_service_module, "HTTPConnection", FakeOllamaHTTPConnection
@@ -294,6 +308,22 @@ def test_ollama_check_discovers_local_models(monkeypatch: Any) -> None:
     assert result.models == ["nomic-embed-text:latest", "mxbai-embed-large"]
     assert result.message == "Ollama models discovered"
     assert FakeOllamaHTTPConnection.last_path == "/api/tags"
+
+
+def test_ollama_model_discovery_explicitly_filters_invalid_ids() -> None:
+    service = ProviderService()
+
+    models = service._models_from_ollama_tags_payload(
+        {
+            "models": [
+                {"name": " "},
+                {"name": "valid-model"},
+                {"model": "x" * (provider_service_module.MAX_MODEL_LENGTH + 1)},
+            ]
+        }
+    )
+
+    assert models == ["valid-model"]
 
 
 @pytest.mark.parametrize(

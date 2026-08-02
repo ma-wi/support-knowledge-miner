@@ -1,5 +1,6 @@
 ---
-apply: always
+apply: by-model-decision
+instruction: "Apply only for security threat surfaces or dependency/build-chain changes."
 ---
 
 # Security and dependency rules

@@ -41,3 +41,7 @@ protection/review responsibility must be explicit before implementation.
 - Accepted by:
 - Date:
 - Conditions:
+
+When repository-native orchestration is enabled, the configured local host identity
+is the only trusted source for `orchestrate.py decide`. Agent handoffs may request,
+but never authorize or apply, an owner decision.

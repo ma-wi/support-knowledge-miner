@@ -235,6 +235,19 @@ Focused gates are also available:
 python .ai/tools/check-docs.py
 ```
 
+UI browser evidence, accessibility checks, and visual regression run against a
+tool-managed local Vite instance with synthetic signed-out data:
+
+```bash
+./.ai/tools/ui-quality.sh browser
+./.ai/tools/ui-quality.sh accessibility
+./.ai/tools/ui-quality.sh visual-regression
+```
+
+Commands need an active `.ai/work/<change-id>/` directory for evidence. For an
+accepted UI change, refresh references with
+`npm --prefix frontend run visual:update-baselines` and review the changed PNGs.
+
 To execute fresh and stopped-at-0009 migrations against an isolated local
 PostgreSQL container:
 

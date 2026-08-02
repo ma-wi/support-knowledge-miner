@@ -17,11 +17,23 @@ from pathlib import Path
 # missing pointer is not an error there.
 PLAN_POINTER_PHASES = {
     "planning",
+    "design-draft",
+    "design-review",
     "implementation",
     "verification",
     "review",
+    "visual-review",
     "remediation",
     "closeout",
+}
+VISUAL_EVIDENCE_FIELDS = (
+    "Required screens",
+    "Required states",
+    "Required viewports",
+)
+RUNTIME_VERSION_PATTERNS = {
+    "python": re.compile(r"\d+\.\d+(?:\.\d+)?"),
+    "node": re.compile(r"\d+\.\d+\.\d+"),
 }
 
 
@@ -74,9 +86,40 @@ def get(data: dict, *keys: str, default=None):
     return current
 
 
+def runtime_versions(config: dict) -> dict[str, str]:
+    """Return validated runtime requests from project.yaml."""
+    result: dict[str, str] = {}
+    for runtime, pattern in RUNTIME_VERSION_PATTERNS.items():
+        value = get(config, "runtimes", runtime)
+        if not isinstance(value, str) or not pattern.fullmatch(value):
+            expected = (
+                "MAJOR.MINOR[.PATCH]" if runtime == "python" else "MAJOR.MINOR.PATCH"
+            )
+            raise SystemExit(f"runtimes.{runtime} must be a {expected} version string")
+        result[runtime] = value
+    return result
+
+
+def resolve_frontend_source_root(config: dict) -> Path:
+    """Return the one configured frontend source root used by source scanners."""
+    react_root = str(
+        get(config, "stacks", "react", "directory", default="frontend")
+    ).rstrip("/")
+    configured = get(
+        config,
+        "ui_quality",
+        "frontend",
+        "source_root",
+        default=f"{react_root}/src",
+    )
+    return Path(str(configured))
+
+
 def extract_field(text: str, field: str) -> str | None:
     match = re.search(
-        rf"^-\s*{re.escape(field)}:\s*(.+?)\s*$", text, re.MULTILINE | re.IGNORECASE
+        rf"^-[ \t]*{re.escape(field)}:[ \t]*(.*?)[ \t]*$",
+        text,
+        re.MULTILINE | re.IGNORECASE,
     )
     if not match:
         return None

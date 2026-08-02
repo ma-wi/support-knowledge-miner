@@ -1,5 +1,6 @@
 ---
-apply: always
+apply: by-file-patterns
+patterns: ["**/*.sln", "**/*.slnx", "**/*.vbproj", "**/*.vb", "**/*.csproj", "**/*.cs"]
 ---
 
 # .NET and Visual Basic rules

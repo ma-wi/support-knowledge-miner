@@ -28,6 +28,8 @@ Keep this document compact. It is a map for agents, not a duplicate of the sourc
   a provider/profile, persists bounded provider `message` embeddings, runs
   HDBSCAN or bounded Agglomerative clustering, curates results, and exports CSV.
 - Trust boundaries: browser to authenticated API, local backend to local PostgreSQL, optional explicit OpenAI/Ollama/vLLM provider calls, local filesystem/Compose volumes.
+- Control plane: `.ai/tools/orchestrate.py`; policy:
+  `.ai/policies/ORCHESTRATION.md`
 - Public interfaces: FastAPI `/api/*` routes, React MVP shell, Docker Compose local runtime, `.ai/tools/*` quality gates.
 - Generated-code locations: Python build output in `dist/` and `build/`, frontend production output in `frontend/dist/`; these are ignored by agents.
 - Critical paths: email-only authentication with server-validated tab-scoped
@@ -53,10 +55,11 @@ See `docs/architecture/overview.md` for the durable architecture description.
   `ApiRequestError` details or use action-specific safe fallbacks. Typed feedback
   distinguishes error, warning, information, and success with matching live-region
   semantics.
+- User-facing error policy: `.ai/policies/USER_FACING_ERROR_HANDLING.md`
+- Error catalog: `docs/errors/ERROR_CATALOG.md`
 - Logging and telemetry conventions: MVP uses persisted audit/import/export/run records rather than production telemetry.
 - Dependency policy: manifests and lockfiles are mandatory; dependency and vulnerability gates run through `./.ai/tools/check-dependencies.sh` and `verify.sh`.
 - Migration policy: migrations are committed SQL files in `backend/db/migrations/` and covered by migration tests.
-- Migration smoke: `deployment/docker/scripts/smoke-migrations.sh` executes fresh and stopped-version upgrade paths against an isolated local PostgreSQL container.
 
 ## Quality commands
 
@@ -64,18 +67,15 @@ See `docs/architecture/overview.md` for the durable architecture description.
 - Format check: `./.ai/tools/format.sh --check`
 - Lint/static analysis: `./.ai/tools/lint.sh`
 - Tests: `./.ai/tools/test.sh`
-- Dependency checks: `./.ai/tools/check-dependencies.sh`
 - Security checks: `./.ai/tools/security.sh`
 - Build/package: `./.ai/tools/build.sh`
-- Documentation consistency: `python .ai/tools/check-docs.py`
+- Browser review evidence: `./.ai/tools/ui-quality.sh browser`
+- Accessibility: `./.ai/tools/ui-quality.sh accessibility`
+- Visual regression: `./.ai/tools/ui-quality.sh visual-regression`
 - Full verification: `./.ai/tools/verify.sh`
-
-## Engineering standards MCP
-
-- Optional server: `engineering-knowledge`
-- Availability is controlled by `.ai/project.yaml`.
-- Retrieve only targeted guidance when local guidance is insufficient for a concrete standards-sensitive decision.
-- Record source identifiers only when guidance materially affects a decision.
+- User-facing error gate: `./.ai/tools/check-user-facing-errors.py`
+- Orchestration state gate: `./.ai/tools/check-orchestration-state.py`
+- Orchestrator CLI: `python .ai/tools/orchestrate.py`
 
 ## Constraints and known risks
 
@@ -94,22 +94,28 @@ See `docs/architecture/overview.md` for the durable architecture description.
   graph/intermediate structures, results/mappings, and per-record overhead;
   Agglomerative rejects disconnected neighbor graphs before estimator execution.
 - Operational constraints: No production deployment; local volumes own persistence.
-- Known technical debt: Candidate generation and export-adjacent analysis remain
+- Known technical debt relevant to current work: Candidate generation and export-adjacent analysis remain
   MVP-quality workflows; clustering quality still depends on the configured
   embedding model and profile parameters.
 
 ## High-value references
 
-- Requirement: `docs/requirements/support-knowledge-miner-mvp1.md`
-- Specification: `docs/specifications/support-knowledge-miner-mvp1.md`
-- Architecture overview: `docs/architecture/overview.md`
+- Requirements location: `docs/requirements/support-knowledge-miner-mvp1.md`
+- API Specification: `docs/specifications/support-knowledge-miner-mvp1.md`
 - Architecture decisions: `docs/architecture/decisions/`
-- Local runtime: `deployment/docker/README.md`
-- Security: `SECURITY.md`
-
+- Threat model:
+- Security reporting: `SECURITY.md`
+- Runbooks:
+- UI design system: `docs/design/DESIGN_SYSTEM.md`
+- UI component catalog: `docs/design/COMPONENT_CATALOG.md`
+- User-facing error catalog: `docs/errors/ERROR_CATALOG.md`
 ## Bootstrap configuration
 
 - Project name: `Support Knowledge Miner`
 - Enabled stacks: `python, react, bash`
-- Engineering knowledge MCP: `engineering-knowledge` (enabled)
+- Python runtime: `3.13`
+- Node.js runtime: `26.5.0`
+- UI quality workflow: enabled
+- Repository-native orchestration: enabled
+- User-facing error handling: enabled; frontend checks enabled
 - Configuration source: `.ai/project.yaml`

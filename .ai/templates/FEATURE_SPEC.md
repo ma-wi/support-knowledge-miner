@@ -39,7 +39,13 @@ Use established project and domain terminology. Do not introduce synonyms for ex
 
 ## User-visible behavior
 
-Describe workflows, state transitions, permissions, failures, and recovery behavior. Use user stories only where actor, goal, and value add clarity.
+Describe workflows, state transitions, permissions, failures, and recovery behavior.
+Use user stories only where actor, goal, and value add clarity.
+
+## Conditional capability annexes
+
+Append `.ai/templates/FEATURE_SPEC_ERRORS.md` only when user-facing error handling is
+enabled and the capability has user-triggered or user-observable actions.
 
 ### Optional user stories or journey scenarios
 

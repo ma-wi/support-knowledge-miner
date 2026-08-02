@@ -4,7 +4,11 @@
 - Review scope:
 - Requirement and plan:
 - Commit or diff:
+- Revision: <request.head_revision>
+- Source digest: <request.source_digest>
 - Date:
+- Verdict: approved | changes-required
+- Open P0/P1 findings: none | present
 
 ## Verdict
 
@@ -46,6 +50,11 @@ Remove this example when there are no findings.
 - Review batch was coherent and within policy: yes | no | not-applicable
 - Notes:
 
+## Conditional review annexes
+
+Append `.ai/templates/REVIEW_REPORT_UI.md` only for UI-quality work. Append
+`.ai/templates/REVIEW_REPORT_ERRORS.md` only when user-facing error handling applies.
+
 ## Specification and test-seam assessment
 
 - Specification status and readiness were valid: yes | no | not-applicable
@@ -61,6 +70,22 @@ Remove this example when there are no findings.
 | `./.ai/tools/verify.sh` | pass/fail/not run | |
 
 ## Security and compatibility assessment
+
+### Security Assurance
+
+- Security routing matches the actual diff: yes | no | not-applicable
+- Security triggers:
+- Assets, data classes, boundaries, and untrusted inputs:
+- Authorization model:
+- Threats and abuse cases:
+- Mitigations at the protected boundary:
+- Negative verification and other evidence:
+- Residual security risk:
+- Specialist security review:
+- Implementer adversarial pre-review complete: yes | no
+
+Use the work item's shared Security Assurance schema; independently validate every
+entry rather than copying it into this report.
 
 ## Documentation assessment
 

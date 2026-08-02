@@ -1,6 +1,10 @@
 project:
   name: "Support Knowledge Miner"
 
+runtimes:
+  python: "3.13"
+  node: "26.5.0"
+
 stacks:
   python:
     enabled: true
@@ -18,16 +22,72 @@ stacks:
 
 incremental_changes:
   default_review_cadence: "batch"
-  max_tasks_per_review_batch: 6
+  max_tasks_per_review_batch: 3
   force_task_review_for: "migration public-api authentication authorization security dependency-change"
 
-engineering_knowledge:
-  enabled: false
+orchestration:
+  enabled: true
+  executor_kind: "codex"
+  executor_isolation: "codex-sandbox"
+  executor_command: ["codex"]
+  codex_expected_version: "0.145.0"
+  codex_model: ""
+  codex_reasoning_effort: "high"
+  external_repository_processing_approved: true
+  agent_timeout_seconds: 1800
+  max_attempts_per_phase: 3
+  max_identical_failures: 2
+  lease_seconds: 3600
+  owner: "mawi"
+
+ui_quality:
+  enabled: true
+  frontend:
+    root: "frontend"
+    source_root: "frontend/src"
+  design_system:
+    document: "docs/design/DESIGN_SYSTEM.md"
+    component_catalog: "docs/design/COMPONENT_CATALOG.md"
+  design_artifacts:
+    allowed: ["static-mockup", "clickable-html-prototype", "react-mock-prototype", "storybook-composition", "external-design-reference"]
+    storage: ".ai/work/{change_id}"
+  require_human_approval_for: ["design-class-2", "design-class-3"]
+  browser_review:
+    command: "node .ai/tools/ui-browser-review.mjs browser"
+    base_url: "http://127.0.0.1:5173"
+    fallback_when_unconfigured: "error"
+    viewports:
+      desktop:
+        width: 1440
+        height: 1000
+      mobile:
+        width: 390
+        height: 844
+  visual_regression:
+    enabled: true
+    command: "node .ai/tools/ui-browser-review.mjs visual-regression"
+  accessibility:
+    enabled: true
+    command: "node .ai/tools/ui-browser-review.mjs accessibility"
+
+user_facing_errors:
+  enabled: true
+  catalog:
+    path: "docs/errors/ERROR_CATALOG.md"
+  frontend:
+    enabled: true
 
 documentation:
   budgets:
     agents_md_lines: 240
+    readme_lines: 220
     project_context_lines: 250
     current_plan_lines: 35
     next_steps_items: 10
     active_work_item_lines: 180
+    policy_lines: 260
+    role_lines: 120
+    template_lines: 180
+    worst_case_instruction_words: 12000
+    worst_case_composed_template_words: 5000
+    active_work_context_words: 12000

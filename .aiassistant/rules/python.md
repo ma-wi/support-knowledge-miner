@@ -1,5 +1,6 @@
 ---
-apply: always
+apply: by-file-patterns
+patterns: ["**/*.py", "**/pyproject.toml", "**/uv.lock"]
 ---
 
 # Python rules

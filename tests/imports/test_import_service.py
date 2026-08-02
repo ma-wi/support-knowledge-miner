@@ -188,6 +188,23 @@ def test_database_batches_flush_on_byte_budget_before_record_limit(
     assert sum(len(batch) for batch in batches) == 3
 
 
+def test_database_batches_explicitly_filter_rejected_records(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "mixed-records.json"
+    source_path.write_text(
+        "["
+        '{"ticket_id":"T-1","message_group_id":"G-1","message":"","answer":"A"},'
+        '{"ticket_id":"T-2","message_group_id":"G-2","message":"Valid","answer":"A"}'
+        "]",
+        encoding="utf-8",
+    )
+
+    batches = list(ImportService()._iter_valid_record_batches("json", source_path))
+
+    assert [[record.ticket_id for record in batch] for batch in batches] == [["T-2"]]
+
+
 def test_one_record_over_byte_budget_is_flushed_without_accumulating_another(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

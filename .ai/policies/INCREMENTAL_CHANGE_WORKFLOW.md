@@ -4,6 +4,12 @@ Use this policy when changing, extending, replacing, renaming, deprecating, or
 removing behavior in an existing capability. It supplements the canonical lifecycle
 in `WORKFLOW.md`; that file still owns status transitions and closeout.
 
+When `.ai/project.yaml` enables UI quality and the change has UI impact, also follow
+`.ai/policies/UI_QUALITY.md`. When it enables user-facing error handling and the
+change affects a user-triggered or user-observable action, also follow
+`.ai/policies/USER_FACING_ERROR_HANDLING.md`. Record concrete not-applicable routing
+reasons without loading those policies for unaffected work.
+
 ## Goal
 
 End with one coherent current system, not a new implementation beside an unexplained
@@ -95,6 +101,10 @@ Typical layers include:
 - integrations, events, caches, search, and telemetry;
 - tests, fixtures, documentation, and operational tooling.
 
+When user-facing error handling applies, insert the rows from
+`.ai/templates/CHANGE_IMPACT_ERRORS.md` and follow the core error policy instead of
+duplicating its layer checklist here.
+
 The matrix may omit an irrelevant layer only when its absence was verified and noted.
 No relevant located reference may remain unclassified before implementation.
 
@@ -118,21 +128,12 @@ configuration, documentation, and dependencies made obsolete by the change. Each
 entry needs a disposition and an owning task. An artifact may remain only for an
 accepted compatibility reason with a concrete removal criterion.
 
-## 5. Design classification
+## 5. Design routing
 
-Classify user-interface impact before implementation:
-
-- **0 — none:** no user-visible visual or interaction change.
-- **1 — established pattern:** uses an existing component and layout pattern; no new
-  interaction model. Record reused components and require post-change visual evidence.
-- **2 — new composition or flow:** new dialog, page composition, multi-step flow, or
-  materially different states. Create `DESIGN_DELTA.md` and obtain design acceptance.
-- **3 — design-system change:** new navigation, component family, layout standard, or
-  interaction convention. Create `DESIGN_DELTA.md`, update durable design-system
-  documentation, and obtain explicit design acceptance.
-
-Do not classify a change as 1 merely because it can be coded with existing primitives;
-the user flow and information hierarchy must also follow an established pattern.
+When UI quality is enabled and the change has UI impact, use
+`.ai/policies/UI_QUALITY.md` as the canonical owner of design classes, readiness,
+component reuse, evidence, and classification integrity. Record class 0 with a
+concrete reason for unaffected work without loading the detailed UI policy.
 
 ## 6. Vertical work items
 
@@ -147,6 +148,9 @@ A larger change may use staged vertical slices, for example:
 3. remove legacy behavior and superseded artifacts.
 
 Every task links to the impact rows and acceptance criteria it closes.
+
+Each changed user action links to its authoritative Error-and-Recovery Matrix. The
+core error policy owns its readiness conditions.
 
 ## 7. Review cadence and batches
 
@@ -175,6 +179,11 @@ Before review, perform repository-wide searches for renamed, removed, replaced, 
 deprecated concepts and record the result. Generated artifacts must be regenerated
 from their source contract rather than edited manually.
 
+For affected work with UI quality enabled, each task completes the component-reuse
+search and required `Component impact` sections. Selected design/browser tooling must
+be installed and locked in its owning development package before use. Prototype-only
+packages stay private and outside production workspaces.
+
 ## 9. Independent review
 
 The reviewer must determine whether:
@@ -185,7 +194,12 @@ The reviewer must determine whether:
 - retained legacy behavior has an accepted compatibility reason and removal plan;
 - superseded artifacts were removed or explicitly tracked;
 - capability specifications describe the resulting current state;
-- design classification and required design evidence are valid;
+- when user-facing error handling applies, the error catalog and applicable layers
+  describe one consistent current state;
+- when UI quality applies, design classification and required evidence are valid;
+- when UI quality applies, production has no prototype dependency;
+- when UI quality applies, component reuse, design approval, revision-bound evidence,
+  and independent visual review satisfy the selected class;
 - vertical slices and review cadence did not hide integration defects.
 
 Unexplained orphan references, parallel implementations, stale canonical specs, or
@@ -198,10 +212,16 @@ Before deleting temporary change artifacts:
 1. update every affected capability specification to current truth;
 2. update maintained project, architecture, design, operations, and user documentation;
 3. verify that superseded artifacts are removed or have accepted tracked removal work;
-4. move only genuine future work to issues or `.ai/NEXT_STEPS.md`;
-5. run final repository-wide orphan searches and `./.ai/tools/verify.sh`;
-6. remove `CHANGE.md`, `IMPACT.md`, optional `DESIGN_DELTA.md`, plan, and tasks;
-7. reset `.ai/CURRENT_PLAN.md`.
+4. remove or deprecate obsolete error codes, mappings, generic known-error messages,
+   duplicate mappers, dead fixtures/tests, and contradictory error documentation;
+5. move only genuine future work to issues or `.ai/NEXT_STEPS.md`;
+6. run final repository-wide orphan searches and `./.ai/tools/verify.sh`;
+7. remove `CHANGE.md`, `IMPACT.md`, optional `DESIGN_DELTA.md`, plan, and tasks;
+8. reset `.ai/CURRENT_PLAN.md`.
+
+Before removal, classify and clean every isolated or Storybook prototype, update
+`docs/design/DESIGN_SYSTEM.md` and `docs/design/COMPONENT_CATALOG.md` where required,
+and apply the temporary visual-evidence retention policy.
 
 The pull request and Git history retain the change history. Durable specifications
 retain only the accepted current state.
