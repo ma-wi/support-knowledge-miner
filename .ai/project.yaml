@@ -1,8 +1,8 @@
 project:
   name: "Support Knowledge Miner"
 runtimes:
-  python: "3.13"
-  node: "26.5.0"
+  python: "==3.13"
+  node: ">=26.4.0,<27.0.0"
 stacks:
   python:
     enabled: true
@@ -26,7 +26,7 @@ orchestration:
   executor_kind: "codex"
   executor_isolation: "codex-sandbox"
   executor_command: ["codex"]
-  codex_expected_version: "0.145.0"
+  codex_expected_version: ">=0.145.0,<1.0.0"
   codex_model: ""
   codex_reasoning_effort: "high"
   external_repository_processing_approved: true
