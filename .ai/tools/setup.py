@@ -23,7 +23,16 @@ from typing import Any, Iterator
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import bootstrap as bootstrap_tool  # noqa: E402
-from _common import get, load_yaml_subset  # noqa: E402
+from _common import (  # noqa: E402
+    clauses_intersect,
+    get,
+    load_yaml_subset,
+    parse_runtime_requirement,
+    parse_runtime_version,
+    requirement_candidate,
+    runtime_satisfies,
+    select_exact_version,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 CONFIG_PATH = ".ai/project.yaml"
@@ -35,7 +44,6 @@ LOCK_PATH = ".ai/.setup.lock"
 CATALOG_PATH = ROOT / ".ai/policies/setup-controls.json"
 PLAN_SCHEMA_VERSION = 1
 BOOTSTRAP_STEP_ORDER = ("configure", "python", "react")
-RUNTIME_COMPONENT = r"[0-9]{1,4}"
 SCAN_FILE_LIMIT = 20_000
 SCAN_ENTRY_LIMIT = 50_000
 SCAN_BYTE_LIMIT = 1_048_576
@@ -290,98 +298,6 @@ def confidence_for(items: list[dict[str, str]], manifest_kinds: set[str]) -> str
     if items:
         return "low"
     return "none"
-
-
-def parse_runtime_version(value: str, runtime: str) -> tuple[int, ...] | None:
-    pattern = (
-        rf"{RUNTIME_COMPONENT}\.{RUNTIME_COMPONENT}"
-        rf"(?:\.{RUNTIME_COMPONENT})?"
-        if runtime == "python"
-        else rf"{RUNTIME_COMPONENT}\.{RUNTIME_COMPONENT}\.{RUNTIME_COMPONENT}"
-    )
-    normalized = value.strip().removeprefix("v")
-    if re.fullmatch(pattern, normalized) is None:
-        return None
-    return tuple(int(part) for part in normalized.split("."))
-
-
-def parse_runtime_requirement(
-    requirement: str, runtime: str
-) -> list[tuple[str, tuple[int, ...]]] | None:
-    """Parse a conservative intersection of Python/Node comparison clauses."""
-    text = requirement.strip()
-    version_pattern = (
-        rf"{RUNTIME_COMPONENT}\.{RUNTIME_COMPONENT}"
-        rf"(?:\.{RUNTIME_COMPONENT})?"
-        if runtime == "python"
-        else rf"{RUNTIME_COMPONENT}\.{RUNTIME_COMPONENT}\.{RUNTIME_COMPONENT}"
-    )
-    if re.fullmatch(version_pattern, text):
-        parsed = parse_runtime_version(text, runtime)
-        return [("==", parsed)] if parsed is not None else None
-    separator = r"\s*,\s*" if runtime == "python" else r"(?:\s*,\s*|\s+)"
-    raw_clauses = re.split(separator, text)
-    if not raw_clauses or any(not clause for clause in raw_clauses):
-        return None
-    clauses: list[tuple[str, tuple[int, ...]]] = []
-    for raw_clause in raw_clauses:
-        match = re.fullmatch(rf"(==|>=|<=|>|<|~=)\s*({version_pattern})", raw_clause)
-        if match is None:
-            return None
-        version = parse_runtime_version(match.group(2), runtime)
-        if version is None:
-            return None
-        clauses.append((match.group(1), version))
-    return clauses
-
-
-def normalized_version(version: tuple[int, ...], width: int = 3) -> tuple[int, ...]:
-    return (*version, *((0,) * (width - len(version))))
-
-
-def runtime_satisfies(
-    candidate: str,
-    runtime: str,
-    requirements: list[list[tuple[str, tuple[int, ...]]]],
-) -> bool:
-    parsed_candidate = parse_runtime_version(candidate, runtime)
-    if parsed_candidate is None:
-        return False
-    actual = normalized_version(parsed_candidate)
-    for clauses in requirements:
-        for operator, expected_version in clauses:
-            expected = normalized_version(expected_version)
-            if operator == "==" and actual != expected:
-                return False
-            if operator == ">=" and actual < expected:
-                return False
-            if operator == ">" and actual <= expected:
-                return False
-            if operator == "<=" and actual > expected:
-                return False
-            if operator == "<" and actual >= expected:
-                return False
-            if operator == "~=":
-                upper = (
-                    (expected[0] + 1, 0, 0)
-                    if len(expected_version) == 2
-                    else (expected[0], expected[1] + 1, 0)
-                )
-                if actual < expected or actual >= upper:
-                    return False
-    return True
-
-
-def requirement_candidate(
-    runtime: str, clauses: list[tuple[str, tuple[int, ...]]]
-) -> str | None:
-    for operator, version in clauses:
-        if operator in {"==", ">=", "~="}:
-            candidate = ".".join(str(part) for part in version)
-            if runtime == "node" and len(version) != 3:
-                return None
-            return candidate
-    return None
 
 
 def runtime_finding(
@@ -1609,30 +1525,30 @@ def build_plan(
             ]
             for clauses in serialized_constraints
         ]
-        if explicit_value is not None and (
-            not detected_runtime["requirements_supported"]
-            or not runtime_satisfies(
-                explicit_value,
-                runtime,
-                parsed_constraints,
-            )
-        ):
-            raise SetupError(
-                f"Explicit {runtime} runtime {explicit_value!r} is invalid or "
-                "does not satisfy all detected manifest requirements"
-            )
-        if explicit_value is not None and any(
-            not runtime_satisfies(
-                explicit_value,
-                runtime,
-                [[("==", parse_runtime_version(pin, runtime) or ())]],
-            )
-            for pin in detected_runtime["pins"]
-        ):
-            raise SetupError(
-                f"Explicit {runtime} runtime {explicit_value!r} conflicts with "
-                "an existing exact runtime pin; setup does not update pin files"
-            )
+        if explicit_value is not None:
+            explicit_requirement = parse_runtime_requirement(explicit_value, runtime)
+            pin_requirements = []
+            for pin in detected_runtime["pins"]:
+                parsed_pin = parse_runtime_version(pin, runtime)
+                if parsed_pin is None:
+                    raise SetupError(
+                        f"Explicit {runtime} runtime requirement {explicit_value!r} "
+                        "conflicts with an invalid existing exact runtime pin; setup "
+                        "does not update pin files"
+                    )
+                pin_requirements.append([("==", parsed_pin)])
+            if (
+                explicit_requirement is None
+                or not detected_runtime["requirements_supported"]
+                or not clauses_intersect(
+                    explicit_requirement, *parsed_constraints, *pin_requirements
+                )
+            ):
+                raise SetupError(
+                    f"Explicit {runtime} runtime requirement {explicit_value!r} "
+                    "is invalid, does not satisfy, or is incompatible with detected "
+                    "manifest requirements or existing exact runtime pins"
+                )
         if selected_runtime is None and detected_runtime["confidence"] in {
             "high",
             "medium",
@@ -2207,7 +2123,7 @@ def build_plan(
                         "--dev",
                         *python_dependencies,
                     ],
-                    "condition": "only for pinned development dependencies not already declared",
+                    "condition": "only for bounded development requirements not already declared",
                 },
             ]
         )
@@ -2278,11 +2194,18 @@ def build_plan(
             get(desired, "stacks", "react", "directory", default="frontend")
         )
         manager = str(get(desired, "stacks", "react", "package_manager", default="npm"))
+        vite_requirement = bootstrap_tool.tool_requirements(desired)["vite"]
+        vite_resolution = select_exact_version(vite_requirement)
+        if vite_resolution is None:
+            raise SetupError(
+                "tool_requirements.vite needs an exact or inclusive-lower-bound "
+                "requirement so setup can approve an exact scaffold resolution"
+            )
         create, install, add_dev = bootstrap_tool.package_manager_commands(
             manager,
             directory,
             bootstrap_tool.REACT_TEMPLATE,
-            bootstrap_tool.VITE_VERSION,
+            vite_resolution,
         )
         react_dependencies = list(bootstrap_tool.REACT_QUALITY_DEPENDENCIES)
         project_dependencies["react"] = react_dependencies
@@ -2304,7 +2227,7 @@ def build_plan(
                     "stack": "react",
                     "cwd": directory,
                     "argv": [*add_dev, *react_dependencies],
-                    "condition": "only for pinned quality dependencies not already declared",
+                    "condition": "only for bounded quality requirements not already declared",
                 },
             ]
         )
@@ -2336,7 +2259,7 @@ def build_plan(
         react_mutations = [
             (
                 directory,
-                "create the complete pinned Vite React scaffold tree",
+                "create the complete bounded-requirement Vite React scaffold tree",
                 "only when package.json is missing; preserve an existing "
                 "application tree",
             ),
@@ -2354,7 +2277,8 @@ def build_plan(
                     if missing_script_names
                     else "; no quality-script replacement"
                 )
-                + "; add missing pinned development dependencies and package-manager metadata",
+                + "; add missing bounded development requirements and exact "
+                "package-manager resolution",
                 "when React bootstrap is selected",
             ),
             (
@@ -2443,6 +2367,20 @@ def build_plan(
             "project_local_dependency_operations": bootstrap_operations,
             "project_file_mutations": project_file_mutations,
             "project_local_dependencies": project_dependencies,
+            "resolution_contract": {
+                "approval_scope": (
+                    "bounded direct requirements and the exact create-vite "
+                    "resolution shown in project_local_dependency_operations"
+                ),
+                "first_install_resolution": (
+                    "the owning package manager writes an exact lock graph within "
+                    "the approved requirements"
+                ),
+                "post_install_validation": (
+                    "bootstrap reports and rejects missing or out-of-range exact "
+                    "direct lock resolutions before continuing"
+                ),
+            },
             "missing_global_prerequisites": inspection["missing_tools"],
             "verification_command": "./.ai/tools/verify.sh",
             "network_required_only_when_installation_is_approved": bool(
@@ -3091,7 +3029,8 @@ def run_wizard(root: Path, arguments: argparse.Namespace) -> int:
                 and getattr(arguments, argument_name) is None
             ):
                 answer = input(
-                    f"{runtime.capitalize()} runtime (optional exact version; "
+                    f"{runtime.capitalize()} runtime (optional exact or bounded "
+                    "version requirement; "
                     "press Enter to leave unresolved): "
                 ).strip()
                 if answer:

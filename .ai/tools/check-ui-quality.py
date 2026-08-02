@@ -19,6 +19,9 @@ from _common import (  # noqa: E402
     get,
     is_inactive_plan,
     load_yaml_subset,
+    npm_lock_versions,
+    npm_version_satisfies,
+    parse_npm_requirement,
 )
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -477,11 +480,12 @@ def lockfile_exists(package_dir: Path) -> bool:
     )
 
 
-def is_exact_dependency_version(value: object) -> bool:
+def is_bounded_dependency_requirement(value: object) -> bool:
     if not isinstance(value, str) or not value.strip():
         return False
     return bool(
-        re.fullmatch(
+        parse_npm_requirement(value) is not None
+        or re.fullmatch(
             r"v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?",
             value.strip(),
         )
@@ -489,39 +493,22 @@ def is_exact_dependency_version(value: object) -> bool:
 
 
 def dependency_is_locked(
-    package_dir: Path, dependency: str, expected_version: object
+    package_dir: Path, dependency: str, requirement: object
 ) -> bool:
-    if not isinstance(expected_version, str):
+    if not isinstance(requirement, str):
         return False
-    package_lock = package_dir / "package-lock.json"
-    if package_lock.is_file():
-        try:
-            lock = json.loads(package_lock.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return False
-        package_key = f"node_modules/{dependency}"
-        packages = lock.get("packages", {})
-        dependencies = lock.get("dependencies", {})
-        if (
-            isinstance(packages, dict)
-            and isinstance(packages.get(package_key), dict)
-            and packages[package_key].get("version") == expected_version
-        ):
-            return True
-        if (
-            isinstance(dependencies, dict)
-            and isinstance(dependencies.get(dependency), dict)
-            and dependencies[dependency].get("version") == expected_version
-        ):
-            return True
-    for name in ("pnpm-lock.yaml", "yarn.lock"):
-        path = package_dir / name
-        if not path.is_file() or path.stat().st_size == 0:
-            continue
-        text = path.read_text(encoding="utf-8", errors="replace")
-        if dependency in text and expected_version in text:
-            return True
-    return False
+    locked_versions = npm_lock_versions(package_dir, dependency, requirement)
+    exact_requirement = re.fullmatch(
+        r"v?(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)",
+        requirement.strip(),
+    )
+    if exact_requirement is not None:
+        return exact_requirement.group(1) in {
+            version.removeprefix("v") for version in locked_versions
+        }
+    return any(
+        npm_version_satisfies(version, requirement) for version in locked_versions
+    )
 
 
 def validate_tooling(
@@ -560,13 +547,15 @@ def validate_tooling(
                     "Storybook composition requires an installed Storybook dependency"
                 )
             for name, value in storybook_dependencies.items():
-                if not is_exact_dependency_version(value):
+                if not is_bounded_dependency_requirement(value):
                     errors.append(
-                        f"Storybook dependency {name!r} must use an exact version"
+                        f"Storybook dependency {name!r} must use an exact or bounded "
+                        "version requirement"
                     )
                 if not dependency_is_locked(frontend, name, value):
                     errors.append(
-                        f"Storybook dependency {name!r} is missing from the lockfile"
+                        f"Storybook dependency {name!r} is missing from the lockfile "
+                        "or its resolution does not satisfy the requirement"
                     )
             if not any("storybook" in name.lower() for name in scripts):
                 errors.append(
@@ -688,13 +677,15 @@ def validate_prototype(
                 **package.get("devDependencies", {}),
             }
             for name, value in dependencies.items():
-                if not is_exact_dependency_version(value):
+                if not is_bounded_dependency_requirement(value):
                     errors.append(
-                        f"prototype dependency {name!r} must use an exact version"
+                        f"prototype dependency {name!r} must use an exact or bounded "
+                        "version requirement"
                     )
                 if not dependency_is_locked(prototype, name, value):
                     errors.append(
-                        f"prototype dependency {name!r} is missing from the lockfile"
+                        f"prototype dependency {name!r} is missing from the lockfile "
+                        "or its resolution does not satisfy the requirement"
                     )
     for path in prototype.rglob("*"):
         if not path.is_file() or any(part in STATE_DIRS for part in path.parts):

@@ -37,11 +37,18 @@ jobs:
         with:
           node-version: ${{ steps.runtimes.outputs.node }}
 
-      - name: Set up pinned uv
+      - name: Set up compatible uv
         uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
         with:
-          version: "0.11.29"
+          version: ${{ steps.runtimes.outputs.uv }}
           enable-cache: true
+
+      - name: Verify exact Python and uv resolutions
+        run: python3 .ai/tools/project-runtimes.py --verify python --verify uv
+
+      - name: Verify exact Node.js resolution
+        if: ${{ hashFiles('**/package.json') != '' }}
+        run: python3 .ai/tools/project-runtimes.py --verify node
 
       - name: Install orchestration isolation dependencies
         run: |

@@ -102,8 +102,9 @@ tokens, or local clones of standard components are blocking reuse findings.
 
 ## Design readiness and closeout
 
-Selected tooling must be installed in its owning package with exact versions and an
-adjacent lockfile before its gate can pass. Missing tooling is not a successful skip.
+Selected tooling must be installed in its owning package with an exact or bounded
+version requirement and an adjacent lockfile whose exact resolution satisfies that
+requirement before its gate can pass. Missing tooling is not a successful skip.
 
 During closeout, update maintained design sources and capability specifications,
 classify every temporary artifact, remove or deliberately promote it according to

@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO
 
-from _common import get, load_yaml_subset
+from _common import get, load_yaml_subset, version_satisfies
 
 from .engine import validate_handoff
 from .model import (
@@ -1039,7 +1039,10 @@ def _codex_version(executable: str) -> str:
         )
     except (OSError, subprocess.SubprocessError) as error:
         raise ExecutorError("could not execute the configured Codex CLI") from error
-    match = re.search(r"\b(\d+\.\d+\.\d+)\b", result.stdout)
+    match = re.search(
+        r"(?<![0-9A-Za-z.+-])(\d+\.\d+\.\d+)(?![0-9A-Za-z.+-])",
+        result.stdout,
+    )
     if result.returncode != 0 or match is None:
         raise ExecutorError("configured Codex CLI did not report a valid version")
     return match.group(1)
@@ -1077,9 +1080,12 @@ def validate_codex_runtime(config: ExecutorConfig) -> dict[str, str]:
     if cached is not None:
         return dict(cached)
     version = _codex_version(executable)
-    if config.codex_expected_version and version != config.codex_expected_version:
+    if config.codex_expected_version and not version_satisfies(
+        version, config.codex_expected_version
+    ):
         raise ExecutorError(
-            "configured Codex CLI version does not match codex_expected_version"
+            f"configured Codex CLI version {version} does not satisfy "
+            f"codex_expected_version {config.codex_expected_version!r}"
         )
     if not os.environ.get("CODEX_API_KEY", "").strip():
         try:

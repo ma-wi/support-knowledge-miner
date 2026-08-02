@@ -114,7 +114,7 @@ See `docs/architecture/overview.md` for the durable architecture description.
 - Project name: `Support Knowledge Miner`
 - Enabled stacks: `python, react, bash`
 - Python runtime: `3.13`
-- Node.js runtime: `26.5.0`
+- Node.js runtime: `>=26.4.0,<27.0.0`
 - UI quality workflow: enabled
 - Repository-native orchestration: enabled
 - User-facing error handling: enabled; frontend checks enabled

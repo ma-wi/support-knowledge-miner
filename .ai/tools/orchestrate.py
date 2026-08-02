@@ -24,7 +24,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from _common import get, load_yaml_subset  # noqa: E402
+from _common import get, load_yaml_subset, parse_version_requirement  # noqa: E402
 from orchestration.engine import (  # noqa: E402
     EngineError,
     advance,
@@ -237,10 +237,12 @@ def load_config() -> OrchestrationConfig:
                 "Codex executor_command must contain exactly one executable"
             )
         if not isinstance(expected_version, str) or (
-            expected_version
-            and re.fullmatch(r"\d+\.\d+\.\d+", expected_version) is None
+            expected_version and parse_version_requirement(expected_version) is None
         ):
-            raise ConfigError("codex_expected_version must be empty or exact")
+            raise ConfigError(
+                "codex_expected_version must be empty or an exact or bounded "
+                "numeric version requirement"
+            )
         if not isinstance(model, str) or len(model) > 128:
             raise ConfigError("codex_model must be a short string")
         if reasoning not in {"low", "medium", "high", "xhigh"}:

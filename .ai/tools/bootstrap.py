@@ -16,47 +16,65 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from _common import get, load_yaml_subset, runtime_versions  # noqa: E402
+from _common import (  # noqa: E402
+    DEFAULT_TOOL_REQUIREMENTS,
+    get,
+    load_yaml_subset,
+    npm_lock_versions,
+    npm_version_satisfies,
+    parse_runtime_requirement,
+    parse_version_requirement,
+    requirement_to_npm as requirement_to_npm,
+    runtime_satisfies,
+    runtime_versions,
+    select_exact_version,
+    tool_requirements,
+    version_satisfies,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 CONFIG = ROOT / ".ai" / "project.yaml"
 POLICY_PROFILE = ROOT / ".ai" / "policy-profile.yaml"
 
-# Pinned tool versions. These are intentionally exact for reproducible bootstraps.
-# When updating, bump every copy together and re-run template verification:
-#   - UV_VERSION here and `version:` in .github/workflows/ci.yml
-#   - PYTHON_DEV_DEPENDENCIES here and the pinned ruff/mypy/bandit in
+# Bounded compatibility requirements. Package managers still record exact
+# resolutions in manifests and lockfiles. When updating, bump every copy together:
+#   - UV_VERSION_REQUIREMENT here and `version:` in .github/workflows/ci.yml
+#   - PYTHON_DEV_DEPENDENCIES here and the resolved ruff/mypy/bandit versions in
 #     tools/verify.sh
-#   - VITE_VERSION / PNPM_VERSION / YARN_VERSION /
+#   - VITE_VERSION_REQUIREMENT / PNPM_VERSION_REQUIREMENT /
+#     YARN_VERSION_REQUIREMENT /
 #     REACT_QUALITY_DEPENDENCIES here
 #   - runtime pins in .ai/project.yaml
-# Verify each version resolves on its registry before committing the bump.
-UV_VERSION = "0.11.29"
-VITE_VERSION = "9.1.1"
-PNPM_VERSION = "11.15.0"
-YARN_VERSION = "4.17.1"
+# Verify every requirement resolves before committing the bump.
+UV_VERSION_REQUIREMENT = DEFAULT_TOOL_REQUIREMENTS["uv"]
+VITE_VERSION_REQUIREMENT = DEFAULT_TOOL_REQUIREMENTS["vite"]
+PNPM_VERSION_REQUIREMENT = DEFAULT_TOOL_REQUIREMENTS["pnpm"]
+YARN_VERSION_REQUIREMENT = DEFAULT_TOOL_REQUIREMENTS["yarn"]
+PNPM_VERSION_RESOLUTION = "11.15.0"
+YARN_VERSION_RESOLUTION = "4.17.1"
 REACT_TEMPLATE = "react-ts"
 SELF_REVIEW_RULES = ".aiassistant/review/self-review.md"
 PYTHON_DEV_DEPENDENCIES = (
-    "ruff==0.15.22",
-    "mypy==2.3.0",
-    "pytest==9.1.1",
-    "pytest-cov==7.1.0",
-    "bandit==1.9.4",
-    "pip-audit==2.10.1",
-    "build==1.5.0",
+    "ruff>=0.15.22,<0.16.0",
+    "mypy>=2.3.0,<3.0.0",
+    "pytest>=9.1.1,<10.0.0",
+    "pytest-cov>=7.1.0,<8.0.0",
+    "bandit>=1.9.4,<2.0.0",
+    "pip-audit>=2.10.1,<3.0.0",
+    "build>=1.5.0,<2.0.0",
 )
 REACT_QUALITY_DEPENDENCIES = (
-    "prettier@3.9.5",
-    "vitest@4.1.10",
-    "jsdom@29.1.1",
-    "@testing-library/react@16.3.2",
-    "@testing-library/jest-dom@6.9.1",
-    "@testing-library/user-event@14.6.1",
+    "prettier@>=3.9.5 <4.0.0",
+    "vitest@>=4.1.10 <5.0.0",
+    "jsdom@>=29.1.1 <30.0.0",
+    "@testing-library/react@>=16.3.2 <17.0.0",
+    "@testing-library/jest-dom@>=6.9.1 <7.0.0",
+    "@testing-library/user-event@>=14.6.1 <15.0.0",
 )
 CONFIG_SCHEMA = {
     "project": {"name": None},
     "runtimes": {"python": None, "node": None},
+    "tool_requirements": {"uv": None, "vite": None, "pnpm": None, "yarn": None},
     "stacks": {
         "python": {"enabled": None, "directory": None},
         "react": {"enabled": None, "directory": None, "package_manager": None},
@@ -154,6 +172,7 @@ def reject_unknown_keys(data: object, schema: object, path: str = "") -> None:
 def validate_config(data: dict) -> None:
     reject_unknown_keys(data, CONFIG_SCHEMA)
     runtime_versions(data)
+    tool_requirements(data)
     project_name = get(data, "project", "name", default="CHANGE_ME")
     if (
         not isinstance(project_name, str)
@@ -252,12 +271,11 @@ def validate_config(data: dict) -> None:
             data, "orchestration", "codex_expected_version", default=""
         )
         if not isinstance(expected_version, str) or (
-            expected_version
-            and re.fullmatch(r"\d+\.\d+\.\d+", expected_version) is None
+            expected_version and parse_version_requirement(expected_version) is None
         ):
             raise SystemExit(
                 "orchestration.codex_expected_version must be empty or an exact "
-                "numeric version"
+                "or bounded numeric version requirement"
             )
         model = get(data, "orchestration", "codex_model", default="")
         if not isinstance(model, str) or len(model) > 128:
@@ -917,6 +935,22 @@ def run_command(command: list[str], cwd: Path) -> None:
     subprocess.run(command, cwd=cwd, check=True)  # nosec B603
 
 
+def executable_version(executable: str, label: str) -> str:
+    result = subprocess.run(  # nosec B603
+        [executable, "--version"],
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    match = re.search(
+        r"(?<![0-9A-Za-z.+-])(\d+\.\d+\.\d+)(?![0-9A-Za-z.+-])",
+        result.stdout.strip(),
+    )
+    if match is None:
+        raise SystemExit(f"{label} did not report a numeric three-part version")
+    return match.group(1)
+
+
 def python_package_name(specification: str) -> str:
     return (
         re.split(r"[<>=!~;\[]", specification, maxsplit=1)[0]
@@ -934,6 +968,89 @@ def npm_package_name(specification: str) -> str:
             else specification
         )
     return specification.split("@", 1)[0]
+
+
+def npm_package_requirement(specification: str) -> str:
+    name = npm_package_name(specification)
+    marker = len(name) + 1
+    return specification[marker:] if len(specification) >= marker else ""
+
+
+def validate_python_lock_resolutions() -> None:
+    lock_path = ROOT / "uv.lock"
+    if not lock_path.is_file():
+        raise SystemExit("Python bootstrap did not create the exact uv.lock resolution")
+    lock = tomllib.loads(lock_path.read_text(encoding="utf-8"))
+    packages = lock.get("package", [])
+    versions: dict[str, set[str]] = {}
+    if isinstance(packages, list):
+        for package in packages:
+            if not isinstance(package, dict):
+                continue
+            name, version = package.get("name"), package.get("version")
+            if isinstance(name, str) and isinstance(version, str):
+                versions.setdefault(name.lower().replace("_", "-"), set()).add(version)
+    for specification in PYTHON_DEV_DEPENDENCIES:
+        name = python_package_name(specification)
+        requirement = specification[len(name) :]
+        resolved = sorted(
+            version
+            for version in versions.get(name, set())
+            if version_satisfies(version, requirement)
+        )
+        if not resolved:
+            raise SystemExit(
+                f"uv.lock has no exact {name} resolution satisfying {requirement!r}"
+            )
+        print(
+            f"[bootstrap] Resolved {name} {', '.join(resolved)} within "
+            f"requirement {requirement!r}"
+        )
+
+
+def validate_react_lock_resolutions(frontend: Path) -> None:
+    for specification in REACT_QUALITY_DEPENDENCIES:
+        name = npm_package_name(specification)
+        requirement = npm_package_requirement(specification)
+        resolved = sorted(
+            version
+            for version in npm_lock_versions(frontend, name, requirement)
+            if npm_version_satisfies(version, requirement)
+        )
+        if not resolved:
+            raise SystemExit(
+                f"React lockfile has no exact {name} resolution satisfying "
+                f"{requirement!r}"
+            )
+        print(
+            f"[bootstrap] Resolved {name} {', '.join(resolved)} within "
+            f"requirement {requirement!r}"
+        )
+
+
+def validate_existing_package_manager(
+    frontend: Path, manager: str, requirement: str | None
+) -> None:
+    package_json = frontend / "package.json"
+    if not package_json.is_file():
+        return
+    data = json.loads(package_json.read_text(encoding="utf-8"))
+    declared = data.get("packageManager")
+    if declared is None:
+        return
+    if not isinstance(declared, str):
+        raise SystemExit(f"packageManager must be a string: {package_json}")
+    match = re.fullmatch(r"([^@]+)@(\d+\.\d+\.\d+)(?:\+[^\s]+)?", declared)
+    if match is None or match.group(1) != manager:
+        raise SystemExit(
+            f"Existing packageManager {declared!r} conflicts with configured "
+            f"package manager {manager!r}"
+        )
+    if requirement is not None and not version_satisfies(match.group(2), requirement):
+        raise SystemExit(
+            f"Existing packageManager {declared!r} does not satisfy "
+            f"tool_requirements.{manager} {requirement!r}"
+        )
 
 
 def ensure_setuptools_package_discovery(pyproject: Path, package_path: str) -> None:
@@ -985,17 +1102,12 @@ def bootstrap_python(data: dict) -> None:
             "uv is required for the configured Python bootstrap but was not found on PATH"
         )
     # uv_path is resolved to an executable and no shell is used.
-    installed_uv_output = subprocess.run(  # nosec
-        [uv_path, "--version"],
-        text=True,
-        capture_output=True,
-        check=True,
-    ).stdout.strip()
-    installed_uv = installed_uv_output.removeprefix("uv ").split()[0]
-    if installed_uv != UV_VERSION:
+    installed_uv = executable_version(uv_path, "uv")
+    uv_requirement = tool_requirements(data)["uv"]
+    if not version_satisfies(installed_uv, uv_requirement):
         raise SystemExit(
-            f"This template requires uv {UV_VERSION}, but PATH provides {installed_uv}. "
-            "Install the required version before bootstrap."
+            f"This template requires uv {uv_requirement}, but PATH provides "
+            f"{installed_uv}. Install a compatible version before bootstrap."
         )
 
     pyproject = ROOT / "pyproject.toml"
@@ -1032,6 +1144,7 @@ def bootstrap_python(data: dict) -> None:
         run_command(["uv", "add", "--python", python_version, "--dev", *missing], ROOT)
     else:
         run_command(["uv", "sync", "--python", python_version], ROOT)
+    validate_python_lock_resolutions()
 
     if not package_target_existed:
         backend.mkdir(parents=True)
@@ -1099,7 +1212,9 @@ def package_manager_commands(
     )
 
 
-def configure_react_quality(frontend: Path, manager: str = "npm") -> None:
+def configure_react_quality(
+    frontend: Path, manager: str = "npm", manager_version: str = ""
+) -> None:
     package_json = frontend / "package.json"
     if not package_json.exists():
         raise SystemExit(f"React bootstrap did not create {package_json}")
@@ -1108,11 +1223,15 @@ def configure_react_quality(frontend: Path, manager: str = "npm") -> None:
     changed = False
     if manager == "pnpm":
         if "packageManager" not in data:
-            data["packageManager"] = f"pnpm@{PNPM_VERSION}"
+            data["packageManager"] = (
+                f"pnpm@{manager_version or PNPM_VERSION_RESOLUTION}"
+            )
             changed = True
     elif manager == "yarn":
         if "packageManager" not in data:
-            data["packageManager"] = f"yarn@{YARN_VERSION}"
+            data["packageManager"] = (
+                f"yarn@{manager_version or YARN_VERSION_RESOLUTION}"
+            )
             changed = True
     scripts = data.setdefault("scripts", {})
     if not isinstance(scripts, dict):
@@ -1175,7 +1294,8 @@ def bootstrap_react(data: dict) -> None:
 
     directory = str(get(data, "stacks", "react", "directory", default="frontend"))
     manager = str(get(data, "stacks", "react", "package_manager", default="npm"))
-    if not shutil.which(manager):
+    manager_path = shutil.which(manager)
+    if not manager_path:
         raise SystemExit(
             f"{manager} is required for the configured React bootstrap but was not found on PATH"
         )
@@ -1194,18 +1314,50 @@ def bootstrap_react(data: dict) -> None:
         .stdout.strip()
         .removeprefix("v")
     )
-    if installed_node != expected_node:
+    node_requirement = parse_runtime_requirement(expected_node, "node")
+    if node_requirement is None or not runtime_satisfies(
+        installed_node, "node", [node_requirement]
+    ):
         raise SystemExit(
-            f"Configured Node.js version in .ai/project.yaml is {expected_node}, "
-            f"but PATH provides {installed_node}. "
-            "Install the configured version before bootstrap."
+            f"Configured Node.js requirement in .ai/project.yaml is {expected_node}, "
+            f"but PATH provides {installed_node}. Install a compatible version "
+            "before bootstrap."
+        )
+
+    manager_version = ""
+    configured_tools = tool_requirements(data)
+    manager_requirement = {
+        "pnpm": configured_tools["pnpm"],
+        "yarn": configured_tools["yarn"],
+    }.get(manager)
+    if manager_requirement is not None:
+        manager_version = executable_version(manager_path, manager)
+        if not version_satisfies(manager_version, manager_requirement):
+            raise SystemExit(
+                f"This template requires {manager} {manager_requirement}, but PATH "
+                f"provides {manager_version}. Install a compatible version before "
+                "bootstrap."
+            )
+        print(
+            f"[bootstrap] Resolved {manager} executable {manager_version} within "
+            f"requirement {manager_requirement!r}"
         )
 
     frontend = validate_repository_path(directory, "stacks.react.directory")
     if frontend is None:
         raise SystemExit("stacks.react.directory must not be empty")
+    validate_existing_package_manager(frontend, manager, manager_requirement)
+    vite_resolution = select_exact_version(configured_tools["vite"])
+    if vite_resolution is None:
+        raise SystemExit(
+            "tool_requirements.vite needs an exact or inclusive-lower-bound "
+            "requirement so bootstrap can preview the exact scaffold resolution"
+        )
     create_cmd, install_cmd, add_dev_cmd = package_manager_commands(
-        manager, directory, REACT_TEMPLATE, VITE_VERSION
+        manager,
+        directory,
+        REACT_TEMPLATE,
+        vite_resolution,
     )
     created_frontend = False
     if not (frontend / "package.json").exists():
@@ -1229,7 +1381,8 @@ def bootstrap_react(data: dict) -> None:
     ]
     if missing:
         run_command([*add_dev_cmd, *missing], frontend)
-    configure_react_quality(frontend, manager)
+    validate_react_lock_resolutions(frontend)
+    configure_react_quality(frontend, manager, manager_version)
     if created_frontend:
         format_command = {
             "npm": ["npm", "run", "format"],
