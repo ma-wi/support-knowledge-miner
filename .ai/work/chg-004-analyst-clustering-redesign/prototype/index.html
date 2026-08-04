@@ -1,0 +1,1935 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Support Knowledge Miner — CHG-004 Mockup</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #eef2f7;
+        --surface: #ffffff;
+        --surface-soft: #f8fafc;
+        --text: #172033;
+        --muted: #64748b;
+        --line: #d8e0ea;
+        --primary: #2356d8;
+        --primary-soft: #e8efff;
+        --warning: #8a5a00;
+        --warning-bg: #fff4d6;
+        --danger: #9b1c1c;
+        --danger-bg: #ffe5e5;
+        --success: #146c43;
+        --success-bg: #dff7ea;
+        --shadow: 0 18px 45px rgba(15, 23, 42, 0.12);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+          "Segoe UI", sans-serif;
+      }
+
+      .app {
+        min-height: 100vh;
+        display: grid;
+        grid-template-columns: 260px 1fr;
+      }
+
+      aside {
+        background: #111827;
+        color: #e5e7eb;
+        padding: 28px 22px;
+      }
+
+      aside h1 {
+        margin: 0 0 6px;
+        font-size: 19px;
+      }
+
+      aside p {
+        margin: 0 0 28px;
+        color: #9ca3af;
+        line-height: 1.45;
+      }
+
+      .nav button,
+      .tabs button,
+      .segmented button,
+      .btn {
+        border: 0;
+        border-radius: 12px;
+        cursor: pointer;
+        font: inherit;
+      }
+
+      .nav button {
+        display: block;
+        width: 100%;
+        margin-bottom: 8px;
+        padding: 12px 14px;
+        background: transparent;
+        color: #cbd5e1;
+        text-align: left;
+      }
+
+      .nav button.active {
+        background: #263449;
+        color: #fff;
+      }
+
+      .project-subnav {
+        margin: 16px 0 24px;
+        padding-left: 12px;
+        border-left: 1px solid #334155;
+      }
+
+      .project-subnav p {
+        margin: 0 0 8px;
+        color: #94a3b8;
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+      }
+
+      .project-subnav button {
+        display: block;
+        width: 100%;
+        margin-bottom: 6px;
+        border: 0;
+        border-radius: 10px;
+        padding: 9px 10px;
+        background: transparent;
+        color: #cbd5e1;
+        cursor: pointer;
+        text-align: left;
+      }
+
+      .project-subnav button.active {
+        background: #1f2a3a;
+        color: #fff;
+      }
+
+      main {
+        padding: 28px;
+      }
+
+      .topbar {
+        display: flex;
+        justify-content: space-between;
+        gap: 16px;
+        align-items: flex-start;
+        margin-bottom: 18px;
+      }
+
+      .eyebrow {
+        margin: 0 0 6px;
+        color: var(--primary);
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      h2,
+      h3 {
+        margin: 0;
+      }
+
+      .hint {
+        color: var(--muted);
+        line-height: 1.45;
+      }
+
+      .tabs,
+      .segmented {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin: 18px 0;
+      }
+
+      .tabs button,
+      .segmented button {
+        padding: 10px 13px;
+        background: var(--surface);
+        color: var(--muted);
+        border: 1px solid var(--line);
+      }
+
+      .tabs button.active,
+      .segmented button.active {
+        background: var(--primary);
+        border-color: var(--primary);
+        color: #fff;
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: minmax(300px, 390px) 1fr;
+        gap: 18px;
+      }
+
+      .panel {
+        background: var(--surface);
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+        padding: 20px;
+      }
+
+      .stack > * + * {
+        margin-top: 14px;
+      }
+
+      label {
+        display: grid;
+        gap: 6px;
+        color: #334155;
+        font-weight: 650;
+      }
+
+      .inline-check {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .inline-check input {
+        width: auto;
+      }
+
+      .compact-field {
+        min-width: 150px;
+      }
+
+      input,
+      select,
+      textarea {
+        width: 100%;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 10px 12px;
+        color: var(--text);
+        font: inherit;
+        background: #fff;
+      }
+
+      textarea {
+        min-height: 72px;
+        resize: vertical;
+      }
+
+      .btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        padding: 10px 14px;
+        background: var(--primary);
+        color: #fff;
+        font-weight: 700;
+      }
+
+      .btn.secondary {
+        background: var(--surface-soft);
+        color: var(--primary);
+        border: 1px solid var(--line);
+      }
+
+      .btn.ghost {
+        background: transparent;
+        color: var(--muted);
+        border: 1px solid var(--line);
+      }
+
+      .btn:disabled {
+        cursor: not-allowed;
+        opacity: 0.55;
+      }
+
+      .status {
+        border-radius: 999px;
+        display: inline-flex;
+        align-items: center;
+        padding: 5px 9px;
+        font-size: 12px;
+        font-weight: 750;
+      }
+
+      .ok {
+        background: var(--success-bg);
+        color: var(--success);
+      }
+
+      .warn {
+        background: var(--warning-bg);
+        color: var(--warning);
+      }
+
+      .bad {
+        background: var(--danger-bg);
+        color: var(--danger);
+      }
+
+      .info {
+        background: var(--primary-soft);
+        color: var(--primary);
+      }
+
+      .cards {
+        display: grid;
+        gap: 12px;
+      }
+
+      .card {
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        padding: 14px;
+        background: var(--surface-soft);
+      }
+
+      .cluster-tree {
+        display: grid;
+        gap: 10px;
+      }
+
+      .tree-node {
+        border-left: 2px solid var(--line);
+        padding-left: 12px;
+      }
+
+      .tree-node summary {
+        cursor: pointer;
+        list-style-position: outside;
+        padding: 8px 0;
+      }
+
+      .tree-node summary strong {
+        margin-right: 8px;
+      }
+
+      .focused-node {
+        border-left-color: var(--primary);
+        scroll-margin-top: 24px;
+      }
+
+      .focused-node > article {
+        border-color: var(--primary);
+        box-shadow: 0 0 0 3px var(--primary-soft);
+      }
+
+      .card.focused-node {
+        border-color: var(--primary);
+        box-shadow: 0 0 0 3px var(--primary-soft);
+        scroll-margin-top: 24px;
+      }
+
+      .lineage-list {
+        margin: 0;
+        padding-left: 22px;
+      }
+
+      .lineage-list li + li {
+        margin-top: 8px;
+      }
+
+      .card-head,
+      .row-between {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 14px;
+      }
+
+      .meta {
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .metrics {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 12px;
+        margin-bottom: 16px;
+      }
+
+      .metric {
+        background: var(--surface);
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        padding: 14px;
+      }
+
+      .metric strong {
+        display: block;
+        font-size: 24px;
+      }
+
+      .progress {
+        width: 100%;
+        height: 10px;
+        overflow: hidden;
+        border-radius: 999px;
+        background: #e2e8f0;
+      }
+
+      .progress > span {
+        display: block;
+        height: 100%;
+        border-radius: inherit;
+        background: var(--primary);
+      }
+
+      .toolbar {
+        display: grid;
+        grid-template-columns: 1.4fr 1fr 1fr auto;
+        gap: 10px;
+        align-items: end;
+        margin-bottom: 14px;
+      }
+
+      table {
+        width: 100%;
+        border-collapse: separate;
+        border-spacing: 0;
+        overflow: hidden;
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        background: var(--surface);
+      }
+
+      th,
+      td {
+        padding: 12px;
+        border-bottom: 1px solid var(--line);
+        text-align: left;
+        vertical-align: top;
+      }
+
+      th {
+        background: #f1f5f9;
+        color: #334155;
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+      }
+
+      tr:last-child td {
+        border-bottom: 0;
+      }
+
+      .category-row td {
+        background: #e8efff;
+        color: #1d3f9f;
+        font-weight: 800;
+      }
+
+      .excluded td {
+        background: #fbfbfc;
+        color: #697386;
+      }
+
+      .question,
+      .answer {
+        min-width: 260px;
+        line-height: 1.4;
+      }
+
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+
+      .mock-section {
+        margin-top: 22px;
+      }
+
+      .settings-preview {
+        margin-top: 22px;
+      }
+
+      .dialog-backdrop {
+        position: fixed;
+        inset: 0;
+        z-index: 40;
+        display: grid;
+        place-items: center;
+        padding: 28px;
+        background: rgba(15, 23, 42, 0.52);
+      }
+
+      .dialog {
+        width: min(1040px, 96vw);
+        max-height: 86vh;
+        overflow: auto;
+        background: var(--surface);
+        border-radius: 22px;
+        box-shadow: var(--shadow);
+        padding: 22px;
+      }
+
+      .dialog table {
+        margin-top: 14px;
+      }
+
+      .dialog .textcell {
+        min-width: 280px;
+        max-width: 420px;
+        line-height: 1.45;
+      }
+
+      [hidden] {
+        display: none !important;
+      }
+
+      .toast-note {
+        position: fixed;
+        right: 24px;
+        bottom: 24px;
+        z-index: 30;
+        width: min(520px, calc(100vw - 48px));
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        padding: 12px 44px 12px 14px;
+        background: var(--primary-soft);
+        color: var(--primary);
+        box-shadow: var(--shadow);
+      }
+
+      .toast-note button {
+        position: absolute;
+        top: 8px;
+        right: 8px;
+        border: 0;
+        border-radius: 999px;
+        width: 26px;
+        height: 26px;
+        background: #fff;
+        color: var(--primary);
+        cursor: pointer;
+      }
+
+      @media (max-width: 980px) {
+        .app {
+          grid-template-columns: 1fr;
+        }
+
+        aside {
+          position: static;
+        }
+
+        .grid,
+        .metrics,
+        .toolbar {
+          grid-template-columns: 1fr;
+        }
+
+        .table-scroll {
+          overflow-x: auto;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="app">
+      <aside>
+        <h1>Support Knowledge Miner</h1>
+        <p>Lokale Analyse historischer Support-Paare</p>
+        <nav class="nav" aria-label="Hauptnavigation">
+          <button class="active" data-page-tab="project-list">Projekte</button>
+          <div class="project-subnav" aria-label="Projektliste">
+            <p>Projektliste</p>
+            <button data-page-tab="project-detail" data-project-name="Shop Support Q3">
+              Shop Support Q3
+            </button>
+            <button data-page-tab="project-detail" data-project-name="Retouren Analyse">
+              Retouren Analyse
+            </button>
+          </div>
+          <button data-page-tab="settings">Einstellungen</button>
+        </nav>
+      </aside>
+
+      <main>
+        <section class="stack" data-page-panel="project-list">
+          <header class="topbar">
+            <div>
+              <p class="eyebrow">Projekte</p>
+              <h2>Projektübersicht</h2>
+              <p class="hint">
+                Projekte sind lokale Arbeitsbereiche. Die Liste links zeigt die
+                Projekte als Unterpunkte; hier können Projekte angelegt, umbenannt,
+                geöffnet und gelöscht werden.
+              </p>
+            </div>
+            <span class="status ok">2 Projekte</span>
+          </header>
+
+          <section class="grid">
+            <form class="panel stack">
+              <p class="eyebrow">Neu</p>
+              <h3>Projekt anlegen</h3>
+              <label>
+                Projektname
+                <input value="Neue Support-Analyse" />
+              </label>
+              <button
+                class="btn"
+                type="button"
+                data-feedback="Projektanlage simuliert. Es wird kein Projekt gespeichert."
+              >
+                Projekt anlegen
+              </button>
+            </form>
+
+            <section class="panel stack">
+              <p class="eyebrow">Bestehende Projekte</p>
+              <h3>Öffnen, umbenennen, löschen</h3>
+              <div class="cards">
+                <article class="card">
+                  <div class="card-head">
+                    <strong>Shop Support Q3</strong>
+                  </div>
+                  <label>
+                    Name
+                    <input value="Shop Support Q3" data-auto-save-name />
+                  </label>
+                  <p class="meta">2 Imports · 3 Indizierungen · 5 Cluster-Sets</p>
+                  <div class="actions">
+                    <button class="btn secondary" type="button" data-open-project="Shop Support Q3">
+                      Öffnen
+                    </button>
+                    <button
+                      class="btn ghost"
+                      type="button"
+                      data-feedback="Projektlöschung simuliert. Im echten Tool wäre eine Bestätigung erforderlich."
+                    >
+                      Löschen
+                    </button>
+                  </div>
+                </article>
+                <article class="card">
+                  <div class="card-head">
+                    <strong>Retouren Analyse</strong>
+                  </div>
+                  <label>
+                    Name
+                    <input value="Retouren Analyse" data-auto-save-name />
+                  </label>
+                  <p class="meta">1 Import · 0 Indizierungen · 0 Cluster-Sets</p>
+                  <div class="actions">
+                    <button class="btn secondary" type="button" data-open-project="Retouren Analyse">
+                      Öffnen
+                    </button>
+                    <button
+                      class="btn ghost"
+                      type="button"
+                      data-feedback="Projektlöschung simuliert. Im echten Tool wäre eine Bestätigung erforderlich."
+                    >
+                      Löschen
+                    </button>
+                  </div>
+                </article>
+              </div>
+            </section>
+          </section>
+        </section>
+
+        <header class="topbar" data-page-panel="project-detail" hidden>
+          <div>
+            <p class="eyebrow">Projekt</p>
+            <h2><span id="current-project-name">Shop Support Q3</span> — Analyse</h2>
+            <p class="hint">
+              Mockup für CHG-004. Keine echten Daten, keine API-Verbindung.
+            </p>
+          </div>
+        </header>
+
+        <nav class="tabs" aria-label="Projekt-Tabs" data-page-panel="project-detail" hidden>
+          <button data-project-tab="import">Import</button>
+          <button class="active" data-project-tab="indexing">Indizieren</button>
+          <button data-project-tab="cluster-sets">Cluster-Sets</button>
+          <button data-project-tab="explorer">Explorer</button>
+          <button data-project-tab="delete">Projekt löschen</button>
+        </nav>
+        <div id="mock-feedback" class="toast-note" role="status" hidden>
+          <span>
+            Click-Dummy mit Fake-Daten. Buttons simulieren Navigation und Zustände;
+            es werden keine API-Aufrufe oder echten Aktionen ausgeführt.
+          </span>
+          <button type="button" aria-label="Hinweis schließen" data-close-feedback>
+            ×
+          </button>
+        </div>
+
+        <section
+          class="grid"
+          aria-label="Import"
+          data-page-panel="project-detail"
+          data-project-panel="import"
+          hidden
+        >
+          <section class="panel stack">
+            <p class="eyebrow">Import</p>
+            <h3>Datensatz importieren</h3>
+            <p class="hint">
+              Fake-Zustand: CSV/JSON mit `ticket_id`, `message_group_id`,
+              `message` und `answer`.
+            </p>
+            <label>
+              Datei
+              <input value="support_export_q3.csv · 48.231 gültige Paare" readonly />
+            </label>
+            <button class="btn" type="button" data-feedback="Import würde hier gestartet. Im Click-Dummy bleibt der Fake-Datensatz unverändert.">
+              Import simulieren
+            </button>
+          </section>
+          <section class="panel stack">
+            <p class="eyebrow">Importübersicht</p>
+            <h3>Imports</h3>
+            <div class="cards">
+              <article class="card">
+                <div class="card-head">
+                  <strong>Dataset v3</strong>
+                  <span class="status ok">bereit</span>
+                </div>
+                <label>
+                  Anzeigename
+                  <input value="Mein eigener Name" data-auto-save-name />
+                </label>
+                <p class="meta">
+                  48.231 gültige Paare · 17 übersprungene Zeilen · CSV ·
+                  genutzt von 2 Indizierungen und 4 Cluster-Sets
+                </p>
+                <div class="actions">
+                  <button
+                    class="btn ghost"
+                    type="button"
+                    data-feedback="Importlöschung simuliert. Indizierungen und Cluster-Sets bleiben im Zielmodell bestehen und zeigen danach „Datensatz gelöscht“."
+                  >
+                    Datensatz löschen
+                  </button>
+                </div>
+              </article>
+              <article class="card">
+                <div class="card-head">
+                  <strong>Altdaten Juli</strong>
+                  <span class="status bad">gelöscht</span>
+                </div>
+                <p class="meta">
+                  Datensatz gelöscht · zugehörige Indizierungen/Cluster-Sets bleiben
+                  für Export und Explorer erhalten.
+                </p>
+              </article>
+            </div>
+          </section>
+        </section>
+
+        <section
+          class="grid"
+          aria-label="Indizieren"
+          data-page-panel="project-detail"
+          data-project-panel="indexing"
+        >
+          <form class="panel stack">
+            <p class="eyebrow">Indizieren</p>
+            <h3>Neue Indizierung starten</h3>
+            <p class="hint">
+              Eine Indizierung erzeugt Embeddings. Cluster-Parameter werden hier
+              nicht mehr konfiguriert.
+            </p>
+            <label>
+              Dataset-Version
+              <select>
+                <option>Dataset v3 · 48.231 Paare · support_export_q3.csv</option>
+              </select>
+            </label>
+            <label>
+              Embedding-Provider
+              <select>
+                <option>Ollama lokal</option>
+                <option>vLLM lokal</option>
+                <option>OpenAI Cloud</option>
+              </select>
+            </label>
+            <label>
+              Embedding-Modell
+              <select>
+                <option>mxbai-embed-large:latest</option>
+                <option>nomic-embed-text:latest</option>
+              </select>
+            </label>
+            <button
+              class="btn"
+              type="button"
+              data-focus-target="indizierung-004-card"
+              data-feedback="Indizierung simuliert. Der laufende Job erscheint in der Indizierungsübersicht und wird fokussiert."
+            >
+              Indizierung starten
+            </button>
+          </form>
+
+          <section class="panel stack">
+            <div class="row-between">
+              <div>
+                <p class="eyebrow">Gespeicherte Indizierungen</p>
+                <h3>Mehrere Modelle vergleichbar</h3>
+              </div>
+              <span class="status info">4 Indizierungen</span>
+            </div>
+            <div class="cards">
+              <article class="card focused-node" id="indizierung-004-card" tabindex="-1">
+                <div class="card-head">
+                  <strong>indizierung-004</strong>
+                  <span class="status warn">läuft · 43 %</span>
+                </div>
+                <p class="meta">
+                  Fortschritt 43 % · nicht für Cluster-Sets nutzbar, bis der Status
+                  „fertig“ erreicht ist.
+                </p>
+                <div class="progress" aria-label="Indizierungsfortschritt">
+                  <span style="width: 43%"></span>
+                </div>
+                <div class="actions">
+                  <button class="btn secondary" type="button" disabled>
+                    Für Cluster-Set verwenden
+                  </button>
+                  <button
+                    class="btn ghost"
+                    type="button"
+                    data-feedback="Abbruch simuliert. Es würde kein ladbarer Index entstehen."
+                  >
+                    Abbrechen
+                  </button>
+                </div>
+              </article>
+              <article class="card">
+                <div class="card-head">
+                  <strong>indizierung-003</strong>
+                  <span class="status ok">fertig</span>
+                </div>
+                <p class="meta">
+                  Dataset v3 · Ollama/mxbai-embed-large · Kundenanfrage +
+                  Supportantwort · 96.462 Vektoren · 1024 Dimensionen
+                </p>
+                <button
+                  class="btn secondary"
+                  type="button"
+                  data-switch-to="cluster-sets"
+                >
+                  Für Cluster-Set verwenden
+                </button>
+                <button
+                  class="btn ghost"
+                  type="button"
+                  data-feedback="Indizierungslöschung simuliert. Bestehende Cluster-Sets bleiben erhalten und zeigen danach „Indizierung gelöscht“."
+                >
+                  Indizierung löschen
+                </button>
+              </article>
+              <article class="card">
+                <div class="card-head">
+                  <strong>indizierung-002</strong>
+                  <span class="status ok">fertig</span>
+                </div>
+                <p class="meta">
+                  Dataset v2 gelöscht · OpenAI/text-embedding-3-large ·
+                  Kundenanfrage + Supportantwort · 96.462 Vektoren
+                </p>
+                <span class="status warn">Datensatz gelöscht</span>
+                <div class="actions">
+                  <button
+                    class="btn secondary"
+                    type="button"
+                    data-switch-to="cluster-sets"
+                  >
+                    Für Cluster-Set verwenden
+                  </button>
+                  <button
+                    class="btn ghost"
+                    type="button"
+                    data-feedback="Indizierungslöschung simuliert. Bestehende Cluster-Sets bleiben erhalten und zeigen danach „Indizierung gelöscht“."
+                  >
+                    Indizierung löschen
+                  </button>
+                </div>
+              </article>
+              <article class="card">
+                <div class="card-head">
+                  <strong>indizierung-001</strong>
+                  <span class="status bad">fehlgeschlagen</span>
+                </div>
+                <p class="meta">
+                  Ollama/nomic-embed-text · Fehler: Modellkontext überschritten.
+                </p>
+                <button
+                  class="btn ghost"
+                  type="button"
+                  data-feedback="Fehlgeschlagene Indizierung würde gelöscht. Im Click-Dummy bleibt sie sichtbar."
+                >
+                  Indizierung löschen
+                </button>
+              </article>
+            </div>
+          </section>
+        </section>
+
+        <section
+          class="grid mock-section"
+          aria-label="Cluster-Sets"
+          data-page-panel="project-detail"
+          data-project-panel="cluster-sets"
+          hidden
+        >
+          <form class="panel stack">
+            <p class="eyebrow">Cluster-Sets</p>
+            <h3>Cluster-Set erzeugen</h3>
+            <label>
+              Basis-Indizierung
+              <select>
+                <option>indizierung-003 · mxbai-embed-large</option>
+              </select>
+            </label>
+            <label>
+              Quelle fürs Cluster-Set
+              <select>
+                <option>Gesamte Indizierung</option>
+                <option>2. Stufe: eingeschlossene Cluster aus cluster-set-005</option>
+                <option>2. Stufe: ausgewählte Quellen aus Explorer-Auswahl</option>
+              </select>
+            </label>
+            <label>
+              Vektorbasis fürs Clustering
+              <select data-vector-basis>
+                <option>Kundenanfragen</option>
+                <option>Supportantworten</option>
+                <option>Kundenanfragen + Supportantworten als Q/A-Paar</option>
+              </select>
+            </label>
+            <label data-combination-method hidden>
+              Kombinationsmethode
+              <select>
+                <option>Gewichtete Konkatenation · Anfrage 50 % / Antwort 50 %</option>
+                <option>Gewichtete Konkatenation · Anfrage 70 % / Antwort 30 %</option>
+                <option>Gewichtete Konkatenation · Anfrage 30 % / Antwort 70 %</option>
+              </select>
+            </label>
+            <label>
+              Algorithmus
+              <select>
+                <option>HDBSCAN</option>
+                <option>Agglomerative</option>
+              </select>
+            </label>
+            <label>
+              Minimale Clustergröße
+              <input value="80" />
+            </label>
+            <label>
+              LLM-Provider
+              <select>
+                <option>Ollama lokal</option>
+                <option>OpenAI Cloud</option>
+              </select>
+            </label>
+            <label>
+              LLM-Modell
+              <select>
+                <option>llama3.1:8b-instruct</option>
+                <option>gpt-4.1-mini</option>
+                <option>Kein LLM eingerichtet · technische Cluster anzeigen</option>
+              </select>
+            </label>
+            <label>
+              Zufällige Beispiele je Cluster
+              <input
+                type="text"
+                inputmode="numeric"
+                pattern="[1-9][0-9]*"
+                value="10"
+                data-positive-int
+              />
+            </label>
+            <label class="inline-check">
+              <input type="checkbox" data-toggle-samples-all />
+              Alle Beispiele verwenden
+            </label>
+            <button
+              class="btn"
+              type="button"
+              data-focus-target="cluster-set-008-node"
+              data-feedback="Cluster-Set-Erzeugung simuliert. Der laufende Job erscheint im Analysebaum, wird aufgeklappt und fokussiert."
+            >
+              Cluster-Set erzeugen
+            </button>
+          </form>
+
+          <section class="panel stack">
+            <div class="row-between">
+              <div>
+                <p class="eyebrow">Gespeicherte Cluster-Sets</p>
+                <h3>Laden, vergleichen, verfeinern</h3>
+              </div>
+              <span class="status info">4 Sets · 1 läuft</span>
+            </div>
+            <div class="cluster-tree" aria-label="Cluster-Set-Hierarchie">
+              <details class="tree-node" open>
+                <summary>
+                  <strong>cluster-set-005 · grob</strong>
+                  <span class="status ok">Root</span>
+                </summary>
+                <article class="card stack">
+                  <label>
+                    Name
+                    <input value="cluster-set-005 · grob" data-auto-save-name />
+                  </label>
+                  <p class="meta">
+                    Initiale Clusterung · Quelle: gesamte Indizierung · Basis:
+                    Kundenanfragen · HDBSCAN min_cluster_size=80 · 37 Cluster ·
+                    3 ausgeschlossen
+                  </p>
+                  <div class="actions">
+                    <button class="btn secondary" type="button" data-switch-to="explorer">
+                      Im Explorer laden
+                    </button>
+                    <button
+                      class="btn ghost"
+                      type="button"
+                      data-focus-target="cluster-set-008-node"
+                      data-feedback="Cluster-Verfeinerung simuliert. Im echten Tool würde ein neues Child-Cluster-Set mit Fortschritt entstehen."
+                    >
+                      Cluster verfeinern
+                    </button>
+                    <button
+                      class="btn ghost"
+                      type="button"
+                      data-feedback="Bearbeitungshistorie simuliert: Import → Indizierung → initiale Clusterung."
+                    >
+                      Historie anzeigen
+                    </button>
+                    <button
+                      class="btn ghost"
+                      type="button"
+                      data-feedback="Cluster-Set-Löschung simuliert. Da Children existieren, bliebe ein nicht-ladbarer Historienknoten im Analysebaum erhalten."
+                    >
+                      Cluster-Set löschen
+                    </button>
+                  </div>
+                </article>
+
+                <details class="tree-node" open>
+                  <summary>
+                    <strong>cluster-set-006 · Antworten fein</strong>
+                    <span class="status info">Verfeinerung von 005</span>
+                  </summary>
+                  <article class="card stack">
+                    <label>
+                      Name
+                      <input value="cluster-set-006 · Antworten fein" data-auto-save-name />
+                    </label>
+                    <p class="meta">
+                      Verfeinerung · Parent: cluster-set-005 · Quelle:
+                      eingeschlossene Cluster aus 005 · Basis: Supportantworten ·
+                      HDBSCAN min_cluster_size=25 · 22 Cluster
+                    </p>
+                    <div class="actions">
+                      <button class="btn secondary" type="button" data-switch-to="explorer">
+                        Im Explorer laden
+                      </button>
+                      <button
+                        class="btn ghost"
+                        type="button"
+                        data-feedback="Parent cluster-set-005 würde geladen."
+                      >
+                        Parent laden
+                      </button>
+                      <button
+                        class="btn ghost"
+                        type="button"
+                        data-focus-target="cluster-set-008-node"
+                        data-feedback="Cluster-Verfeinerung simuliert. Im echten Tool würde ein weiteres Child-Cluster-Set mit Fortschritt entstehen."
+                      >
+                        Cluster verfeinern
+                      </button>
+                      <button
+                        class="btn ghost"
+                        type="button"
+                        data-feedback="Bearbeitungshistorie simuliert: aus 005 verfeinert, Vektorbasis auf Supportantworten geändert."
+                      >
+                        Historie anzeigen
+                      </button>
+                      <button
+                        class="btn ghost"
+                        type="button"
+                        data-feedback="Cluster-Set-Löschung simuliert. cluster-set-006 bliebe als nicht-ladbarer Historienknoten für cluster-set-007 erhalten."
+                      >
+                        Cluster-Set löschen
+                      </button>
+                    </div>
+                  </article>
+
+                  <details class="tree-node">
+                    <summary>
+                      <strong>cluster-set-007 · ohne Ausreißer</strong>
+                      <span class="status warn">Verfeinerung von 006</span>
+                    </summary>
+                    <article class="card stack">
+                      <label>
+                        Name
+                        <input value="cluster-set-007 · ohne Ausreißer" data-auto-save-name />
+                      </label>
+                      <p class="meta">
+                        Ausreißer ausgeschlossen · Parent: cluster-set-006 ·
+                        Schwelle 0,22 · Methode: HDBSCAN-Ausreißer-Score ·
+                        19 Cluster · 318 Quellen als Ausreißer markiert
+                      </p>
+                      <div class="actions">
+                        <button class="btn secondary" type="button" data-switch-to="explorer">
+                          Im Explorer laden
+                        </button>
+                        <button
+                          class="btn ghost"
+                          type="button"
+                          data-feedback="Parent cluster-set-006 würde geladen."
+                        >
+                          Parent laden
+                        </button>
+                        <button
+                          class="btn ghost"
+                          type="button"
+                          data-focus-target="cluster-set-008-node"
+                          data-feedback="Cluster-Verfeinerung simuliert. Im echten Tool würde aus cluster-set-007 ein weiteres Child-Cluster-Set mit Fortschritt entstehen."
+                        >
+                          Cluster verfeinern
+                        </button>
+                        <button
+                          class="btn ghost"
+                          type="button"
+                          data-feedback="Bearbeitungshistorie simuliert: aus 006 per Ausreißer-Ausschluss erzeugt."
+                        >
+                          Historie anzeigen
+                        </button>
+                        <button
+                          class="btn ghost"
+                          type="button"
+                          data-feedback="Cluster-Set-Löschung simuliert. Im echten Tool wäre eine Bestätigung sinnvoll."
+                        >
+                          Cluster-Set löschen
+                        </button>
+                      </div>
+                    </article>
+                  </details>
+                  <details class="tree-node focused-node" id="cluster-set-008-node" open tabindex="-1">
+                    <summary>
+                      <strong>cluster-set-008 · Verfeinerung läuft</strong>
+                      <span class="status warn">Verfeinerung von 006 · 68 %</span>
+                    </summary>
+                    <article class="card stack">
+                      <p class="meta">
+                        Laufender Job · Quelle: eingeschlossene Cluster aus 006 ·
+                        Basis: Q/A-Paar 50/50 · Phase:
+                        LLM-Zusammenfassungen · nicht ladbar bis „fertig“.
+                      </p>
+                      <div class="progress" aria-label="Cluster-Verfeinerungsfortschritt">
+                        <span style="width: 68%"></span>
+                      </div>
+                      <div class="actions">
+                        <button class="btn secondary" type="button" disabled>
+                          Im Explorer laden
+                        </button>
+                        <button
+                          class="btn ghost"
+                          type="button"
+                          data-feedback="Abbruch simuliert. Das laufende Child-Cluster-Set würde abgebrochen und nicht ladbar."
+                        >
+                          Abbrechen
+                        </button>
+                      </div>
+                    </article>
+                  </details>
+                </details>
+              </details>
+            </div>
+          </section>
+        </section>
+
+        <section
+          class="mock-section"
+          aria-label="Explorer"
+          data-page-panel="project-detail"
+          data-project-panel="explorer"
+          hidden
+        >
+          <div class="metrics" aria-label="Cluster-Set Kennzahlen">
+            <div class="metric">
+              <span class="meta">Cluster-Set</span>
+              <strong>006</strong>
+              <span class="meta">Antworten fein · Verfeinerung von 005</span>
+            </div>
+            <div class="metric">
+              <span class="meta">Cluster</span>
+              <strong>22</strong>
+              <span class="meta">20 aktiv, 2 ausgeschlossen</span>
+            </div>
+            <div class="metric">
+              <span class="meta">Kundenanfragen</span>
+              <strong>12.418</strong>
+              <span class="meta">Quellen aus cluster-set-005</span>
+            </div>
+            <div class="metric">
+              <span class="meta">Vektorbasis</span>
+              <strong>Antworten</strong>
+              <span class="meta">2. Stufe</span>
+            </div>
+          </div>
+
+          <section class="panel stack" aria-label="Herkunft und Bearbeitung">
+            <div class="row-between">
+              <div>
+                <p class="eyebrow">Herkunft & Bearbeitung</p>
+                <h3>Analysepfad für cluster-set-006</h3>
+              </div>
+              <div class="actions">
+                <button
+                  class="btn secondary"
+                  type="button"
+                  data-feedback="Parent cluster-set-005 würde im Explorer geladen."
+                >
+                  Parent laden
+                </button>
+                <button
+                  class="btn ghost"
+                  type="button"
+                  data-switch-to="cluster-sets"
+                >
+                  Analysebaum anzeigen
+                </button>
+              </div>
+            </div>
+            <ol class="lineage-list">
+              <li>
+                <strong>Import Dataset v3</strong>
+                <span class="meta">48.231 Support-Paare · CSV</span>
+              </li>
+              <li>
+                <strong>indizierung-003</strong>
+                <span class="meta">Kundenanfrage- und Antwort-Embeddings · mxbai-embed-large</span>
+              </li>
+              <li>
+                <strong>cluster-set-005 · grob</strong>
+                <span class="meta">Initiale Clusterung nach Kundenanfragen · 3 Cluster ausgeschlossen</span>
+              </li>
+              <li>
+                <strong>cluster-set-006 · Antworten fein</strong>
+                <span class="meta">Verfeinerung aus eingeschlossenen Quellen · Vektorbasis Supportantworten</span>
+              </li>
+            </ol>
+          </section>
+
+          <section class="panel">
+            <div class="row-between">
+              <div>
+                <p class="eyebrow">Cluster Explorer</p>
+                <h3>Tabellarische Analyse</h3>
+                <p class="hint">
+                  Kategorien sind gruppiert. Irrelevante Cluster bleiben separat
+                  sichtbar und können wieder eingeschlossen werden.
+                </p>
+              </div>
+              <div class="actions">
+                <button
+                  class="btn"
+                  type="button"
+                  data-switch-to="cluster-sets"
+                  data-feedback="Verfeinerung simuliert: Im echten Tool würde das Cluster-Set-Formular mit Eltern-Set 005 und allen eingeschlossenen Clustern als Quelle vorbefüllt. Beim Start entsteht ein neues Child-Cluster-Set; das Eltern-Set bleibt unverändert."
+                >
+                  Eingeschlossene Cluster verfeinern
+                </button>
+              </div>
+            </div>
+
+            <div class="toolbar" aria-label="Suche und Filter">
+              <label>
+                Textsuche
+                <input value="lieferung paket" />
+              </label>
+              <label>
+                Suchfelder
+                <select>
+                  <option>Titel, Kategorie, Frage, Antwort</option>
+                  <option>Nur Titel und Kategorie</option>
+                  <option>Auch Ticket-/Message-IDs</option>
+                </select>
+              </label>
+              <label>
+                Kategorie
+                <select>
+                  <option>Alle aktiven Kategorien</option>
+                  <option>Lieferung</option>
+                  <option>Retoure/Widerruf</option>
+                </select>
+              </label>
+              <label>
+                Status
+                <select>
+                  <option>Aktiv</option>
+                  <option>Ausgeschlossen</option>
+                  <option>Alle</option>
+                </select>
+              </label>
+              <button
+                class="btn secondary"
+                type="button"
+                data-feedback="Suche und Filter simuliert. Das ändert nur die sichtbare Tabelle, nicht das Cluster-Ergebnis."
+              >
+                Suche/Filter anwenden
+              </button>
+            </div>
+
+            <p class="hint">
+              Suche und Filter ändern nur die Ansicht. Sie berechnen keine Cluster
+              neu und ändern keine gespeicherten Ergebnisse.
+            </p>
+
+            <section class="card stack" aria-label="Ausreißer ausschließen">
+              <div class="row-between">
+                <div>
+                  <p class="eyebrow">Ausreißer-Management</p>
+                  <h3>Ausreißer ausschließen</h3>
+                  <p class="hint">
+                    Ausreißer entfernen verändert das Analyseergebnis. Deshalb
+                    wird daraus ein neues Cluster-Set; das geladene Set bleibt
+                    unverändert.
+                  </p>
+                </div>
+              </div>
+              <div class="toolbar" aria-label="Ausreißer und Mismatch Berechnung">
+                <label>
+                  Ausreißer-Schwelle
+                  <input
+                    type="range"
+                    min="0"
+                    max="1"
+                    step="0.01"
+                    value="0.22"
+                  />
+                </label>
+                <label>
+                  Ausreißer-Methode
+                  <select>
+                    <option>Algorithmus-Signal + Membership-Threshold</option>
+                    <option>Nur HDBSCAN-Ausreißer-Score</option>
+                    <option>Distanz zum Clusterzentrum</option>
+                  </select>
+                </label>
+                <label>
+                  Antwort/Frage-Abgleich
+                  <select>
+                    <option>Mismatch-Hinweise anzeigen</option>
+                    <option>Nur starke Mismatches</option>
+                    <option>Aus</option>
+                  </select>
+                </label>
+                <label>
+                  Antwort-Untercluster
+                  <select>
+                    <option>Optional je Cluster erzeugen</option>
+                    <option>Immer anzeigen, wenn vorhanden</option>
+                    <option>Aus</option>
+                  </select>
+                </label>
+                <button
+                  class="btn"
+                  type="button"
+                  data-feedback="Ausreißer-Ausschluss simuliert. Im echten Tool würde ein neues Cluster-Set mit diesen Parametern entstehen."
+                >
+                  Ausreißer berechnen
+                </button>
+              </div>
+            </section>
+
+            <div class="table-scroll">
+              <table aria-label="Cluster Tabelle">
+                <thead>
+                  <tr>
+                    <th>Status</th>
+                    <th>Clustertitel</th>
+                    <th>Kategorie</th>
+                    <th>Zusammengefasste Frage</th>
+                    <th>Zusammengefasste Antwort</th>
+                    <th>Kunden</th>
+                    <th>Antworten</th>
+                    <th>Hinweise</th>
+                    <th>Aktionen</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr class="category-row">
+                    <td colspan="9">Kategorie: Lieferung</td>
+                  </tr>
+                  <tr>
+                    <td><span class="status ok">aktiv</span></td>
+                    <td><strong>Paket laut Tracking zugestellt, aber nicht erhalten</strong></td>
+                    <td>Lieferung</td>
+                    <td class="question">
+                      Kunden fragen, warum das Paket als zugestellt markiert ist,
+                      obwohl es nicht angekommen ist.
+                    </td>
+                    <td class="answer">
+                      Support prüft Zustellnachweis, bittet um Nachbarschaftsprüfung
+                      und startet bei Bedarf Nachforschung oder Ersatzlieferung.
+                    </td>
+                    <td>1.284</td>
+                    <td>1.284</td>
+                    <td><span class="status ok">stabil</span></td>
+                    <td>
+                      <div class="actions">
+                        <button class="btn secondary" type="button" data-open-dialog>
+                          Quellen anzeigen
+                        </button>
+                        <button
+                          class="btn ghost"
+                          type="button"
+                          data-feedback="Cluster wurde im Click-Dummy als ausgeschlossen simuliert. Im echten Tool bliebe er separat sichtbar."
+                        >
+                          Ausschließen
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td><span class="status ok">aktiv</span></td>
+                    <td><strong>Lieferadresse nach Bestellung ändern</strong></td>
+                    <td>Lieferung</td>
+                    <td class="question">
+                      Kunden möchten wissen, ob die Lieferadresse nachträglich
+                      geändert werden kann.
+                    </td>
+                    <td class="answer">
+                      Support erklärt, bis zu welchem Versandstatus eine Änderung
+                      möglich ist und verweist danach auf Paketdienstoptionen.
+                    </td>
+                    <td>742</td>
+                    <td>742</td>
+                    <td><span class="status warn">8 % Antwortvarianten</span></td>
+                    <td>
+                      <div class="actions">
+                        <button class="btn secondary" type="button" data-open-dialog>
+                          Quellen anzeigen
+                        </button>
+                        <button
+                          class="btn ghost"
+                          type="button"
+                          data-feedback="Cluster wurde im Click-Dummy als ausgeschlossen simuliert. Im echten Tool bliebe er separat sichtbar."
+                        >
+                          Ausschließen
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                  <tr class="category-row">
+                    <td colspan="9">Kategorie: Zahlung</td>
+                  </tr>
+                  <tr>
+                    <td><span class="status warn">prüfen</span></td>
+                    <td><strong>Rechnung trotz Zahlung offen</strong></td>
+                    <td>Zahlung</td>
+                    <td class="question">
+                      Kunden melden, dass eine bereits bezahlte Rechnung weiterhin
+                      als offen angezeigt wird.
+                    </td>
+                    <td class="answer">
+                      Support gleicht Zahlungseingang, Verwendungszweck und
+                      Buchungszeitpunkt ab und bittet ggf. um Zahlungsbeleg.
+                    </td>
+                    <td>533</td>
+                    <td>533</td>
+                    <td><span class="status warn">möglicher Frage/Antwort-Mismatch</span></td>
+                    <td>
+                      <div class="actions">
+                        <button class="btn secondary" type="button" data-open-dialog>
+                          Quellen anzeigen
+                        </button>
+                        <button
+                          class="btn ghost"
+                          type="button"
+                          data-feedback="Cluster wurde im Click-Dummy als ausgeschlossen simuliert. Im echten Tool bliebe er separat sichtbar."
+                        >
+                          Ausschließen
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                  <tr class="category-row">
+                    <td colspan="9">Ausgeschlossen: Retoure/Widerruf</td>
+                  </tr>
+                  <tr class="excluded">
+                    <td><span class="status bad">ausgeschlossen</span></td>
+                    <td><strong>Widerrufsfrist und Rücksendelabel</strong></td>
+                    <td>Retoure/Widerruf</td>
+                    <td class="question">
+                      Kunden fragen nach Fristen, Rücksendelabel und Erstattung.
+                    </td>
+                    <td class="answer">
+                      Support nennt Widerrufsfrist, Label-Prozess und
+                      Erstattungsdauer.
+                    </td>
+                    <td>2.903</td>
+                    <td>2.903</td>
+                    <td><span class="status bad">ausgeschlossen</span></td>
+                    <td>
+                      <button
+                        class="btn secondary"
+                        type="button"
+                        data-feedback="Cluster wurde im Click-Dummy wieder eingeschlossen. Im echten Tool würde die Explorer-Tabelle aktualisiert."
+                      >
+                        Wieder einschließen
+                      </button>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+
+          <section class="panel stack" aria-label="Export">
+            <div class="row-between">
+              <div>
+                <p class="eyebrow">Export</p>
+                <h3>Gefilterte Ansicht exportieren</h3>
+                <p class="hint">
+                  Exportiert wird der aktuell sichtbare Tabellenstand nach
+                  Suche, Filter und Gruppierung. Quellen aus dem Dialog werden
+                  nicht automatisch mit exportiert.
+                </p>
+              </div>
+            </div>
+            <div class="toolbar" aria-label="Export">
+              <label class="compact-field">
+                Format
+                <select>
+                  <option>CSV</option>
+                  <option>JSON</option>
+                </select>
+              </label>
+              <button
+                class="btn secondary"
+                type="button"
+                data-feedback="Explorer-Export simuliert. Exportiert würde der aktuelle Such-/Filterstand als CSV oder JSON."
+              >
+                Export starten
+              </button>
+            </div>
+          </section>
+        </section>
+
+        <section
+          class="grid mock-section"
+          aria-label="Projekt löschen"
+          data-page-panel="project-detail"
+          data-project-panel="delete"
+          hidden
+        >
+          <section class="panel stack">
+            <p class="eyebrow">Projekt löschen</p>
+            <h3>Destruktive Aktion</h3>
+            <p class="hint">
+              Fake-Zustand: Im echten Tool würde hier eine Bestätigung mit
+              Projektnamen verlangt. Der Click-Dummy löscht nichts.
+            </p>
+            <button
+              class="btn secondary"
+              type="button"
+              data-feedback="Löschen simuliert. Im Click-Dummy bleibt das Projekt erhalten."
+            >
+              Löschung simulieren
+            </button>
+          </section>
+        </section>
+
+        <section
+          class="panel settings-preview"
+          aria-label="Einstellungen Vorschau"
+          data-page-panel="settings"
+          hidden
+        >
+          <p class="eyebrow">Einstellungen</p>
+          <h3>Provider getrennt nach Zweck</h3>
+          <nav class="segmented" aria-label="Settings Tabs">
+            <button data-settings-tab="embedding">Embedding-Provider</button>
+            <button class="active" data-settings-tab="llm">LLM-Provider</button>
+            <button data-settings-tab="users">Benutzer</button>
+          </nav>
+          <div class="grid" data-settings-panel="embedding" hidden>
+            <div class="card">
+              <div class="card-head">
+                <strong>Ollama Embeddings lokal</strong>
+                <span class="status ok">aktiv</span>
+              </div>
+              <p class="meta">mxbai-embed-large · nomic-embed-text</p>
+              <button
+                class="btn secondary"
+                type="button"
+                data-feedback="Embedding-Modellabruf simuliert. Keine Verbindung wird aufgebaut."
+              >
+                Modelle abrufen
+              </button>
+            </div>
+            <div class="card">
+              <div class="card-head">
+                <strong>OpenAI Embeddings Cloud</strong>
+                <span class="status warn">Key gesetzt</span>
+              </div>
+              <p class="meta">Cloud-Nutzung wird pro Indizierung bestätigt.</p>
+            </div>
+          </div>
+          <div class="grid" data-settings-panel="llm">
+            <div class="card">
+              <div class="card-head">
+                <strong>Ollama LLM lokal</strong>
+                <span class="status ok">aktiv</span>
+              </div>
+              <p class="meta">Endpoint: http://localhost:11434 · Modelle: 4</p>
+              <button
+                class="btn secondary"
+                type="button"
+                data-feedback="LLM-Modellabruf simuliert. Keine Verbindung wird aufgebaut."
+              >
+                Modelle abrufen
+              </button>
+            </div>
+            <div class="card">
+              <div class="card-head">
+                <strong>OpenAI LLM Cloud</strong>
+                <span class="status warn">Key gesetzt</span>
+              </div>
+              <p class="meta">
+                Schlüssel wird nicht angezeigt. Cloud-Nutzung wird pro Aktion
+                bestätigt.
+              </p>
+              <button
+                class="btn secondary"
+                type="button"
+                data-feedback="Key-Ersetzung simuliert. Es wird kein Secret gespeichert."
+              >
+                Key ersetzen
+              </button>
+            </div>
+          </div>
+          <div class="grid" data-settings-panel="users" hidden>
+            <div class="card">
+              <div class="card-head">
+                <strong>Max Mustermann</strong>
+                <span class="status ok">angemeldet</span>
+              </div>
+              <p class="meta">max@example.local · lokale Benutzerverwaltung</p>
+            </div>
+            <div class="card">
+              <div class="card-head">
+                <strong>Neue Benutzeraktion</strong>
+                <span class="status info">Fake</span>
+              </div>
+              <button
+                class="btn secondary"
+                type="button"
+                data-feedback="Benutzeraktion simuliert. Keine Daten werden geändert."
+              >
+                Benutzer anlegen simulieren
+              </button>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <div
+      class="dialog-backdrop"
+      id="source-dialog"
+      aria-hidden="true"
+      hidden
+    >
+      <section
+        class="dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="dialog-title"
+      >
+        <div class="row-between">
+          <div>
+            <p class="eyebrow">Quellen</p>
+            <h2 id="dialog-title">
+              Paket laut Tracking zugestellt, aber nicht erhalten
+            </h2>
+            <p class="hint">
+              Echte Kundenanfragen und Supportantworten für diesen Cluster.
+            </p>
+          </div>
+          <button class="btn ghost" type="button" data-close-dialog>
+            Dialog schließen
+          </button>
+        </div>
+        <table aria-label="Cluster Quellen">
+          <thead>
+            <tr>
+              <th>Ticket</th>
+              <th>Message Group</th>
+              <th>Kundenanfrage</th>
+              <th>Supportantwort</th>
+              <th>Score</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>879132</td>
+              <td>msg-01</td>
+              <td class="textcell">
+                Laut Sendungsverfolgung wurde mein Paket gestern zugestellt, ich
+                habe aber nichts erhalten. Was soll ich tun?
+              </td>
+              <td class="textcell">
+                Bitte prüfen Sie zunächst Ablageort und Nachbarn. Wir starten
+                parallel eine Nachforschung beim Versanddienstleister.
+              </td>
+              <td>0,94</td>
+            </tr>
+            <tr>
+              <td>879188</td>
+              <td>msg-03</td>
+              <td class="textcell">
+                DHL sagt zugestellt, aber bei mir ist nichts angekommen und im
+                Briefkasten lag keine Karte.
+              </td>
+              <td class="textcell">
+                Wir prüfen den Zustellnachweis und melden uns mit dem Ergebnis.
+                Falls nötig veranlassen wir Ersatz oder Erstattung.
+              </td>
+              <td>0,91</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+    </div>
+    <script>
+      (() => {
+        const feedback = document.querySelector("#mock-feedback");
+        const feedbackText = feedback?.querySelector("span");
+        const dialog = document.querySelector("#source-dialog");
+        const currentProjectName = document.querySelector("#current-project-name");
+        let lastDialogTrigger = null;
+        let feedbackTimer = null;
+
+        const setFeedback = (message) => {
+          if (!feedback) return;
+          if (feedbackText) feedbackText.textContent = message;
+          feedback.hidden = false;
+          if (feedbackTimer !== null) window.clearTimeout(feedbackTimer);
+          feedbackTimer = window.setTimeout(() => {
+            feedback.hidden = true;
+          }, 4200);
+        };
+
+        const setPage = (page) => {
+          document.querySelectorAll("[data-page-tab]").forEach((button) => {
+            const isProjectButton =
+              button.dataset.pageTab === "project-detail" &&
+              button.dataset.projectName;
+            const isCurrentProject =
+              isProjectButton &&
+              page === "project-detail" &&
+              button.dataset.projectName === currentProjectName?.textContent;
+            button.classList.toggle(
+              "active",
+              isProjectButton ? isCurrentProject : button.dataset.pageTab === page,
+            );
+          });
+          document.querySelectorAll("[data-page-panel]").forEach((panel) => {
+            panel.hidden = panel.dataset.pagePanel !== page;
+          });
+          if (page === "project-detail") {
+            setProjectTab(
+              document.querySelector("[data-project-tab].active")?.dataset
+                .projectTab || "indexing",
+              false,
+            );
+          } else if (page === "project-list") {
+            setFeedback("Projektübersicht geöffnet.");
+          }
+        };
+
+        const setProjectTab = (tab, switchPage = true) => {
+          if (switchPage) setPage("project-detail");
+          document.querySelectorAll("[data-project-tab]").forEach((button) => {
+            button.classList.toggle("active", button.dataset.projectTab === tab);
+          });
+          document.querySelectorAll("[data-project-panel]").forEach((panel) => {
+            panel.hidden = panel.dataset.projectPanel !== tab;
+          });
+          setFeedback(`Fake-Navigation: Projekt-Tab „${tab}“ geöffnet.`);
+        };
+
+        const setSettingsTab = (tab) => {
+          document.querySelectorAll("[data-settings-tab]").forEach((button) => {
+            button.classList.toggle("active", button.dataset.settingsTab === tab);
+          });
+          document.querySelectorAll("[data-settings-panel]").forEach((panel) => {
+            panel.hidden = panel.dataset.settingsPanel !== tab;
+          });
+        };
+
+        const openDialog = (trigger) => {
+          lastDialogTrigger = trigger;
+          dialog.hidden = false;
+          dialog.setAttribute("aria-hidden", "false");
+          dialog.querySelector("[data-close-dialog]")?.focus();
+        };
+
+        const closeDialog = () => {
+          dialog.hidden = true;
+          dialog.setAttribute("aria-hidden", "true");
+          lastDialogTrigger?.focus();
+        };
+
+        document.querySelectorAll("[data-page-tab]").forEach((button) => {
+          button.addEventListener("click", () => {
+            if (button.dataset.projectName && currentProjectName) {
+              currentProjectName.textContent = button.dataset.projectName;
+            }
+            setPage(button.dataset.pageTab);
+          });
+        });
+
+        document.querySelectorAll("[data-open-project]").forEach((button) => {
+          button.addEventListener("click", () => {
+            if (currentProjectName) {
+              currentProjectName.textContent = button.dataset.openProject;
+            }
+            setPage("project-detail");
+            setProjectTab("indexing", false);
+            setFeedback(`Projekt „${button.dataset.openProject}“ geöffnet.`);
+          });
+        });
+
+        document.querySelectorAll("[data-project-tab]").forEach((button) => {
+          button.addEventListener("click", () => {
+            setProjectTab(button.dataset.projectTab);
+          });
+        });
+
+        document.querySelectorAll("[data-settings-tab]").forEach((button) => {
+          button.addEventListener("click", () => {
+            setSettingsTab(button.dataset.settingsTab);
+          });
+        });
+
+        document.querySelectorAll("[data-switch-to]").forEach((button) => {
+          button.addEventListener("click", () => {
+            setProjectTab(button.dataset.switchTo);
+          });
+        });
+
+        document.querySelectorAll("[data-feedback]").forEach((button) => {
+          button.addEventListener("click", () => {
+            setFeedback(button.dataset.feedback);
+          });
+        });
+
+        document.querySelectorAll("[data-focus-target]").forEach((button) => {
+          button.addEventListener("click", () => {
+            const target = document.querySelector(`#${button.dataset.focusTarget}`);
+            if (!target) return;
+            target.hidden = false;
+            let parent = target.parentElement?.closest("details");
+            while (parent) {
+              parent.open = true;
+              parent = parent.parentElement?.closest("details");
+            }
+            if (target instanceof HTMLDetailsElement) target.open = true;
+            target.scrollIntoView({ behavior: "smooth", block: "center" });
+            target.focus({ preventScroll: true });
+          });
+        });
+
+        feedback
+          ?.querySelector("[data-close-feedback]")
+          ?.addEventListener("click", () => {
+            feedback.hidden = true;
+            if (feedbackTimer !== null) window.clearTimeout(feedbackTimer);
+          });
+
+        document.querySelectorAll("[data-toggle-samples-all]").forEach((checkbox) => {
+          checkbox.addEventListener("change", () => {
+            const input = checkbox
+              .closest("form")
+              ?.querySelector("[data-positive-int]");
+            if (input) input.disabled = checkbox.checked;
+            setFeedback(
+              checkbox.checked
+                ? "Alle Beispiele je Cluster aktiviert; das Zahlfeld ist deaktiviert."
+                : "Feste zufällige Beispielanzahl je Cluster aktiviert.",
+            );
+          });
+        });
+
+        document.querySelectorAll("[data-positive-int]").forEach((input) => {
+          input.addEventListener("input", () => {
+            const cleaned = input.value.replace(/\D+/g, "").replace(/^0+(?=\d)/, "");
+            input.value = cleaned === "0" ? "1" : cleaned;
+          });
+          input.addEventListener("blur", () => {
+            if (input.value === "") input.value = "1";
+          });
+        });
+
+        document.querySelectorAll("[data-auto-save-name]").forEach((input) => {
+          input.addEventListener("change", () => {
+            setFeedback("Namensänderung automatisch gespeichert (simuliert).");
+          });
+        });
+
+        document.querySelectorAll("[data-vector-basis]").forEach((select) => {
+          const combination = select.closest("form")?.querySelector("[data-combination-method]");
+          const syncCombinationVisibility = () => {
+            if (!combination) return;
+            combination.hidden = !select.value.includes("Q/A-Paar");
+          };
+          select.addEventListener("change", syncCombinationVisibility);
+          syncCombinationVisibility();
+        });
+
+        document.querySelectorAll("[data-open-dialog]").forEach((button) => {
+          button.addEventListener("click", () => openDialog(button));
+        });
+
+        dialog.addEventListener("click", (event) => {
+          if (event.target === dialog) closeDialog();
+        });
+        dialog
+          .querySelector("[data-close-dialog]")
+          ?.addEventListener("click", closeDialog);
+
+        document.addEventListener("keydown", (event) => {
+          if (event.key === "Escape" && !dialog.hidden) {
+            closeDialog();
+          }
+        });
+
+        document.querySelectorAll("form").forEach((form) => {
+          form.addEventListener("submit", (event) => event.preventDefault());
+        });
+
+        setPage("project-list");
+        setSettingsTab("llm");
+      })();
+    </script>
+  </body>
+</html>

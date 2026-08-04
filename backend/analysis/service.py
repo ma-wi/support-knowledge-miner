@@ -1,9 +1,9 @@
-"""Analysis-run orchestration and bounded provider embedding persistence."""
+"""Profile-free indexing orchestration and bounded embedding persistence."""
 
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 import logging
 import math
@@ -19,7 +19,16 @@ from backend.config import DatabaseSettings
 from backend.db.connection import open_database_connection
 from backend.providers import ProviderError, ProviderService
 
-RUN_STATUSES = {"queued", "running", "completed", "failed", "cancelled"}
+INDEXING_STATUSES = {
+    "queued",
+    "running",
+    "cancelling",
+    "completed",
+    "failed",
+    "cancelled",
+}
+TERMINAL_INDEXING_STATUSES = {"completed", "failed", "cancelled"}
+SUPPORTED_EMBEDDING_PROVIDERS = {"openai", "ollama", "vllm"}
 EMBEDDING_BATCH_SIZE = 64
 MAX_EMBEDDING_CHUNK_BYTES = 1024
 RUN_START_PROGRESS = 5
@@ -28,11 +37,44 @@ LOGGER = logging.getLogger(__name__)
 
 
 class AnalysisError(ValueError):
-    """Raised when analysis-run input or state is invalid."""
+    """Raised when indexing input or state is invalid."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str = "UNEXPECTED_ERROR",
+        status_code: int = 400,
+        retryable: bool = True,
+        suggested_action: str = "retry",
+        field_errors: dict[str, str] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.status_code = status_code
+        self.retryable = retryable
+        self.suggested_action = suggested_action
+        self.field_errors = field_errors or {}
+
+
+IndexingError = AnalysisError
 
 
 class AnalysisQueueFull(AnalysisError):
-    """Raised when bounded local analysis capacity is exhausted."""
+    """Raised when bounded local indexing capacity is exhausted."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(
+            message,
+            code="UNEXPECTED_ERROR",
+            status_code=503,
+            retryable=True,
+            suggested_action="retry",
+        )
+
+
+class IndexingCancelled(Exception):
+    """Internal control-flow exception for cooperative cancellation."""
 
 
 class LocalBackgroundJobRunner:
@@ -45,7 +87,7 @@ class LocalBackgroundJobRunner:
         self._workers = [
             Thread(
                 target=self._work,
-                name=f"skm-analysis-worker-{index + 1}",
+                name=f"skm-indexing-worker-{index + 1}",
                 daemon=True,
             )
             for index in range(worker_count)
@@ -58,7 +100,7 @@ class LocalBackgroundJobRunner:
             self._queue.put_nowait(task)
         except Full as exc:
             raise AnalysisQueueFull(
-                "local analysis capacity is exhausted; retry later"
+                "local indexing capacity is exhausted; retry later"
             ) from exc
 
     def _work(self) -> None:
@@ -70,7 +112,7 @@ class LocalBackgroundJobRunner:
                 # AnalysisService persists safe run failures. Keep the fixed worker
                 # alive if an unexpected task implementation still escapes.
                 LOGGER.error(
-                    "analysis background task failed unexpectedly: %s",
+                    "indexing background task failed unexpectedly: %s",
                     exc.__class__.__name__,
                 )
             finally:
@@ -78,28 +120,34 @@ class LocalBackgroundJobRunner:
 
 
 @dataclass(frozen=True)
-class AnalysisRunInput:
+class IndexingRunInput:
     dataset_version_id: UUID
-    analysis_profile_id: UUID
-    parameters: dict[str, Any]
+    provider: str
+    model: str
+    parameters: dict[str, Any] = field(default_factory=dict)
+    cloud_use_confirmed: bool = False
 
 
 @dataclass(frozen=True)
-class AnalysisRun:
+class IndexingRun:
     id: UUID
     project_id: UUID
     dataset_version_id: UUID
-    analysis_profile_id: UUID
+    dataset_display_name: str | None
+    dataset_deleted_at: datetime | None
     status: str
     progress: int
-    profile_snapshot: dict[str, Any]
+    phase: str
     provider: str
     model: str
     parameters: dict[str, Any]
+    error_code: str | None
     error_message: str | None
     diagnostics: dict[str, Any]
     started_at: datetime | None
     completed_at: datetime | None
+    cancel_requested_at: datetime | None
+    deleted_at: datetime | None
     created_at: datetime
     updated_at: datetime
 
@@ -108,9 +156,8 @@ class AnalysisRun:
 class EmbeddingRecord:
     id: UUID
     project_id: UUID
-    analysis_run_id: UUID
+    indexing_run_id: UUID
     dataset_version_id: UUID
-    analysis_profile_id: UUID
     source_object_type: str
     source_object_id: UUID
     text_variant: str
@@ -120,35 +167,77 @@ class EmbeddingRecord:
     created_at: datetime
 
 
+# Transitional aliases keep internal imports stable while the active API contract
+# has moved to IndexingRun naming.
+AnalysisRunInput = IndexingRunInput
+AnalysisRun = IndexingRun
+
+
 def _object(value: dict[str, Any], field: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise AnalysisError(f"{field} must be an object")
     return value
 
 
-def _run_from_row(row: dict[str, object]) -> AnalysisRun:
-    profile_snapshot = row["profile_snapshot"]
+def _provider(provider: str) -> str:
+    cleaned = provider.strip().lower()
+    if cleaned not in SUPPORTED_EMBEDDING_PROVIDERS:
+        raise AnalysisError(
+            "provider must be openai, ollama, or vllm",
+            code="INDEXING_MODEL_UNAVAILABLE",
+            status_code=422,
+            suggested_action="correct-input",
+            field_errors={"provider": "provider must be openai, ollama, or vllm"},
+        )
+    return cleaned
+
+
+def _model(model: str) -> str:
+    cleaned = model.strip()
+    if not cleaned:
+        raise AnalysisError(
+            "model must not be empty",
+            code="INDEXING_MODEL_UNAVAILABLE",
+            status_code=422,
+            suggested_action="correct-input",
+            field_errors={"model": "model must not be empty"},
+        )
+    return cleaned
+
+
+def _run_from_row(row: dict[str, object]) -> IndexingRun:
     parameters = row["parameters"]
     diagnostics = row["diagnostics"]
-    return AnalysisRun(
+    dataset_deleted_at = row.get("dataset_deleted_at")
+    return IndexingRun(
         id=UUID(str(row["id"])),
         project_id=UUID(str(row["project_id"])),
         dataset_version_id=UUID(str(row["dataset_version_id"])),
-        analysis_profile_id=UUID(str(row["analysis_profile_id"])),
+        dataset_display_name=(
+            str(row["dataset_display_name"])
+            if row.get("dataset_display_name") is not None
+            else None
+        ),
+        dataset_deleted_at=(
+            dataset_deleted_at  # type: ignore[assignment]
+            if isinstance(dataset_deleted_at, datetime)
+            else None
+        ),
         status=str(row["status"]),
         progress=int(str(row["progress"])),
-        profile_snapshot=(
-            dict(profile_snapshot) if isinstance(profile_snapshot, dict) else {}
-        ),
+        phase=str(row["phase"]),
         provider=str(row["provider"]),
         model=str(row["model"]),
         parameters=dict(parameters) if isinstance(parameters, dict) else {},
+        error_code=str(row["error_code"]) if row["error_code"] is not None else None,
         error_message=(
             str(row["error_message"]) if row["error_message"] is not None else None
         ),
         diagnostics=dict(diagnostics) if isinstance(diagnostics, dict) else {},
         started_at=row["started_at"],  # type: ignore[arg-type]
         completed_at=row["completed_at"],  # type: ignore[arg-type]
+        cancel_requested_at=row["cancel_requested_at"],  # type: ignore[arg-type]
+        deleted_at=row["deleted_at"],  # type: ignore[arg-type]
         created_at=row["created_at"],  # type: ignore[arg-type]
         updated_at=row["updated_at"],  # type: ignore[arg-type]
     )
@@ -159,9 +248,8 @@ def _embedding_from_row(row: dict[str, object]) -> EmbeddingRecord:
     return EmbeddingRecord(
         id=UUID(str(row["id"])),
         project_id=UUID(str(row["project_id"])),
-        analysis_run_id=UUID(str(row["analysis_run_id"])),
+        indexing_run_id=UUID(str(row["indexing_run_id"])),
         dataset_version_id=UUID(str(row["dataset_version_id"])),
-        analysis_profile_id=UUID(str(row["analysis_profile_id"])),
         source_object_type=str(row["source_object_type"]),
         source_object_id=UUID(str(row["source_object_id"])),
         text_variant=str(row["text_variant"]),
@@ -170,12 +258,6 @@ def _embedding_from_row(row: dict[str, object]) -> EmbeddingRecord:
         metadata=dict(metadata) if isinstance(metadata, dict) else {},
         created_at=row["created_at"],  # type: ignore[arg-type]
     )
-
-
-def _datetime_iso(value: object, field: str) -> str:
-    if not isinstance(value, datetime):
-        raise AnalysisError(f"{field} must be a datetime")
-    return value.isoformat()
 
 
 def _vector_literal(vector: list[float]) -> str:
@@ -331,12 +413,22 @@ def _provider_batch_count(messages: list[str]) -> int:
     return (chunk_count + EMBEDDING_BATCH_SIZE - 1) // EMBEDDING_BATCH_SIZE
 
 
-def _safe_run_error(exc: Exception) -> str:
-    if isinstance(exc, (AnalysisError, ProviderError)):
+def _safe_run_failure(exc: Exception) -> tuple[str, str]:
+    if isinstance(exc, AnalysisError):
+        message = str(exc).strip()
+        return exc.code, (message[:500] if message else exc.__class__.__name__)
+    if isinstance(exc, ProviderError):
         message = str(exc).strip()
         if message:
-            return message[:500]
-    return exc.__class__.__name__
+            code = (
+                "INDEXING_MODEL_UNAVAILABLE"
+                if "model" in message.casefold()
+                or "api key" in message.casefold()
+                or "provider" in message.casefold()
+                else "UNEXPECTED_ERROR"
+            )
+            return code, message[:500]
+    return "UNEXPECTED_ERROR", exc.__class__.__name__
 
 
 class AnalysisService:
@@ -355,87 +447,92 @@ class AnalysisService:
     def start_run(
         self,
         project_id: UUID,
-        payload: AnalysisRunInput,
+        payload: IndexingRunInput,
         *,
         actor_user_id: UUID,
-    ) -> AnalysisRun:
+    ) -> IndexingRun:
         parameters = _object(payload.parameters, "parameters")
-        if "mode" in parameters:
-            raise AnalysisError("parameters.mode is no longer supported")
+        if parameters:
+            raise AnalysisError(
+                "indexing runs no longer accept profile, run mode, or algorithm parameters",
+                code="INDEXING_MODEL_UNAVAILABLE",
+                status_code=422,
+                suggested_action="correct-input",
+                field_errors={
+                    "parameters": (
+                        "indexing runs no longer accept profile, run mode, "
+                        "or algorithm parameters"
+                    )
+                },
+            )
+        provider = _provider(payload.provider)
+        model = _model(payload.model)
         run_id = uuid4()
         with open_database_connection(self._settings) as connection:
             with connection.transaction():
                 dataset = connection.execute(
                     """
-                    SELECT id, record_count
+                    SELECT id, record_count, display_name, deleted_at
                     FROM dataset_versions
                     WHERE id = %s AND project_id = %s
                     """,
                     (payload.dataset_version_id, project_id),
                 ).fetchone()
-                if dataset is None:
+                if dataset is None or dataset["deleted_at"] is not None:
                     raise AnalysisError("dataset version not found")
 
-                profile = connection.execute(
-                    """
-                    SELECT id, name, provider, model, is_cloud_provider,
-                           thresholds, algorithm_settings, prompt_template,
-                           created_at, updated_at
-                    FROM analysis_profiles
-                    WHERE id = %s AND project_id = %s
-                    """,
-                    (payload.analysis_profile_id, project_id),
-                ).fetchone()
-                if profile is None:
-                    raise AnalysisError("analysis profile not found")
-                if (
-                    bool(profile["is_cloud_provider"])
-                    and parameters.get("cloud_use_confirmed") is not True
-                ):
+                self._require_configured_embedding_model(connection, provider, model)
+                if provider == "openai" and payload.cloud_use_confirmed is not True:
                     raise AnalysisError(
-                        "cloud_use_confirmed must be true for OpenAI analysis runs"
+                        "OpenAI indexing requires explicit cloud confirmation",
+                        code="INDEXING_CLOUD_CONFIRMATION_REQUIRED",
+                        status_code=422,
+                        suggested_action="correct-input",
+                        field_errors={
+                            "cloud_use_confirmed": "OpenAI cloud confirmation is required"
+                        },
                     )
 
-                snapshot = self._profile_snapshot(dict(profile))
                 row = connection.execute(
                     """
                     INSERT INTO analysis_runs (
-                        id, project_id, dataset_version_id, analysis_profile_id,
-                        status, progress, profile_snapshot, provider, model,
-                        parameters, created_by_user_id
+                        id, project_id, dataset_version_id, status, progress,
+                        phase, provider, model, parameters, created_by_user_id
                     )
-                    VALUES (%s, %s, %s, %s, 'queued', 0, %s, %s, %s, %s, %s)
-                    RETURNING id, project_id, dataset_version_id, analysis_profile_id,
-                              status, progress, profile_snapshot, provider, model,
-                              parameters, error_message, diagnostics, started_at,
-                              completed_at, created_at, updated_at
+                    VALUES (%s, %s, %s, 'queued', 0, 'queued', %s, %s, %s, %s)
+                    RETURNING id, project_id, dataset_version_id,
+                              %s::text AS dataset_display_name,
+                              NULL::timestamptz AS dataset_deleted_at,
+                              status, progress, phase, provider, model,
+                              parameters, error_code, error_message,
+                              diagnostics, started_at, completed_at,
+                              cancel_requested_at, deleted_at, created_at,
+                              updated_at
                     """,
                     (
                         run_id,
                         project_id,
                         payload.dataset_version_id,
-                        payload.analysis_profile_id,
-                        Jsonb(snapshot),
-                        snapshot["provider"],
-                        snapshot["model"],
+                        provider,
+                        model,
                         Jsonb(parameters),
                         actor_user_id,
+                        dataset["display_name"],
                     ),
                 ).fetchone()
                 if row is None:
-                    raise RuntimeError("analysis run insert returned no row")
+                    raise RuntimeError("indexing run insert returned no row")
                 self._audit.record_event(
                     connection,
                     actor_user_id=actor_user_id,
-                    action="analysis_run.start",
-                    target_type="analysis_run",
+                    action="indexing_run.start",
+                    target_type="indexing_run",
                     target_id=run_id,
                     metadata={
                         "project_id": str(project_id),
                         "dataset_version_id": str(payload.dataset_version_id),
-                        "analysis_profile_id": str(payload.analysis_profile_id),
-                        "provider": snapshot["provider"],
-                        "model": snapshot["model"],
+                        "provider": provider,
+                        "model": model,
                     },
                 )
         return _run_from_row(dict(row))
@@ -450,10 +547,12 @@ class AnalysisService:
                         """
                         UPDATE analysis_runs
                         SET status = 'failed',
+                            phase = 'failed',
+                            error_code = 'UNEXPECTED_ERROR',
                             error_message = 'AnalysisQueueFull',
                             completed_at = now(), updated_at = now(),
                             diagnostics = %s
-                        WHERE id = %s AND status = 'queued'
+                        WHERE id = %s AND status = 'queued' AND deleted_at IS NULL
                         """,
                         (
                             Jsonb({"failure_type": "AnalysisQueueFull"}),
@@ -462,32 +561,42 @@ class AnalysisService:
                     )
             raise
 
-    def list_runs(self, project_id: UUID) -> list[AnalysisRun]:
+    def list_runs(self, project_id: UUID) -> list[IndexingRun]:
         with open_database_connection(self._settings) as connection:
             rows = connection.execute(
                 """
-                SELECT id, project_id, dataset_version_id, analysis_profile_id,
-                       status, progress, profile_snapshot, provider, model,
-                       parameters, error_message, diagnostics, started_at,
-                       completed_at, created_at, updated_at
-                FROM analysis_runs
-                WHERE project_id = %s
-                ORDER BY created_at DESC
+                SELECT r.id, r.project_id, r.dataset_version_id,
+                       d.display_name AS dataset_display_name,
+                       d.deleted_at AS dataset_deleted_at,
+                       r.status, r.progress, r.phase, r.provider, r.model,
+                       r.parameters, r.error_code, r.error_message, r.diagnostics,
+                       r.started_at, r.completed_at, r.cancel_requested_at,
+                       r.deleted_at, r.created_at, r.updated_at
+                FROM analysis_runs r
+                JOIN dataset_versions d
+                  ON d.id = r.dataset_version_id AND d.project_id = r.project_id
+                WHERE r.project_id = %s AND r.deleted_at IS NULL
+                ORDER BY r.created_at DESC
                 """,
                 (project_id,),
             ).fetchall()
         return [_run_from_row(dict(row)) for row in rows]
 
-    def get_run(self, project_id: UUID, run_id: UUID) -> AnalysisRun | None:
+    def get_run(self, project_id: UUID, run_id: UUID) -> IndexingRun | None:
         with open_database_connection(self._settings) as connection:
             row = connection.execute(
                 """
-                SELECT id, project_id, dataset_version_id, analysis_profile_id,
-                       status, progress, profile_snapshot, provider, model,
-                       parameters, error_message, diagnostics, started_at,
-                       completed_at, created_at, updated_at
-                FROM analysis_runs
-                WHERE id = %s AND project_id = %s
+                SELECT r.id, r.project_id, r.dataset_version_id,
+                       d.display_name AS dataset_display_name,
+                       d.deleted_at AS dataset_deleted_at,
+                       r.status, r.progress, r.phase, r.provider, r.model,
+                       r.parameters, r.error_code, r.error_message, r.diagnostics,
+                       r.started_at, r.completed_at, r.cancel_requested_at,
+                       r.deleted_at, r.created_at, r.updated_at
+                FROM analysis_runs r
+                JOIN dataset_versions d
+                  ON d.id = r.dataset_version_id AND d.project_id = r.project_id
+                WHERE r.id = %s AND r.project_id = %s AND r.deleted_at IS NULL
                 """,
                 (run_id, project_id),
             ).fetchone()
@@ -497,16 +606,120 @@ class AnalysisService:
         with open_database_connection(self._settings) as connection:
             rows = connection.execute(
                 """
-                SELECT id, project_id, analysis_run_id, dataset_version_id,
-                       analysis_profile_id, source_object_type, source_object_id,
+                SELECT id, project_id, analysis_run_id AS indexing_run_id,
+                       dataset_version_id, source_object_type, source_object_id,
                        text_variant, model, dimensions, metadata, created_at
                 FROM embeddings
                 WHERE project_id = %s AND analysis_run_id = %s
-                ORDER BY created_at ASC, text_variant ASC
+                ORDER BY source_object_id ASC, text_variant ASC, created_at ASC
                 """,
                 (project_id, run_id),
             ).fetchall()
         return [_embedding_from_row(dict(row)) for row in rows]
+
+    def cancel_run(
+        self, project_id: UUID, run_id: UUID, *, actor_user_id: UUID
+    ) -> IndexingRun:
+        with open_database_connection(self._settings) as connection:
+            with connection.transaction():
+                current = connection.execute(
+                    """
+                    SELECT status
+                    FROM analysis_runs
+                    WHERE id = %s AND project_id = %s AND deleted_at IS NULL
+                    """,
+                    (run_id, project_id),
+                ).fetchone()
+                if current is None:
+                    raise AnalysisError("indexing run not found", status_code=404)
+                status_value = str(current["status"])
+                if status_value in TERMINAL_INDEXING_STATUSES:
+                    raise AnalysisError(
+                        "indexing run can no longer be cancelled",
+                        code="INDEXING_CANCEL_NOT_AVAILABLE",
+                        status_code=409,
+                        suggested_action="reload",
+                    )
+                next_status = "cancelled" if status_value == "queued" else "cancelling"
+                row = connection.execute(
+                    """
+                    UPDATE analysis_runs
+                    SET status = %s,
+                        phase = %s,
+                        cancel_requested_at = COALESCE(cancel_requested_at, now()),
+                        completed_at = CASE
+                            WHEN %s = 'cancelled' THEN COALESCE(completed_at, now())
+                            ELSE completed_at
+                        END,
+                        updated_at = now()
+                    WHERE id = %s AND project_id = %s AND deleted_at IS NULL
+                    RETURNING id, project_id, dataset_version_id,
+                              NULL::text AS dataset_display_name,
+                              NULL::timestamptz AS dataset_deleted_at,
+                              status, progress, phase, provider, model,
+                              parameters, error_code, error_message,
+                              diagnostics, started_at, completed_at,
+                              cancel_requested_at, deleted_at, created_at,
+                              updated_at
+                    """,
+                    (
+                        next_status,
+                        "cancelled" if next_status == "cancelled" else "cancelling",
+                        next_status,
+                        run_id,
+                        project_id,
+                    ),
+                ).fetchone()
+                if row is None:
+                    raise RuntimeError("indexing cancel update returned no row")
+                self._audit.record_event(
+                    connection,
+                    actor_user_id=actor_user_id,
+                    action="indexing_run.cancel",
+                    target_type="indexing_run",
+                    target_id=run_id,
+                    metadata={"project_id": str(project_id), "status": next_status},
+                )
+        fresh = self.get_run(project_id, run_id)
+        return fresh if fresh is not None else _run_from_row(dict(row))
+
+    def delete_run(
+        self, project_id: UUID, run_id: UUID, *, actor_user_id: UUID
+    ) -> None:
+        with open_database_connection(self._settings) as connection:
+            with connection.transaction():
+                row = connection.execute(
+                    """
+                    UPDATE analysis_runs
+                    SET deleted_at = now(),
+                        deleted_by_user_id = %s,
+                        status = CASE
+                            WHEN status IN ('queued', 'running', 'cancelling')
+                            THEN 'cancelled'
+                            ELSE status
+                        END,
+                        phase = 'deleted',
+                        completed_at = CASE
+                            WHEN status IN ('queued', 'running', 'cancelling')
+                            THEN COALESCE(completed_at, now())
+                            ELSE completed_at
+                        END,
+                        updated_at = now()
+                    WHERE id = %s AND project_id = %s AND deleted_at IS NULL
+                    RETURNING id
+                    """,
+                    (actor_user_id, run_id, project_id),
+                ).fetchone()
+                if row is None:
+                    raise AnalysisError("indexing run not found", status_code=404)
+                self._audit.record_event(
+                    connection,
+                    actor_user_id=actor_user_id,
+                    action="indexing_run.delete",
+                    target_type="indexing_run",
+                    target_id=run_id,
+                    metadata={"project_id": str(project_id)},
+                )
 
     def execute_queued_run(self, run_id: UUID) -> None:
         with open_database_connection(self._settings) as connection:
@@ -514,11 +727,10 @@ class AnalysisService:
                 run_row = connection.execute(
                     """
                     UPDATE analysis_runs
-                    SET status = 'running', progress = %s, started_at = now(),
-                        updated_at = now()
-                    WHERE id = %s AND status = 'queued'
-                    RETURNING id, project_id, dataset_version_id,
-                              analysis_profile_id, provider, model
+                    SET status = 'running', progress = %s, phase = 'embedding',
+                        started_at = now(), updated_at = now()
+                    WHERE id = %s AND status = 'queued' AND deleted_at IS NULL
+                    RETURNING id, project_id, dataset_version_id, provider, model
                     """,
                     (RUN_START_PROGRESS, run_id),
                 ).fetchone()
@@ -526,19 +738,20 @@ class AnalysisService:
                     return
         try:
             embeddings_written = 0
+            variant_embedding_counts = {"message": 0, "answer": 0}
             chunks_embedded = 0
-            chunked_messages = 0
+            chunked_texts = 0
             dimensions: int | None = None
             confirmed_provider_batches = 0
             with open_database_connection(self._settings) as connection:
                 with connection.transaction():
                     total_provider_batches = 0
                     with connection.cursor(
-                        name=f"analysis_count_{run_id.hex}"
+                        name=f"indexing_count_{run_id.hex}"
                     ) as count_cursor:
                         count_cursor.execute(
                             """
-                            SELECT message
+                            SELECT message, answer
                             FROM message_pairs
                             WHERE project_id = %s AND dataset_version_id = %s
                             ORDER BY ordinal ASC
@@ -554,9 +767,12 @@ class AnalysisService:
                             total_provider_batches += _provider_batch_count(
                                 [str(pair["message"]) for pair in count_pairs]
                             )
+                            total_provider_batches += _provider_batch_count(
+                                [str(pair["answer"]) for pair in count_pairs]
+                            )
                     if total_provider_batches < 1:
                         raise AnalysisError(
-                            "analysis dataset does not contain any messages"
+                            "indexing dataset does not contain any support pairs"
                         )
 
                     def publish_confirmed_provider_batch() -> None:
@@ -574,11 +790,11 @@ class AnalysisService:
                         self._publish_run_progress(run_id, progress)
 
                     with connection.cursor(
-                        name=f"analysis_embed_{run_id.hex}"
+                        name=f"indexing_embed_{run_id.hex}"
                     ) as cursor:
                         cursor.execute(
                             """
-                            SELECT id, ordinal, message
+                            SELECT id, ordinal, message, answer
                             FROM message_pairs
                             WHERE project_id = %s AND dataset_version_id = %s
                             ORDER BY ordinal ASC
@@ -586,72 +802,82 @@ class AnalysisService:
                             (run_row["project_id"], run_row["dataset_version_id"]),
                         )
                         while pairs := cursor.fetchmany(EMBEDDING_BATCH_SIZE):
-                            embedded_messages = _message_embeddings(
-                                self._provider_service,
-                                str(run_row["provider"]),
-                                str(run_row["model"]),
-                                [str(pair["message"]) for pair in pairs],
-                                on_provider_batch_confirmed=(
-                                    publish_confirmed_provider_batch
-                                ),
-                            )
-                            for pair, embedded in zip(
-                                pairs, embedded_messages, strict=True
-                            ):
-                                vector, chunk_count, source_bytes, pooling = embedded
-                                if dimensions is None:
-                                    dimensions = len(vector)
-                                elif len(vector) != dimensions:
-                                    raise AnalysisError(
-                                        "provider returned inconsistent embedding "
-                                        "dimensions"
-                                    )
-                                connection.execute(
-                                    """
-                                    INSERT INTO embeddings (
-                                        id, project_id, analysis_run_id,
-                                        dataset_version_id, analysis_profile_id,
-                                        source_object_type, source_object_id,
-                                        text_variant, model, dimensions, embedding,
-                                        metadata
-                                    )
-                                    VALUES (
-                                        %s, %s, %s, %s, %s, 'message_pair', %s,
-                                        'message', %s, %s, %s::vector, %s
-                                    )
-                                    """,
-                                    (
-                                        uuid4(),
-                                        run_row["project_id"],
-                                        run_id,
-                                        run_row["dataset_version_id"],
-                                        run_row["analysis_profile_id"],
-                                        pair["id"],
-                                        run_row["model"],
-                                        len(vector),
-                                        _vector_literal(vector),
-                                        Jsonb(
-                                            {
-                                                "provider": str(run_row["provider"]),
-                                                "source_ordinal": pair["ordinal"],
-                                                "source_chunk_count": chunk_count,
-                                                "source_bytes": source_bytes,
-                                                "pooling": pooling,
-                                            }
-                                        ),
+                            self._raise_if_cancelled(connection, run_id)
+                            by_variant = {
+                                "message": _message_embeddings(
+                                    self._provider_service,
+                                    str(run_row["provider"]),
+                                    str(run_row["model"]),
+                                    [str(pair["message"]) for pair in pairs],
+                                    on_provider_batch_confirmed=(
+                                        publish_confirmed_provider_batch
                                     ),
-                                )
-                                embeddings_written += 1
-                                chunks_embedded += chunk_count
-                                if chunk_count > 1:
-                                    chunked_messages += 1
+                                ),
+                                "answer": _message_embeddings(
+                                    self._provider_service,
+                                    str(run_row["provider"]),
+                                    str(run_row["model"]),
+                                    [str(pair["answer"]) for pair in pairs],
+                                    on_provider_batch_confirmed=(
+                                        publish_confirmed_provider_batch
+                                    ),
+                                ),
+                            }
+                            self._raise_if_cancelled(connection, run_id)
+                            for text_variant in ("message", "answer"):
+                                for pair, embedded in zip(
+                                    pairs, by_variant[text_variant], strict=True
+                                ):
+                                    vector, chunk_count, source_bytes, pooling = (
+                                        embedded
+                                    )
+                                    if dimensions is None:
+                                        dimensions = len(vector)
+                                    elif len(vector) != dimensions:
+                                        raise AnalysisError(
+                                            "provider returned inconsistent embedding "
+                                            "dimensions"
+                                        )
+                                    self._insert_embedding(
+                                        connection,
+                                        project_id=UUID(str(run_row["project_id"])),
+                                        run_id=run_id,
+                                        dataset_version_id=UUID(
+                                            str(run_row["dataset_version_id"])
+                                        ),
+                                        pair_id=pair["id"],
+                                        source_ordinal=pair["ordinal"],
+                                        text_variant=text_variant,
+                                        provider=str(run_row["provider"]),
+                                        model=str(run_row["model"]),
+                                        vector=vector,
+                                        chunk_count=chunk_count,
+                                        source_bytes=source_bytes,
+                                        pooling=pooling,
+                                    )
+                                    embeddings_written += 1
+                                    variant_embedding_counts[text_variant] += 1
+                                    chunks_embedded += chunk_count
+                                    if chunk_count > 1:
+                                        chunked_texts += 1
                     connection.execute(
                         """
                         UPDATE analysis_runs
-                        SET status = 'completed', progress = 100,
+                        SET status = CASE
+                                WHEN status = 'cancelling' THEN 'cancelled'
+                                ELSE 'completed'
+                            END,
+                            progress = CASE
+                                WHEN status = 'cancelling' THEN progress
+                                ELSE 100
+                            END,
+                            phase = CASE
+                                WHEN status = 'cancelling' THEN 'cancelled'
+                                ELSE 'completed'
+                            END,
                             completed_at = now(), updated_at = now(),
-                            diagnostics = %s
-                        WHERE id = %s
+                            diagnostics = diagnostics || %s
+                        WHERE id = %s AND status IN ('running', 'cancelling')
                         """,
                         (
                             Jsonb(
@@ -659,28 +885,54 @@ class AnalysisService:
                                     "provider": str(run_row["provider"]),
                                     "model": str(run_row["model"]),
                                     "dimensions": dimensions,
-                                    "message_embeddings": embeddings_written,
+                                    "message_embeddings": variant_embedding_counts[
+                                        "message"
+                                    ],
+                                    "answer_embeddings": variant_embedding_counts[
+                                        "answer"
+                                    ],
                                     "embeddings_written": embeddings_written,
                                     "chunks_embedded": chunks_embedded,
-                                    "chunked_messages": chunked_messages,
+                                    "chunked_texts": chunked_texts,
                                 }
                             ),
                             run_id,
                         ),
                     )
+        except IndexingCancelled:
+            with open_database_connection(self._settings) as connection:
+                with connection.transaction():
+                    connection.execute(
+                        """
+                        UPDATE analysis_runs
+                        SET status = 'cancelled',
+                            phase = 'cancelled',
+                            completed_at = now(),
+                            updated_at = now(),
+                            diagnostics = diagnostics || %s
+                        WHERE id = %s AND status IN ('running', 'cancelling')
+                        """,
+                        (Jsonb({"cancelled": True}), run_id),
+                    )
         except Exception as exc:
+            code, message = _safe_run_failure(exc)
             with open_database_connection(self._settings) as connection:
                 with connection.transaction():
                     connection.execute(
                         """
                         UPDATE analysis_runs
                         SET status = 'failed',
-                            error_message = %s, completed_at = now(),
-                            updated_at = now(), diagnostics = %s
-                        WHERE id = %s
+                            phase = 'failed',
+                            error_code = %s,
+                            error_message = %s,
+                            completed_at = now(),
+                            updated_at = now(),
+                            diagnostics = %s
+                        WHERE id = %s AND deleted_at IS NULL
                         """,
                         (
-                            _safe_run_error(exc),
+                            code,
+                            message,
                             Jsonb(
                                 {
                                     "provider": str(run_row["provider"]),
@@ -704,24 +956,110 @@ class AnalysisService:
                     (progress, run_id, progress),
                 )
 
-    def _profile_snapshot(self, profile: dict[str, object]) -> dict[str, Any]:
-        thresholds = profile["thresholds"]
-        algorithm_settings = profile["algorithm_settings"]
-        return {
-            "id": str(profile["id"]),
-            "name": str(profile["name"]),
-            "provider": str(profile["provider"]),
-            "model": str(profile["model"]),
-            "is_cloud_provider": bool(profile["is_cloud_provider"]),
-            "thresholds": dict(thresholds) if isinstance(thresholds, dict) else {},
-            "algorithm_settings": (
-                dict(algorithm_settings) if isinstance(algorithm_settings, dict) else {}
+    def _raise_if_cancelled(self, connection: Any, run_id: UUID) -> None:
+        row = connection.execute(
+            """
+            SELECT status
+            FROM analysis_runs
+            WHERE id = %s
+            """,
+            (run_id,),
+        ).fetchone()
+        if row is not None and row["status"] in {"cancelling", "cancelled"}:
+            raise IndexingCancelled()
+
+    def _insert_embedding(
+        self,
+        connection: Any,
+        *,
+        project_id: UUID,
+        run_id: UUID,
+        dataset_version_id: UUID,
+        pair_id: object,
+        source_ordinal: object,
+        text_variant: str,
+        provider: str,
+        model: str,
+        vector: list[float],
+        chunk_count: int,
+        source_bytes: int,
+        pooling: str,
+    ) -> None:
+        connection.execute(
+            """
+            INSERT INTO embeddings (
+                id, project_id, analysis_run_id, dataset_version_id,
+                source_object_type, source_object_id, text_variant, model,
+                dimensions, embedding, metadata
+            )
+            VALUES (
+                %s, %s, %s, %s, 'message_pair', %s, %s, %s, %s, %s::vector, %s
+            )
+            """,
+            (
+                uuid4(),
+                project_id,
+                run_id,
+                dataset_version_id,
+                pair_id,
+                text_variant,
+                model,
+                len(vector),
+                _vector_literal(vector),
+                Jsonb(
+                    {
+                        "provider": provider,
+                        "source_ordinal": source_ordinal,
+                        "source_chunk_count": chunk_count,
+                        "source_bytes": source_bytes,
+                        "pooling": pooling,
+                    }
+                ),
             ),
-            "prompt_template": (
-                str(profile["prompt_template"])
-                if profile["prompt_template"] is not None
-                else None
-            ),
-            "created_at": _datetime_iso(profile["created_at"], "created_at"),
-            "updated_at": _datetime_iso(profile["updated_at"], "updated_at"),
-        }
+        )
+
+    def _require_configured_embedding_model(
+        self, connection: Any, provider: str, model: str
+    ) -> None:
+        row = connection.execute(
+            """
+            SELECT manual_models, api_key_secret, endpoint_url
+            FROM provider_configurations
+            WHERE provider = %s
+            """,
+            (provider,),
+        ).fetchone()
+        if row is None:
+            raise AnalysisError(
+                "embedding provider is not configured",
+                code="INDEXING_MODEL_UNAVAILABLE",
+                status_code=422,
+                suggested_action="correct-input",
+                field_errors={"provider": "embedding provider is not configured"},
+            )
+        models = row["manual_models"]
+        manual_models = list(models) if isinstance(models, list) else []
+        if model not in manual_models:
+            raise AnalysisError(
+                "selected embedding model is not configured",
+                code="INDEXING_MODEL_UNAVAILABLE",
+                status_code=422,
+                suggested_action="correct-input",
+                field_errors={"model": "selected embedding model is not configured"},
+            )
+        if provider == "openai" and row["api_key_secret"] is None:
+            raise AnalysisError(
+                "OpenAI API key is not configured",
+                code="INDEXING_MODEL_UNAVAILABLE",
+                status_code=422,
+                suggested_action="correct-input",
+                field_errors={"provider": "OpenAI API key is not configured"},
+            )
+        if provider in {"ollama", "vllm"} and row["endpoint_url"] is None:
+            raise AnalysisError(
+                f"{provider} endpoint_url is required",
+                code="INDEXING_MODEL_UNAVAILABLE",
+                status_code=422,
+                suggested_action="correct-input",
+                field_errors={"provider": f"{provider} endpoint_url is required"},
+            )

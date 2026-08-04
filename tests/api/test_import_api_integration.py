@@ -90,6 +90,8 @@ class FakeImportService:
             valid_records=1,
             skipped_records=1,
             dataset_version_id=DATASET_ID,
+            dataset_display_name="fixture.csv",
+            dataset_deleted_at=None,
             started_at=NOW,
             completed_at=NOW,
         )
@@ -101,6 +103,8 @@ class FakeImportService:
             record_count=1,
             source_type="csv",
             source_name="fixture.csv",
+            display_name="fixture.csv",
+            deleted_at=None,
             created_at=NOW,
         )
         return ImportResult(
@@ -129,6 +133,8 @@ class FakeImportService:
                 valid_records=0,
                 skipped_records=1,
                 dataset_version_id=None,
+                dataset_display_name=None,
+                dataset_deleted_at=None,
                 started_at=NOW,
                 completed_at=NOW,
             )

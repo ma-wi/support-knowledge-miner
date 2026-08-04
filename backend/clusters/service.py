@@ -371,7 +371,7 @@ class ClusterService:
                 run = connection.execute(
                     """
                     SELECT id, project_id, dataset_version_id, status,
-                           profile_snapshot, provider, model
+                           parameters, provider, model
                     FROM analysis_runs
                     WHERE id = %s AND project_id = %s
                     """,
@@ -388,13 +388,9 @@ class ClusterService:
                     (project_id, run_id),
                 ).fetchone()
                 if existing is None:
-                    snapshot = run["profile_snapshot"]
-                    if not isinstance(snapshot, dict):
-                        raise ClusterError(
-                            "analysis run has an invalid profile snapshot"
-                        )
-                    settings = snapshot.get("algorithm_settings")
-                    config = validate_algorithm_settings(settings)  # type: ignore[arg-type]
+                    config = validate_algorithm_settings(
+                        {"algorithm": "hdbscan", "min_cluster_size": 2}
+                    )
                     record_limit = (
                         AGGLOMERATIVE_MAX_RECORDS
                         if config.name == "agglomerative"

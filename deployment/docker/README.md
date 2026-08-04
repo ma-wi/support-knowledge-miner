@@ -74,8 +74,17 @@ Run the migration compatibility smoke test from the repository root:
 ```
 
 It starts a separate isolated local Compose project, executes both a fresh database
-and an existing database stopped at migration `0009`, checks the Ollama provider
-constraints plus the email-only identity upgrade, and removes all test resources.
+and existing databases stopped at older supported migration levels, checks provider
+and identity constraints, and removes all test resources.
+
+Before applying migrations to a local development database that contains work you
+need to keep, take a local backup of the `postgres-data` volume or export the data
+you need. Migration `0014_indexing_runs_without_profiles.sql` is intentionally
+destructive for obsolete local derived analysis data: it removes analysis profiles
+and resets profile-derived runs, embeddings, clusters, candidates and exports while
+preserving projects, imports, dataset versions and provider configuration. Do not
+run these local migration procedures against production data, production
+credentials, production networks or any production-controlled resource.
 
 ## vLLM Local Model Path
 
@@ -108,7 +117,8 @@ Ollama is available as an optional local runtime for demand-loaded local models:
 docker compose --env-file deployment/docker/.env.example -f deployment/docker/compose.yml --profile ollama up -d ollama
 ```
 
-Pull the local models you want to make available before selecting them in an analysis profile:
+Pull the local models you want to make available before selecting them for an
+indexing or clustering action:
 
 ```bash
 docker compose --env-file deployment/docker/.env.example -f deployment/docker/compose.yml exec ollama ollama pull nomic-embed-text
@@ -121,5 +131,5 @@ does not follow redirects.
 
 The default endpoint is `http://localhost:11434`. `SKM_OLLAMA_MODELS` is a comma-separated default allow-list that the backend seeds into the Ollama provider only when no Ollama provider configuration exists yet. Users can later refresh installed models or download and add one named model in the provider UI.
 
-`OLLAMA_KEEP_ALIVE=5m` keeps the selected model warm between normal analysis
+`OLLAMA_KEEP_ALIVE=5m` keeps the selected model warm between normal indexing
 batches and allows Ollama to unload it again after five minutes without activity.

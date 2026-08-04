@@ -4,15 +4,15 @@
 
 Historical support data contains recurring customer questions, reused answer patterns, implicit categories, multi-intent cases, and dynamic support cases. The data is currently unstructured and difficult to inspect, cluster, curate, trace, and export as reusable support knowledge.
 
-The MVP must provide a local-first project workspace where an analyst/curator can import already-paired historical support records, analyze them with configurable local or OpenAI models, persist the resulting analysis state, manually curate generated results, and export curated knowledge with source traceability.
+The MVP must provide a local-first project workspace where an analyst/curator can import already-paired historical support records, index them with configurable local or OpenAI embedding models, cluster and inspect the resulting state, manually curate generated results, and export curated knowledge with source traceability.
 
 ## Desired outcome
 
-A user can sign in, manage equal-permission users, create an independent local project, import CSV or JSON message-answer pairs, configure global model providers, select models in analysis profiles, run analysis jobs, persist all project state in local storage, inspect and curate clusters/candidates, and export curated candidate and source-assignment CSV files. Projects can be reopened later with their data, analysis runs, embeddings, curation state, candidates, exports, and profile configuration intact.
+A user can sign in, manage equal-permission users, create an independent local project, import CSV or JSON message-answer pairs, configure global model providers, start dataset indexing with a selected provider/model, persist all project state in local storage, inspect and curate clusters/candidates, and export curated candidate and source-assignment CSV files. Projects can be reopened later with their data, indexing runs, embeddings, curation state, candidates, exports, and provider configuration intact.
 
 ## Users and stakeholders
 
-- Primary user: Analyst/Kurator, a fachlich-technischer user who imports data, configures analysis, reviews clusters, curates candidates, and exports results.
+- Primary user: Analyst/Kurator, a fachlich-technischer user who imports data, configures providers, starts indexing, reviews clusters, curates candidates, and exports results.
 - Decision owner: User.
 - System operator for MVP: local user running Docker Compose.
 - Affected parties: people represented in historical support text. The text is mostly anonymized but may still contain names, so imported text remains potentially sensitive.
@@ -23,10 +23,10 @@ A user can sign in, manage equal-permission users, create an independent local p
 
 - Local Docker Compose runtime with PostgreSQL/pgvector persistence and local Ollama/vLLM provider paths.
 - Authentication, equal-permission user management, and acting-user audit metadata.
-- Project-scoped data and analysis management.
+- Project-scoped data, indexing, clustering and curation management.
 - CSV and JSON import for already-paired support records with persisted import logs.
-- Global OpenAI, Ollama, and vLLM provider configuration with explicit per-profile model selection.
-- Background analysis runs with persisted run metadata, embeddings/vector state where practical, clusters, curation state, candidates, exports, and source traceability.
+- Global OpenAI, Ollama, and vLLM provider configuration with explicit per-indexing model selection.
+- Background indexing runs with persisted run metadata, embeddings/vector state where practical, clusters, curation state, candidates, exports, and source traceability.
 - Manual curation that keeps automatic, manual, and effective values distinguishable.
 - Candidate and source-assignment CSV exports with original-text warnings where applicable.
 - Synthetic reference fixtures for deterministic acceptance tests.

@@ -49,6 +49,8 @@ const importLog = {
   valid_records: 1,
   skipped_records: 1,
   dataset_version_id: "dataset-1",
+  dataset_display_name: "Fixture dataset",
+  dataset_deleted_at: null,
   started_at: "2026-07-22T00:00:00Z",
   completed_at: "2026-07-22T00:00:00Z",
 };
@@ -73,38 +75,25 @@ const ollamaProvider = {
   api_key_set: false,
   updated_at: "2026-07-22T00:00:00Z",
 };
-const analysisProfile = {
-  id: "profile-1",
-  project_id: "project-alpha",
-  name: "Local profile",
-  provider: "vllm",
-  model: "local-embed",
-  is_cloud_provider: false,
-  thresholds: { similarity: 0.78 },
-  algorithm_settings: { algorithm: "hdbscan" },
-  prompt_template: null,
-  created_at: "2026-07-22T00:00:00Z",
-  updated_at: "2026-07-22T00:00:00Z",
-};
 const analysisRun = {
   id: "run-1",
   project_id: "project-alpha",
   dataset_version_id: "dataset-1",
-  analysis_profile_id: "profile-1",
+  dataset_display_name: "Fixture dataset",
+  dataset_deleted_at: null,
   status: "queued",
   progress: 0,
-  profile_snapshot: {
-    name: "Local profile",
-    provider: "vllm",
-    model: "local-embed",
-  },
+  phase: "queued",
   provider: "vllm",
   model: "local-embed",
   parameters: {},
+  error_code: null,
   error_message: null,
   diagnostics: {},
   started_at: null,
   completed_at: null,
+  cancel_requested_at: null,
+  deleted_at: null,
   created_at: "2026-07-22T00:00:00Z",
   updated_at: "2026-07-22T00:00:01Z",
 };
@@ -317,11 +306,6 @@ function mockProjectFetch(
     if (path.endsWith("/imports") && method === "GET") {
       return jsonResponse(path.includes("project-alpha") ? [importLog] : []);
     }
-    if (path.endsWith("/analysis-profiles") && method === "GET") {
-      return jsonResponse(
-        path.includes("project-alpha") ? [analysisProfile] : [],
-      );
-    }
     if (
       (path.endsWith("/candidates") || path.endsWith("/exports")) &&
       method === "GET"
@@ -363,9 +347,8 @@ async function openSettingsTab(
 async function openProjectTab(
   user: ReturnType<typeof userEvent.setup>,
   tabName:
-    | "Profile"
     | "Import"
-    | "Runs"
+    | "Indizieren"
     | "Cluster"
     | "Kandidaten"
     | "Export"
@@ -1082,7 +1065,7 @@ test("allows signed-in users to create open rename and delete projects with conf
       return jsonResponse([]);
     }
     if (
-      path === "/api/projects/project-alpha/analysis-runs" &&
+      path === "/api/projects/project-alpha/indexing-runs" &&
       method === "GET"
     ) {
       return jsonResponse([]);
@@ -1091,7 +1074,7 @@ test("allows signed-in users to create open rename and delete projects with conf
       return jsonResponse([]);
     }
     if (
-      path === "/api/projects/project-beta/analysis-runs" &&
+      path === "/api/projects/project-beta/indexing-runs" &&
       method === "GET"
     ) {
       return jsonResponse([]);
@@ -1152,8 +1135,7 @@ test("allows signed-in users to create open rename and delete projects with conf
       .map((button) => button.textContent),
   ).toEqual([
     "Import",
-    "Profile",
-    "Runs",
+    "Indizieren",
     "Cluster",
     "Kandidaten",
     "Export",
@@ -1247,7 +1229,7 @@ test("imports a selected CSV file and shows persisted log details", async () => 
       return jsonResponse([]);
     }
     if (
-      path === "/api/projects/project-alpha/analysis-runs" &&
+      path === "/api/projects/project-alpha/indexing-runs" &&
       method === "GET"
     ) {
       return jsonResponse([]);
@@ -1361,7 +1343,7 @@ test("imports a selected CSV file and shows persisted log details", async () => 
   expect(importPostCount).toBe(1);
 });
 
-test("configures providers and creates a project analysis profile", async () => {
+test("configures providers and starts a project indexing run", async () => {
   const user = userEvent.setup();
   let openAiSaveCount = 0;
   mockFetch((input, init) => {
@@ -1416,33 +1398,7 @@ test("configures providers and creates a project analysis profile", async () => 
       return jsonResponse([importLog]);
     }
     if (
-      path === "/api/projects/project-alpha/analysis-profiles" &&
-      method === "GET"
-    ) {
-      return jsonResponse([]);
-    }
-    if (
-      path === "/api/projects/project-alpha/analysis-profiles" &&
-      method === "POST"
-    ) {
-      const body = JSON.parse(String(init?.body));
-      expect(body).toMatchObject({
-        name: "Local profile",
-        provider: "vllm",
-        model: "local-embed",
-        thresholds: { similarity: 0.78 },
-        algorithm_settings: {
-          algorithm: "hdbscan",
-          min_cluster_size: 5,
-          cluster_selection_epsilon: 0,
-        },
-      });
-      expect(body.prompt_identifier).toBeUndefined();
-      expect(body.algorithm_settings.min_samples).toBeUndefined();
-      return jsonResponse(analysisProfile, { status: 201 });
-    }
-    if (
-      path === "/api/projects/project-alpha/analysis-runs" &&
+      path === "/api/projects/project-alpha/indexing-runs" &&
       method === "GET"
     ) {
       return jsonResponse([completedAnalysisRun]);
@@ -1454,11 +1410,16 @@ test("configures providers and creates a project analysis profile", async () => 
       return jsonResponse([]);
     }
     if (
-      path === "/api/projects/project-alpha/analysis-runs" &&
+      path === "/api/projects/project-alpha/indexing-runs" &&
       method === "POST"
     ) {
-      expect(String(init?.body)).toContain("dataset-1");
-      expect(String(init?.body)).toContain("profile-1");
+      const body = JSON.parse(String(init?.body));
+      expect(body).toMatchObject({
+        dataset_version_id: "dataset-1",
+        provider: "vllm",
+        model: "local-embed",
+      });
+      expect(body.analysis_profile_id).toBeUndefined();
       return jsonResponse(analysisRun, { status: 201 });
     }
     if (
@@ -1619,59 +1580,37 @@ test("configures providers and creates a project analysis profile", async () => 
     name: "Bestehende Projekte",
   });
   await user.click(getProjectRow(projectList, "Alpha"));
-  await openProjectTab(user, "Profile");
+  expect(
+    screen.queryByRole("button", { name: "Profile" }),
+  ).not.toBeInTheDocument();
 
-  const profileForm = await screen.findByRole("form", {
-    name: "Analyseprofil erstellen",
+  await openProjectTab(user, "Indizieren");
+  const runForm = await screen.findByRole("form", {
+    name: "Indizierung starten",
   });
-  expect(within(profileForm).getByLabelText("Profilname")).toHaveValue(
-    "analysis-1",
+  expect(
+    within(runForm).queryByLabelText("Analyseprofil"),
+  ).not.toBeInTheDocument();
+  expect(within(runForm).getByLabelText("Embedding-Provider")).toHaveValue(
+    "vllm",
   );
-  await user.clear(within(profileForm).getByLabelText("Profilname"));
-  await user.type(
-    within(profileForm).getByLabelText("Profilname"),
-    "Local profile",
-  );
-  expect(within(profileForm).getByLabelText("Modell")).toHaveValue(
+  expect(within(runForm).getByLabelText("Embedding-Modell")).toHaveValue(
     "local-embed",
   );
-  await user.type(
-    within(profileForm).getByLabelText("Similarity Threshold"),
-    "0.78",
-  );
-  expect(within(profileForm).getByLabelText("Algorithmus")).toHaveValue(
-    "hdbscan",
-  );
-  expect(
-    within(profileForm).queryByLabelText("Prompt-ID"),
-  ).not.toBeInTheDocument();
   await user.click(
-    within(profileForm).getByRole("button", { name: "Profil speichern" }),
-  );
-
-  expect(await screen.findByText("Local profile")).toBeInTheDocument();
-  expect(screen.getByText("vllm/local-embed")).toBeInTheDocument();
-  expect(screen.getByText(/"similarity":0.78/)).toBeInTheDocument();
-
-  await openProjectTab(user, "Runs");
-  const runForm = await screen.findByRole("form", {
-    name: "Analyse starten",
-  });
-  expect(within(runForm).queryByLabelText("Run-Modus")).not.toBeInTheDocument();
-  await user.click(
-    within(runForm).getByRole("button", { name: "Analyse starten" }),
+    within(runForm).getByRole("button", { name: "Indizierung starten" }),
   );
 
   const runsRegion = await screen.findByRole("region", {
-    name: "Analyse Runs",
+    name: "Indizierungen",
   });
   expect(await within(runsRegion).findByText("queued")).toBeInTheDocument();
-  expect(within(runsRegion).getByText("0%")).toBeInTheDocument();
+  expect(within(runsRegion).getAllByText("0%").length).toBeGreaterThan(0);
   expect(
     within(runsRegion).getAllByText("Provider/Modell: vllm/local-embed").length,
   ).toBeGreaterThan(0);
   expect(
-    within(runsRegion).getAllByText(/Dataset-Version: dataset-1/).length,
+    within(runsRegion).getAllByText(/Version: dataset-1/).length,
   ).toBeGreaterThan(0);
   expect(within(runsRegion).getByText(/Diagnose: {}/)).toBeInTheDocument();
 
@@ -1947,12 +1886,6 @@ test("disables meaningless cluster loads, explains empty results, and preserves 
     if (path === "/api/projects/project-alpha/imports" && method === "GET") {
       return jsonResponse([]);
     }
-    if (
-      path === "/api/projects/project-alpha/analysis-profiles" &&
-      method === "GET"
-    ) {
-      return jsonResponse([]);
-    }
     if (path === "/api/projects/project-alpha/candidates" && method === "GET") {
       return jsonResponse([]);
     }
@@ -1960,7 +1893,7 @@ test("disables meaningless cluster loads, explains empty results, and preserves 
       return jsonResponse([]);
     }
     if (
-      path === "/api/projects/project-alpha/analysis-runs" &&
+      path === "/api/projects/project-alpha/indexing-runs" &&
       method === "GET"
     ) {
       return jsonResponse([analysisRun, completedAnalysisRun]);
@@ -1994,10 +1927,10 @@ test("disables meaningless cluster loads, explains empty results, and preserves 
     name: "Cluster Aktionen",
   });
   const queuedCard = within(clusterActions)
-    .getByText("Run: run-1")
+    .getByText("Indizierung: run-1")
     .closest("article");
   const completedCard = within(clusterActions)
-    .getByText("Run: run-completed")
+    .getByText("Indizierung: run-completed")
     .closest("article");
   if (queuedCard === null || completedCard === null) {
     throw new Error("cluster action cards missing");
@@ -2015,11 +1948,11 @@ test("disables meaningless cluster loads, explains empty results, and preserves 
   const info = await screen.findByRole("status");
   expect(info).toHaveClass("feedback", "info");
   expect(info).toHaveTextContent(
-    "Hinweis: Für diesen abgeschlossenen Run wurden noch keine Cluster erzeugt.",
+    "Hinweis: Für diese abgeschlossene Indizierung wurden noch keine Cluster erzeugt.",
   );
   expect(
     screen.getByText(
-      "Für den ausgewählten abgeschlossenen Run wurden noch keine Cluster erzeugt. Bitte zuerst „Cluster erzeugen“ ausführen.",
+      "Für die ausgewählte abgeschlossene Indizierung wurden noch keine Cluster erzeugt. Bitte zuerst „Cluster erzeugen“ ausführen.",
     ),
   ).toBeInTheDocument();
 
@@ -2048,7 +1981,7 @@ test("shows and guards cluster generation while the request is pending", async (
   });
   mockProjectFetch((path, method) => {
     if (
-      path === "/api/projects/project-alpha/analysis-runs" &&
+      path === "/api/projects/project-alpha/indexing-runs" &&
       method === "GET"
     ) {
       return jsonResponse([completedAnalysisRun]);
@@ -2076,7 +2009,7 @@ test("shows and guards cluster generation while the request is pending", async (
     name: "Cluster Aktionen",
   });
   const completedCard = within(clusterActions)
-    .getByText("Run: run-completed")
+    .getByText("Indizierung: run-completed")
     .closest("article");
   if (completedCard === null) {
     throw new Error("completed cluster action card missing");
@@ -2093,10 +2026,10 @@ test("shows and guards cluster generation while the request is pending", async (
   });
   expect(pendingButton).toBeDisabled();
   expect(within(completedCard).getByRole("status")).toHaveTextContent(
-    "Clustererzeugung läuft für Run run-completed.",
+    "Clustererzeugung läuft für Indizierung run-completed.",
   );
   expect(
-    screen.getByText("Clustererzeugung für Run run-completed läuft."),
+    screen.getByText("Clustererzeugung für Indizierung run-completed läuft."),
   ).toBeInTheDocument();
   fireEvent.click(pendingButton);
   expect(generateRequests).toBe(1);
@@ -2133,13 +2066,13 @@ test("ignores delayed cluster generation after switching projects", async () => 
   });
   mockProjectFetch((path, method) => {
     if (
-      path === "/api/projects/project-alpha/analysis-runs" &&
+      path === "/api/projects/project-alpha/indexing-runs" &&
       method === "GET"
     ) {
       return jsonResponse([completedAnalysisRun]);
     }
     if (
-      path === "/api/projects/project-beta/analysis-runs" &&
+      path === "/api/projects/project-beta/indexing-runs" &&
       method === "GET"
     ) {
       return jsonResponse([betaRun]);
@@ -2268,8 +2201,9 @@ test("restarts the feedback timeout when the same project error occurs again", a
   expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 });
 
-test("renders safe error feedback for user, provider, import, profile, run, candidate, and export actions", async () => {
+test("renders safe error feedback for user, provider, import, indexing, candidate, and export actions", async () => {
   const user = userEvent.setup();
+  let indexingRejections = 0;
   mockFetch((input, init) => {
     const path = String(input);
     const method = init?.method ?? "GET";
@@ -2307,32 +2241,32 @@ test("renders safe error feedback for user, provider, import, profile, run, cand
       return Promise.reject(new Error("raw import transport exception"));
     }
     if (
-      path === "/api/projects/project-alpha/analysis-profiles" &&
-      method === "GET"
-    ) {
-      return jsonResponse([analysisProfile]);
-    }
-    if (
-      path === "/api/projects/project-alpha/analysis-profiles" &&
-      method === "POST"
-    ) {
-      return jsonResponse(
-        { detail: "analysis profile is invalid" },
-        { status: 400 },
-      );
-    }
-    if (
-      path === "/api/projects/project-alpha/analysis-runs" &&
+      path === "/api/projects/project-alpha/indexing-runs" &&
       method === "GET"
     ) {
       return jsonResponse([completedAnalysisRun]);
     }
     if (
-      path === "/api/projects/project-alpha/analysis-runs" &&
+      path === "/api/projects/project-alpha/indexing-runs" &&
       method === "POST"
     ) {
+      indexingRejections += 1;
+      if (indexingRejections === 1) {
+        return jsonResponse(
+          {
+            title: "Indizierung abgelehnt",
+            detail: "raw indexing model diagnostic",
+            code: "INDEXING_MODEL_UNAVAILABLE",
+          },
+          { status: 422 },
+        );
+      }
       return jsonResponse(
-        { detail: "analysis run cannot be started" },
+        {
+          title: "Indizierung abgelehnt",
+          detail: "indexing run cannot be started",
+          code: "IDX-START-REJECTED",
+        },
         { status: 409 },
       );
     }
@@ -2419,23 +2353,24 @@ test("renders safe error feedback for user, provider, import, profile, run, cand
     "raw import transport exception",
   );
 
-  await openProjectTab(user, "Profile");
-  const profileForm = await screen.findByRole("form", {
-    name: "Analyseprofil erstellen",
-  });
-  await user.click(
-    within(profileForm).getByRole("button", { name: "Profil speichern" }),
-  );
-  await expectErrorFeedback("analysis profile is invalid", "raw exception");
-
-  await openProjectTab(user, "Runs");
+  await openProjectTab(user, "Indizieren");
   const runForm = await screen.findByRole("form", {
-    name: "Analyse starten",
+    name: "Indizierung starten",
   });
   await user.click(
-    within(runForm).getByRole("button", { name: "Analyse starten" }),
+    within(runForm).getByRole("button", { name: "Indizierung starten" }),
   );
-  await expectErrorFeedback("analysis run cannot be started", "raw exception");
+  await expectErrorFeedback(
+    "Das gewählte Embedding-Modell ist nicht verfügbar. Bitte Provider-Einstellungen prüfen oder ein anderes Modell wählen.",
+    "raw indexing model diagnostic",
+  );
+  await user.click(
+    within(runForm).getByRole("button", { name: "Indizierung starten" }),
+  );
+  await expectErrorFeedback(
+    "Die Aktion konnte nicht abgeschlossen werden. Bitte erneut versuchen oder den aktuellen Stand neu laden.",
+    "indexing run cannot be started",
+  );
 
   await openProjectTab(user, "Kandidaten");
   const candidateEditor = await screen.findByRole("region", {
@@ -2491,13 +2426,7 @@ test("does not save untouched generated candidate multi-value fields as empty ma
       return jsonResponse([]);
     }
     if (
-      path === "/api/projects/project-alpha/analysis-profiles" &&
-      method === "GET"
-    ) {
-      return jsonResponse([]);
-    }
-    if (
-      path === "/api/projects/project-alpha/analysis-runs" &&
+      path === "/api/projects/project-alpha/indexing-runs" &&
       method === "GET"
     ) {
       return jsonResponse([]);
@@ -2594,36 +2523,12 @@ test("does not save untouched generated candidate multi-value fields as empty ma
   });
 });
 
-test("suggests project-local profile names and sends only selected model and algorithm fields", async () => {
+test("keeps indexing requests project-local and sends only selected provider and model fields", async () => {
   const user = userEvent.setup();
-  const alphaProfiles = [
-    { ...analysisProfile, id: "profile-analysis-1", name: "analysis-1" },
-    { ...analysisProfile, id: "profile-analysis-7", name: "analysis-7" },
-    {
-      ...analysisProfile,
-      id: "profile-historical",
-      name: "manuell",
-      algorithm_settings: { algorithm: "historical-legacy" },
-    },
-  ];
-  const betaProfiles = [
-    {
-      ...analysisProfile,
-      id: "profile-beta-2",
-      project_id: "project-beta",
-      name: "analysis-2",
-    },
-  ];
-  let createdBody: Record<string, unknown> | null = null;
-  let profileRequests = 0;
-  const runProfileIds: string[] = [];
+  const indexingBodies: Record<string, unknown>[] = [];
   let resolveBetaProject: (response: Response) => void = () => undefined;
   const pendingBetaProject = new Promise<Response>((resolve) => {
     resolveBetaProject = resolve;
-  });
-  let resolveBetaProfiles: (response: Response) => void = () => undefined;
-  const pendingBetaProfiles = new Promise<Response>((resolve) => {
-    resolveBetaProfiles = resolve;
   });
 
   mockFetch((input, init) => {
@@ -2651,40 +2556,6 @@ test("suggests project-local profile names and sends only selected model and alg
     if (path === "/api/projects/project-beta" && method === "GET") {
       return pendingBetaProject;
     }
-    if (
-      path === "/api/projects/project-alpha/analysis-profiles" &&
-      method === "GET"
-    ) {
-      return jsonResponse(alphaProfiles);
-    }
-    if (
-      path === "/api/projects/project-beta/analysis-profiles" &&
-      method === "GET"
-    ) {
-      return pendingBetaProfiles;
-    }
-    if (
-      path === "/api/projects/project-alpha/analysis-profiles" &&
-      method === "POST"
-    ) {
-      profileRequests += 1;
-      createdBody = JSON.parse(String(init?.body));
-      return jsonResponse(
-        {
-          ...analysisProfile,
-          id: "profile-analysis-8",
-          name: "analysis-8",
-          provider: "ollama",
-          model: "embed-a",
-          algorithm_settings: {
-            algorithm: "agglomerative",
-            distance_threshold: 0.4,
-            linkage: "average",
-          },
-        },
-        { status: 201 },
-      );
-    }
     if (path === "/api/projects/project-alpha/imports" && method === "GET") {
       return jsonResponse([importLog]);
     }
@@ -2692,22 +2563,23 @@ test("suggests project-local profile names and sends only selected model and alg
       return jsonResponse([]);
     }
     if (
-      path === "/api/projects/project-alpha/analysis-runs" &&
+      path === "/api/projects/project-alpha/indexing-runs" &&
       method === "POST"
     ) {
       const body = JSON.parse(String(init?.body));
-      runProfileIds.push(String(body.analysis_profile_id));
+      indexingBodies.push(body);
       return jsonResponse(
         {
           ...analysisRun,
-          analysis_profile_id: body.analysis_profile_id,
-          parameters: body.parameters,
+          provider: body.provider,
+          model: body.model,
+          parameters: {},
         },
         { status: 201 },
       );
     }
     if (
-      /^\/api\/projects\/project-(alpha|beta)\/analysis-runs$/.test(path) &&
+      /^\/api\/projects\/project-(alpha|beta)\/indexing-runs$/.test(path) &&
       method === "GET"
     ) {
       return jsonResponse([]);
@@ -2733,96 +2605,45 @@ test("suggests project-local profile names and sends only selected model and alg
     name: "Bestehende Projekte",
   });
   await user.click(getProjectRow(projectList, "Alpha"));
-  await openProjectTab(user, "Profile");
 
-  const profileForm = await screen.findByRole("form", {
-    name: "Analyseprofil erstellen",
+  await openProjectTab(user, "Indizieren");
+  const indexingForm = await screen.findByRole("form", {
+    name: "Indizierung starten",
   });
-  await waitFor(() =>
-    expect(within(profileForm).getByLabelText("Profilname")).toHaveValue(
-      "analysis-8",
-    ),
-  );
   expect(
-    within(profileForm).getByText(/noch kein Modell konfiguriert/i),
+    within(indexingForm).getByText(/noch kein Modell konfiguriert/i),
   ).toBeInTheDocument();
   expect(
-    within(profileForm).getByRole("button", { name: "Profil speichern" }),
+    within(indexingForm).getByRole("button", { name: "Indizierung starten" }),
   ).toBeDisabled();
-  expect(screen.getByText(/historical-legacy/)).toBeInTheDocument();
+  expect(screen.queryByText(/historical-legacy/)).not.toBeInTheDocument();
 
   await user.selectOptions(
-    within(profileForm).getByLabelText("Provider"),
+    within(indexingForm).getByLabelText("Embedding-Provider"),
     "ollama",
   );
-  const modelSelect = within(profileForm).getByLabelText("Modell");
+  const modelSelect = within(indexingForm).getByLabelText("Embedding-Modell");
   await waitFor(() => expect(modelSelect).toHaveValue("embed-a"));
   expect(
     within(modelSelect)
       .getAllByRole("option")
       .map((option) => option.textContent),
   ).toEqual(["embed-a", "embed-b"]);
-  expect(
-    within(profileForm).getByLabelText("Minimale Clustergröße"),
-  ).toBeInTheDocument();
-  expect(
-    within(profileForm).queryByLabelText("Anzahl Cluster"),
-  ).not.toBeInTheDocument();
-
-  await user.selectOptions(
-    within(profileForm).getByLabelText("Algorithmus"),
-    "agglomerative",
-  );
-  expect(
-    within(profileForm).queryByLabelText("Minimale Clustergröße"),
-  ).not.toBeInTheDocument();
-  expect(
-    within(profileForm).getByLabelText("Anzahl Cluster"),
-  ).toBeInTheDocument();
-  await user.selectOptions(
-    within(profileForm).getByLabelText("Abbruchkriterium"),
-    "distance_threshold",
-  );
-  await user.type(within(profileForm).getByLabelText("Distanzschwelle"), "0.4");
-  await user.selectOptions(
-    within(profileForm).getByLabelText("Linkage"),
-    "average",
-  );
   await user.click(
-    within(profileForm).getByRole("button", { name: "Profil speichern" }),
+    within(indexingForm).getByRole("button", {
+      name: "Indizierung starten",
+    }),
   );
 
-  expect(createdBody).toMatchObject({
-    name: "analysis-8",
+  expect(indexingBodies).toHaveLength(1);
+  expect(indexingBodies[0]).toMatchObject({
+    dataset_version_id: "dataset-1",
     provider: "ollama",
     model: "embed-a",
-    algorithm_settings: {
-      algorithm: "agglomerative",
-      distance_threshold: 0.4,
-      linkage: "average",
-    },
   });
-  const submittedAlgorithmSettings = (
-    createdBody as unknown as {
-      algorithm_settings: Record<string, unknown>;
-    }
-  ).algorithm_settings;
-  expect(submittedAlgorithmSettings.n_clusters).toBeUndefined();
-  expect(submittedAlgorithmSettings.min_cluster_size).toBeUndefined();
-  await waitFor(() =>
-    expect(within(profileForm).getByLabelText("Profilname")).toHaveValue(
-      "analysis-9",
-    ),
-  );
+  expect(indexingBodies[0].analysis_profile_id).toBeUndefined();
+  expect(indexingBodies[0].algorithm_settings).toBeUndefined();
 
-  await openProjectTab(user, "Runs");
-  const formerAlphaRunForm = await screen.findByRole("form", {
-    name: "Analyse starten",
-  });
-  await openProjectTab(user, "Profile");
-  const formerAlphaProfileForm = await screen.findByRole("form", {
-    name: "Analyseprofil erstellen",
-  });
   const navigation = screen.getByRole("navigation", {
     name: "Hauptnavigation",
   });
@@ -2835,33 +2656,26 @@ test("suggests project-local profile names and sends only selected model and alg
     screen.queryByRole("region", { name: "Aktuelles Projekt" }),
   ).not.toBeInTheDocument();
   expect(
-    screen.queryByRole("form", { name: "Analyseprofil erstellen" }),
+    screen.queryByRole("form", { name: "Indizierung starten" }),
   ).not.toBeInTheDocument();
-  expect(
-    screen.queryByRole("form", { name: "Analyse starten" }),
-  ).not.toBeInTheDocument();
-  fireEvent.submit(formerAlphaProfileForm);
-  fireEvent.submit(formerAlphaRunForm);
-  expect(profileRequests).toBe(1);
-  expect(runProfileIds).toEqual([]);
+  fireEvent.submit(indexingForm);
+  expect(indexingBodies).toHaveLength(1);
 
   resolveBetaProject(jsonResponse(betaProject));
   await waitFor(() =>
     expect(screen.getByLabelText("Projektname")).toHaveValue("Beta"),
   );
-  await openProjectTab(user, "Profile");
+  await openProjectTab(user, "Indizieren");
+  const betaIndexingForm = await screen.findByRole("form", {
+    name: "Indizierung starten",
+  });
   expect(
-    await screen.findByRole("status", {
-      name: "Analyseprofile werden geladen",
+    within(betaIndexingForm).getByRole("button", {
+      name: "Indizierung starten",
     }),
-  ).toBeInTheDocument();
+  ).toBeDisabled();
   expect(
-    screen.queryByRole("form", { name: "Analyseprofil erstellen" }),
-  ).not.toBeInTheDocument();
-  expect(screen.queryByDisplayValue("analysis-9")).not.toBeInTheDocument();
-  expect(screen.queryByText(/historical-legacy/)).not.toBeInTheDocument();
-  expect(
-    screen.queryByRole("button", { name: "Profil speichern" }),
+    within(betaIndexingForm).queryByText(/dataset-1/),
   ).not.toBeInTheDocument();
 
   await user.click(
@@ -2872,59 +2686,27 @@ test("suggests project-local profile names and sends only selected model and alg
   await waitFor(() =>
     expect(screen.getByLabelText("Projektname")).toHaveValue("Alpha"),
   );
-  await openProjectTab(user, "Profile");
-  const alphaProfileForm = await screen.findByRole("form", {
-    name: "Analyseprofil erstellen",
-  });
-  await waitFor(() =>
-    expect(within(alphaProfileForm).getByLabelText("Profilname")).toHaveValue(
-      "analysis-8",
-    ),
-  );
-
-  resolveBetaProfiles(jsonResponse(betaProfiles));
-  await waitFor(() => {
-    expect(screen.getByLabelText("Projektname")).toHaveValue("Alpha");
-    expect(screen.queryByText("analysis-2")).not.toBeInTheDocument();
-    expect(
-      screen.queryByRole("status", {
-        name: "Analyseprofile werden geladen",
-      }),
-    ).not.toBeInTheDocument();
-  });
-
-  await openProjectTab(user, "Runs");
+  await openProjectTab(user, "Indizieren");
   const runForm = await screen.findByRole("form", {
-    name: "Analyse starten",
+    name: "Indizierung starten",
   });
-  const runProfileSelect = within(runForm).getByLabelText("Analyseprofil");
-  expect(
-    within(runProfileSelect).queryByRole("option", {
-      name: /analysis-2/,
-    }),
-  ).not.toBeInTheDocument();
-  expect(runProfileSelect).toHaveValue("profile-analysis-1");
-  await user.click(
-    within(runForm).getByRole("button", { name: "Analyse starten" }),
+  await user.selectOptions(
+    within(runForm).getByLabelText("Embedding-Provider"),
+    "ollama",
   );
-  await waitFor(() => expect(runProfileIds).toEqual(["profile-analysis-1"]));
+  await user.click(
+    within(runForm).getByRole("button", { name: "Indizierung starten" }),
+  );
+  await waitFor(() => expect(indexingBodies).toHaveLength(2));
+  expect(indexingBodies[1]).toMatchObject({
+    dataset_version_id: "dataset-1",
+    provider: "ollama",
+    model: "embed-a",
+  });
 });
 
-test("requires explicit OpenAI confirmation immediately before starting a run", async () => {
+test("requires explicit OpenAI confirmation immediately before starting an indexing run", async () => {
   const user = userEvent.setup();
-  const localProfile = {
-    ...analysisProfile,
-    id: "profile-local",
-    name: "Local",
-  };
-  const cloudProfile = {
-    ...analysisProfile,
-    id: "profile-cloud",
-    name: "Cloud",
-    provider: "openai",
-    model: "gpt-4.1-mini",
-    is_cloud_provider: true,
-  };
   let runRequests = 0;
 
   mockFetch((input, init) => {
@@ -2949,13 +2731,7 @@ test("requires explicit OpenAI confirmation immediately before starting a run", 
       return jsonResponse([importLog]);
     }
     if (
-      path === "/api/projects/project-alpha/analysis-profiles" &&
-      method === "GET"
-    ) {
-      return jsonResponse([localProfile, cloudProfile]);
-    }
-    if (
-      path === "/api/projects/project-alpha/analysis-runs" &&
+      path === "/api/projects/project-alpha/indexing-runs" &&
       method === "GET"
     ) {
       return jsonResponse([]);
@@ -2967,25 +2743,25 @@ test("requires explicit OpenAI confirmation immediately before starting a run", 
       return jsonResponse([]);
     }
     if (
-      path === "/api/projects/project-alpha/analysis-runs" &&
+      path === "/api/projects/project-alpha/indexing-runs" &&
       method === "POST"
     ) {
       runRequests += 1;
       const body = JSON.parse(String(init?.body));
-      expect(body.analysis_profile_id).toBe("profile-cloud");
-      expect(body.parameters.cloud_use_confirmed).toBe(true);
+      expect(body).toMatchObject({
+        dataset_version_id: "dataset-1",
+        provider: "openai",
+        model: "gpt-4.1-mini",
+        cloud_use_confirmed: true,
+      });
+      expect(body.analysis_profile_id).toBeUndefined();
+      expect(body.parameters).toBeUndefined();
       return jsonResponse(
         {
           ...analysisRun,
-          analysis_profile_id: "profile-cloud",
-          profile_snapshot: {
-            name: "Cloud",
-            provider: "openai",
-            model: "gpt-4.1-mini",
-          },
           provider: "openai",
           model: "gpt-4.1-mini",
-          parameters: body.parameters,
+          parameters: {},
         },
         { status: 201 },
       );
@@ -2999,19 +2775,21 @@ test("requires explicit OpenAI confirmation immediately before starting a run", 
     name: "Bestehende Projekte",
   });
   await user.click(getProjectRow(projectList, "Alpha"));
-  await openProjectTab(user, "Runs");
+  await openProjectTab(user, "Indizieren");
 
   const runForm = await screen.findByRole("form", {
-    name: "Analyse starten",
+    name: "Indizierung starten",
   });
-  const profileSelect = within(runForm).getByLabelText("Analyseprofil");
   expect(
     within(runForm).queryByLabelText(/Ich bestätige/),
   ).not.toBeInTheDocument();
-  await user.selectOptions(profileSelect, "profile-cloud");
+  await user.selectOptions(
+    within(runForm).getByLabelText("Embedding-Provider"),
+    "openai",
+  );
   const confirmation = within(runForm).getByLabelText(/Ich bestätige/);
   const startButton = within(runForm).getByRole("button", {
-    name: "Analyse starten",
+    name: "Indizierung starten",
   });
   expect(startButton).toBeDisabled();
   expect(runRequests).toBe(0);
@@ -3024,7 +2802,73 @@ test("requires explicit OpenAI confirmation immediately before starting a run", 
   expect(confirmation).not.toBeChecked();
 });
 
-test("opens a project without an eager run request and gives the Runs view sole request ownership", async () => {
+test("requires confirmation before deleting dataset versions and indexing runs", async () => {
+  const user = userEvent.setup();
+  const confirm = vi.spyOn(window, "confirm");
+  let datasetDeleteRequests = 0;
+  let indexingDeleteRequests = 0;
+
+  mockProjectFetch((path, method) => {
+    if (
+      path === "/api/projects/project-alpha/indexing-runs" &&
+      method === "GET"
+    ) {
+      return jsonResponse([analysisRun]);
+    }
+    if (
+      path === "/api/projects/project-alpha/dataset-versions/dataset-1" &&
+      method === "DELETE"
+    ) {
+      datasetDeleteRequests += 1;
+      return jsonResponse({
+        id: "dataset-1",
+        display_name: "Fixture dataset",
+        deleted_at: "2026-07-22T00:00:02Z",
+      });
+    }
+    if (
+      path === "/api/projects/project-alpha/indexing-runs/run-1" &&
+      method === "DELETE"
+    ) {
+      indexingDeleteRequests += 1;
+      return new Response(null, { status: 204 });
+    }
+    return undefined;
+  });
+  render(<App />);
+
+  await signIn(user);
+  const projectList = await screen.findByRole("region", {
+    name: "Bestehende Projekte",
+  });
+  await user.click(getProjectRow(projectList, "Alpha"));
+
+  confirm.mockReturnValueOnce(false);
+  await user.click(
+    await screen.findByRole("button", { name: "Datensatz löschen" }),
+  );
+  expect(datasetDeleteRequests).toBe(0);
+
+  confirm.mockReturnValueOnce(true);
+  await user.click(screen.getByRole("button", { name: "Datensatz löschen" }));
+  await waitFor(() => expect(datasetDeleteRequests).toBe(1));
+
+  await openProjectTab(user, "Indizieren");
+  const runsRegion = await screen.findByRole("region", {
+    name: "Indizierungen",
+  });
+  expect(await within(runsRegion).findByText("queued")).toBeInTheDocument();
+
+  confirm.mockReturnValueOnce(false);
+  await user.click(within(runsRegion).getByRole("button", { name: "Löschen" }));
+  expect(indexingDeleteRequests).toBe(0);
+
+  confirm.mockReturnValueOnce(true);
+  await user.click(within(runsRegion).getByRole("button", { name: "Löschen" }));
+  await waitFor(() => expect(indexingDeleteRequests).toBe(1));
+});
+
+test("opens a project without an eager indexing request and gives the Indizieren view sole request ownership", async () => {
   const user = userEvent.setup();
   let runRequests = 0;
   let activeRequests = 0;
@@ -3032,7 +2876,7 @@ test("opens a project without an eager run request and gives the Runs view sole 
   let completeRequest: (response: Response) => void = () => undefined;
   mockProjectFetch((path, method, init) => {
     if (
-      path === "/api/projects/project-alpha/analysis-runs" &&
+      path === "/api/projects/project-alpha/indexing-runs" &&
       method === "GET"
     ) {
       runRequests += 1;
@@ -3076,14 +2920,14 @@ test("opens a project without an eager run request and gives the Runs view sole 
   );
   expect(runRequests).toBe(0);
 
-  await openProjectTab(user, "Runs");
+  await openProjectTab(user, "Indizieren");
   await waitFor(() => expect(runRequests).toBe(1));
   expect(activeRequests).toBe(1);
   expect(maximumActiveRequests).toBe(1);
 
   completeRequest(jsonResponse([completedAnalysisRun]));
   const runsRegion = await screen.findByRole("region", {
-    name: "Analyse Runs",
+    name: "Indizierungen",
   });
   expect(await within(runsRegion).findByText("completed")).toBeInTheDocument();
   expect(activeRequests).toBe(0);
@@ -3101,7 +2945,7 @@ test("aborts a hidden in-flight poll before refreshing immediately on return", a
   const completeRequests: Array<(response: Response) => void> = [];
   mockProjectFetch((path, method, init) => {
     if (
-      path === "/api/projects/project-alpha/analysis-runs" &&
+      path === "/api/projects/project-alpha/indexing-runs" &&
       method === "GET"
     ) {
       runRequests += 1;
@@ -3141,7 +2985,7 @@ test("aborts a hidden in-flight poll before refreshing immediately on return", a
   });
   await user.click(getProjectRow(projectList, "Alpha"));
   expect(runRequests).toBe(0);
-  await openProjectTab(user, "Runs");
+  await openProjectTab(user, "Indizieren");
   await waitFor(() => expect(runRequests).toBe(1));
   expect(activeRequests).toBe(1);
 
@@ -3157,7 +3001,7 @@ test("aborts a hidden in-flight poll before refreshing immediately on return", a
 
   completeRequests[1]?.(jsonResponse([completedAnalysisRun]));
   const runsRegion = await screen.findByRole("region", {
-    name: "Analyse Runs",
+    name: "Indizierungen",
   });
   expect(await within(runsRegion).findByText("completed")).toBeInTheDocument();
   expect(activeRequests).toBe(0);
@@ -3192,7 +3036,7 @@ test("polls visible runs immediately and every two seconds without overlap and r
   });
   mockProjectFetch((path, method) => {
     if (
-      path === "/api/projects/project-alpha/analysis-runs" &&
+      path === "/api/projects/project-alpha/indexing-runs" &&
       method === "GET"
     ) {
       runRequests += 1;
@@ -3216,13 +3060,13 @@ test("polls visible runs immediately and every two seconds without overlap and r
     name: "Bestehende Projekte",
   });
   await user.click(getProjectRow(projectList, "Alpha"));
-  await openProjectTab(user, "Runs");
+  await openProjectTab(user, "Indizieren");
 
   const runsRegion = await screen.findByRole("region", {
-    name: "Analyse Runs",
+    name: "Indizierungen",
   });
   expect(await within(runsRegion).findByText("running")).toBeInTheDocument();
-  expect(within(runsRegion).getByText("40%")).toBeInTheDocument();
+  expect(within(runsRegion).getAllByText("40%").length).toBeGreaterThan(0);
   expect(
     within(runsRegion).getByText('Diagnose: {"embedded_messages":4}'),
   ).toBeInTheDocument();
@@ -3236,17 +3080,17 @@ test("polls visible runs immediately and every two seconds without overlap and r
   rejectPendingPoll(new Error("temporary backend failure"));
   await pendingPoll.catch(() => undefined);
 
-  expect(
-    await within(runsRegion).findByText("70%", undefined, {
-      timeout: 3000,
-    }),
-  ).toBeInTheDocument();
+  await waitFor(
+    () =>
+      expect(within(runsRegion).getAllByText("70%").length).toBeGreaterThan(0),
+    { timeout: 3000 },
+  );
   expect(
     await within(runsRegion).findByText("completed", undefined, {
       timeout: 3000,
     }),
   ).toBeInTheDocument();
-  expect(within(runsRegion).getByText("100%")).toBeInTheDocument();
+  expect(within(runsRegion).getAllByText("100%").length).toBeGreaterThan(0);
   expect(
     within(runsRegion).getByText(
       'Diagnose: {"embeddings_written":2,"clusters_written":1}',
@@ -3255,7 +3099,7 @@ test("polls visible runs immediately and every two seconds without overlap and r
   expect(runRequests).toBe(4);
 }, 15000);
 
-test("pauses run polling while hidden or outside the Runs tab and refreshes immediately when visible", async () => {
+test("pauses indexing polling while hidden or outside the Indizieren tab and refreshes immediately when visible", async () => {
   const user = userEvent.setup();
   let visibilityState: DocumentVisibilityState = "visible";
   vi.spyOn(document, "visibilityState", "get").mockImplementation(
@@ -3264,7 +3108,7 @@ test("pauses run polling while hidden or outside the Runs tab and refreshes imme
   let runRequests = 0;
   mockProjectFetch((path, method) => {
     if (
-      path === "/api/projects/project-alpha/analysis-runs" &&
+      path === "/api/projects/project-alpha/indexing-runs" &&
       method === "GET"
     ) {
       runRequests += 1;
@@ -3283,9 +3127,9 @@ test("pauses run polling while hidden or outside the Runs tab and refreshes imme
     name: "Bestehende Projekte",
   });
   await user.click(getProjectRow(projectList, "Alpha"));
-  await openProjectTab(user, "Runs");
+  await openProjectTab(user, "Indizieren");
   const runsRegion = await screen.findByRole("region", {
-    name: "Analyse Runs",
+    name: "Indizierungen",
   });
   expect(await within(runsRegion).findByText("running")).toBeInTheDocument();
   expect(runRequests).toBe(1);
@@ -3300,7 +3144,7 @@ test("pauses run polling while hidden or outside the Runs tab and refreshes imme
   expect(await within(runsRegion).findByText("completed")).toBeInTheDocument();
   expect(runRequests).toBe(2);
 
-  await openProjectTab(user, "Profile");
+  await openProjectTab(user, "Import");
   await new Promise((resolve) => window.setTimeout(resolve, 2100));
   expect(runRequests).toBe(2);
 }, 10000);
@@ -3320,14 +3164,14 @@ test("ignores a delayed poll from a previously opened project", async () => {
   });
   mockProjectFetch((path, method) => {
     if (
-      path === "/api/projects/project-alpha/analysis-runs" &&
+      path === "/api/projects/project-alpha/indexing-runs" &&
       method === "GET"
     ) {
       alphaRunRequests += 1;
       return pendingAlphaPoll;
     }
     if (
-      path === "/api/projects/project-beta/analysis-runs" &&
+      path === "/api/projects/project-beta/indexing-runs" &&
       method === "GET"
     ) {
       return jsonResponse([betaRun]);
@@ -3341,7 +3185,7 @@ test("ignores a delayed poll from a previously opened project", async () => {
     name: "Bestehende Projekte",
   });
   await user.click(getProjectRow(projectList, "Alpha"));
-  await openProjectTab(user, "Runs");
+  await openProjectTab(user, "Indizieren");
   await waitFor(() => expect(alphaRunRequests).toBe(1));
 
   const navigation = screen.getByRole("navigation", {
@@ -3357,10 +3201,10 @@ test("ignores a delayed poll from a previously opened project", async () => {
     ]),
   );
   await pendingAlphaPoll;
-  await openProjectTab(user, "Runs");
+  await openProjectTab(user, "Indizieren");
 
   const runsRegion = await screen.findByRole("region", {
-    name: "Analyse Runs",
+    name: "Indizierungen",
   });
   expect(await within(runsRegion).findByText("completed")).toBeInTheDocument();
   expect(within(runsRegion).getByText(/"project":"beta"/)).toBeInTheDocument();
@@ -3377,7 +3221,7 @@ test("ignores a delayed poll after logout", async () => {
   });
   mockProjectFetch((path, method) => {
     if (
-      path === "/api/projects/project-alpha/analysis-runs" &&
+      path === "/api/projects/project-alpha/indexing-runs" &&
       method === "GET"
     ) {
       runRequests += 1;
@@ -3392,7 +3236,7 @@ test("ignores a delayed poll after logout", async () => {
     name: "Bestehende Projekte",
   });
   await user.click(getProjectRow(projectList, "Alpha"));
-  await openProjectTab(user, "Runs");
+  await openProjectTab(user, "Indizieren");
   await waitFor(() => expect(runRequests).toBe(1));
 
   await user.click(screen.getByRole("button", { name: "Abmelden" }));
@@ -3419,7 +3263,7 @@ test("stops polling and ignores an in-flight response after unmount", async () =
   });
   mockProjectFetch((path, method) => {
     if (
-      path === "/api/projects/project-alpha/analysis-runs" &&
+      path === "/api/projects/project-alpha/indexing-runs" &&
       method === "GET"
     ) {
       runRequests += 1;
@@ -3434,7 +3278,7 @@ test("stops polling and ignores an in-flight response after unmount", async () =
     name: "Bestehende Projekte",
   });
   await user.click(getProjectRow(projectList, "Alpha"));
-  await openProjectTab(user, "Runs");
+  await openProjectTab(user, "Indizieren");
   await waitFor(() => expect(runRequests).toBe(1));
 
   rendered.unmount();
@@ -3451,7 +3295,7 @@ test("returns to signed-out state when run polling establishes an invalid sessio
   let runRequests = 0;
   mockProjectFetch((path, method) => {
     if (
-      path === "/api/projects/project-alpha/analysis-runs" &&
+      path === "/api/projects/project-alpha/indexing-runs" &&
       method === "GET"
     ) {
       runRequests += 1;
@@ -3469,7 +3313,7 @@ test("returns to signed-out state when run polling establishes an invalid sessio
     name: "Bestehende Projekte",
   });
   await user.click(getProjectRow(projectList, "Alpha"));
-  await openProjectTab(user, "Runs");
+  await openProjectTab(user, "Indizieren");
 
   expect(
     await screen.findByRole("heading", { name: "Lokaler Zugriff" }),

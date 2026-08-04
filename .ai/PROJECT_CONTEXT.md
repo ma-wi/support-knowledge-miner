@@ -5,8 +5,8 @@ Keep this document compact. It is a map for agents, not a duplicate of the sourc
 ## Purpose
 
 - Product or service: Local-first Support Knowledge Miner for extracting and curating FAQ/support knowledge from historical paired support messages.
-- Primary users: Analyst/Kurator, a fachlich-technischer user who imports data, configures analysis profiles, reviews clusters, curates candidates, and exports results.
-- Main outcome: Independent projects persist imported CSV/JSON support pairs, analysis runs, embeddings, clusters, curation state, candidates, exports, and source traceability.
+- Primary users: Analyst/Kurator, a fachlich-technischer user who imports data, configures embedding providers, starts dataset indexing, reviews clusters, curates candidates, and exports results.
+- Main outcome: Independent projects persist imported CSV/JSON support pairs, indexing runs, embeddings, clusters, curation state, candidates, exports, and source traceability.
 - Explicit non-goals: No production access, no operational FAQ agent, no customer communication, no live ticket/shop/ERP integrations, and no server deployment in MVP 1.
 
 ## Technology stack
@@ -24,10 +24,11 @@ Keep this document compact. It is a map for agents, not a duplicate of the sourc
 
 - Entry points: `backend/main.py`, `backend/api/app.py`, `frontend/src/App.tsx`, `deployment/docker/compose.yml`.
 - Core modules: `auth`, `users`, `audit`, `projects`, `imports`, `providers`, `analysis`, `clusters`, `candidates`, `exports`, `db`.
-- Data flow: authenticated user opens a project, imports paired records, configures
-  a provider/profile, persists bounded provider `message` embeddings, runs
-  HDBSCAN or bounded Agglomerative clustering, curates results, and exports CSV.
-- Trust boundaries: browser to authenticated API, local backend to local PostgreSQL, optional explicit OpenAI/Ollama/vLLM provider calls, local filesystem/Compose volumes.
+- Data flow: authenticated user opens a project, imports paired records, chooses
+  a configured embedding provider/model for dataset indexing, persists bounded
+  provider embeddings for `message` and `answer` text, runs HDBSCAN or bounded
+  Agglomerative clustering in the clustering step, curates results, and exports CSV.
+- Trust boundaries: browser to authenticated API, local backend to local PostgreSQL, optional explicit per-indexing OpenAI/Ollama/vLLM provider calls, local filesystem/Compose volumes.
 - Control plane: `.ai/tools/orchestrate.py`; policy:
   `.ai/policies/ORCHESTRATION.md`
 - Public interfaces: FastAPI `/api/*` routes, React MVP shell, Docker Compose local runtime, `.ai/tools/*` quality gates.
@@ -37,7 +38,7 @@ Keep this document compact. It is a map for agents, not a duplicate of the sourc
   two-slot/30-second-idle/30-minute-total-capped 512 MiB import spooling, two-pass import
   validation with byte-/record-bounded DB batches and cleanup, provider secret
   handling, local Ollama/vLLM endpoint
-  allow-listing, explicit OpenAI cloud confirmation, Unicode-safe 1 KiB embedding
+  allow-listing, explicit per-indexing OpenAI cloud confirmation, Unicode-safe 1 KiB embedding
   chunks with byte-weighted normalized pooling, embedding validation,
   confirmed-batch run progress, five-minute Ollama batch keep-alive, visible-view
   non-overlapping two-second run polling, bounded clustering, curation preservation,
@@ -87,7 +88,7 @@ See `docs/architecture/overview.md` for the durable architecture description.
   batch of 64; responses, vector dimensions, and
   clustering record counts are bounded; imports stream through a two-slot 512 MiB
   wire/temp bound, use 4 MiB/1,000-record DB batches, and retain at most 100 skipped
-  details; two fixed analysis workers use an
+  details; two fixed indexing workers use an
   eight-entry queue, clustering preflights a conservative 512 MiB working-set
   budget before native pgvector loading, including the preallocated float32 matrix,
   estimator matrices, bounded fetch/nearest-neighbor workspaces, linkage-specific
@@ -96,7 +97,7 @@ See `docs/architecture/overview.md` for the durable architecture description.
 - Operational constraints: No production deployment; local volumes own persistence.
 - Known technical debt relevant to current work: Candidate generation and export-adjacent analysis remain
   MVP-quality workflows; clustering quality still depends on the configured
-  embedding model and profile parameters.
+  embedding model and clustering parameters.
 
 ## High-value references
 

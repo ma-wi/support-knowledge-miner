@@ -1,0 +1,5 @@
+# Historical false positives retained in immutable Git history.
+# Do not add new entries without verifying the finding is non-secret test/docs data.
+8c440047ab12b793f7dc41e355ee1299315d4c19:README.md:curl-auth-header:91
+3611502d6c15565e325fea2445a23cb6a280a218:README.md:curl-auth-header:91
+3dc7cb429167a3bb1e77ab14120431969185248f:.ai/template-origin.json:generic-api-key:250

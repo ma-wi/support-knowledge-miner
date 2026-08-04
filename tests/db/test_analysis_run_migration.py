@@ -22,3 +22,20 @@ def test_analysis_run_migration_defines_runs_and_embedding_seam() -> None:
     assert "embedding vector" in migration
     assert "dimensions integer NOT NULL" in migration
     assert "source_object_type IN ('message_pair')" in migration
+
+
+def test_indexing_run_forward_migration_removes_profile_dependency() -> None:
+    migration = (
+        resources.files("backend.db.migrations")
+        .joinpath("0014_indexing_runs_without_profiles.sql")
+        .read_text(encoding="utf-8")
+    )
+
+    assert (
+        "DROP CONSTRAINT IF EXISTS analysis_runs_analysis_profile_id_fkey" in migration
+    )
+    assert "DROP COLUMN IF EXISTS analysis_profile_id" in migration
+    assert "DROP COLUMN IF EXISTS profile_snapshot" in migration
+    assert "'cancelling'" in migration
+    assert "embeddings" in migration
+    assert "DROP COLUMN IF EXISTS analysis_profile_id" in migration

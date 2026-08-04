@@ -14,6 +14,7 @@ from pathlib import Path
 from uuid import UUID
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
+from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.concurrency import run_in_threadpool
@@ -22,10 +23,10 @@ from starlette.requests import ClientDisconnect
 from backend.analysis import (
     AnalysisError,
     AnalysisQueueFull,
-    AnalysisRun,
-    AnalysisRunInput,
     AnalysisService,
     EmbeddingRecord,
+    IndexingRun,
+    IndexingRunInput,
 )
 from backend.auth import AuthService, CurrentUser
 from backend.auth.service import AuthenticationError
@@ -54,8 +55,6 @@ from backend.imports import (
 )
 from backend.imports.service import MAX_IMPORT_BYTES
 from backend.providers import (
-    AnalysisProfile,
-    AnalysisProfileInput,
     ProviderCheckResult,
     ProviderConfiguration,
     ProviderError,
@@ -183,6 +182,8 @@ class ImportLogResponse(BaseModel):
     valid_records: int
     skipped_records: int
     dataset_version_id: UUID | None
+    dataset_display_name: str | None
+    dataset_deleted_at: datetime | None
     started_at: datetime
     completed_at: datetime
 
@@ -197,7 +198,13 @@ class DatasetVersionResponse(BaseModel):
     record_count: int
     source_type: str
     source_name: str
+    display_name: str
+    deleted_at: datetime | None
     created_at: datetime
+
+
+class RenameDatasetVersionRequest(BaseModel):
+    display_name: str = Field(min_length=1)
 
 
 class ImportResultResponse(BaseModel):
@@ -233,56 +240,37 @@ class OllamaPullRequest(BaseModel):
     model: str = Field(min_length=1)
 
 
-class AnalysisProfileRequest(BaseModel):
+class IndexingRunRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    name: str = Field(min_length=1)
+    dataset_version_id: UUID
     provider: str = Field(min_length=1)
     model: str = Field(min_length=1)
-    thresholds: dict[str, object] = Field(default_factory=dict)
-    algorithm_settings: dict[str, object] = Field(default_factory=dict)
-    prompt_template: str | None = None
+    parameters: dict[str, object] | None = Field(default=None, deprecated=True)
+    cloud_use_confirmed: bool = False
 
 
-class AnalysisProfileResponse(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: UUID
-    project_id: UUID
-    name: str
-    provider: str
-    model: str
-    is_cloud_provider: bool
-    thresholds: dict[str, object]
-    algorithm_settings: dict[str, object]
-    prompt_template: str | None
-    created_at: datetime
-    updated_at: datetime
-
-
-class AnalysisRunRequest(BaseModel):
-    dataset_version_id: UUID
-    analysis_profile_id: UUID
-    parameters: dict[str, object] = Field(default_factory=dict)
-
-
-class AnalysisRunResponse(BaseModel):
+class IndexingRunResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
     project_id: UUID
     dataset_version_id: UUID
-    analysis_profile_id: UUID
+    dataset_display_name: str | None
+    dataset_deleted_at: datetime | None
     status: str
     progress: int
-    profile_snapshot: dict[str, object]
+    phase: str
     provider: str
     model: str
     parameters: dict[str, object]
+    error_code: str | None
     error_message: str | None
     diagnostics: dict[str, object]
     started_at: datetime | None
     completed_at: datetime | None
+    cancel_requested_at: datetime | None
+    deleted_at: datetime | None
     created_at: datetime
     updated_at: datetime
 
@@ -292,9 +280,8 @@ class EmbeddingRecordResponse(BaseModel):
 
     id: UUID
     project_id: UUID
-    analysis_run_id: UUID
+    indexing_run_id: UUID
     dataset_version_id: UUID
-    analysis_profile_id: UUID
     source_object_type: str
     source_object_id: UUID
     text_variant: str
@@ -640,12 +627,8 @@ def _provider_check_response(result: ProviderCheckResult) -> ProviderCheckRespon
     )
 
 
-def _analysis_profile_response(profile: AnalysisProfile) -> AnalysisProfileResponse:
-    return AnalysisProfileResponse.model_validate(profile)
-
-
-def _analysis_run_response(run: AnalysisRun) -> AnalysisRunResponse:
-    return AnalysisRunResponse.model_validate(run)
+def _indexing_run_response(run: IndexingRun) -> IndexingRunResponse:
+    return IndexingRunResponse.model_validate(run)
 
 
 def _embedding_response(record: EmbeddingRecord) -> EmbeddingRecordResponse:
@@ -680,14 +663,73 @@ def _export_result_response(result: ExportResult) -> ExportResultResponse:
     )
 
 
-def _analysis_profile_input(payload: AnalysisProfileRequest) -> AnalysisProfileInput:
-    return AnalysisProfileInput(
-        name=payload.name,
-        provider=payload.provider,
-        model=payload.model,
-        thresholds=payload.thresholds,
-        algorithm_settings=payload.algorithm_settings,
-        prompt_template=payload.prompt_template,
+def _analysis_problem_contract(code: str) -> dict[str, str]:
+    return {
+        "UNEXPECTED_ERROR": {
+            "title": "Die Aktion konnte nicht abgeschlossen werden.",
+            "detail": (
+                "Ein unerwarteter Fehler ist aufgetreten; die Eingaben bleiben "
+                "soweit sicher erhalten."
+            ),
+            "suggested_action": (
+                "Bitte erneut versuchen oder den aktuellen Stand neu laden."
+            ),
+        },
+        "INDEXING_MODEL_UNAVAILABLE": {
+            "title": "Die Indizierung wurde nicht gestartet.",
+            "detail": "Das gewählte Embedding-Modell ist nicht verfügbar.",
+            "suggested_action": (
+                "Provider-Einstellungen prüfen oder ein anderes Modell wählen."
+            ),
+        },
+        "INDEXING_CLOUD_CONFIRMATION_REQUIRED": {
+            "title": "Cloud-Nutzung muss bestätigt werden.",
+            "detail": "Diese Indizierung würde Originaltexte an OpenAI senden.",
+            "suggested_action": (
+                "Cloud-Nutzung bestätigen oder ein lokales Modell wählen."
+            ),
+        },
+        "INDEXING_CANCEL_NOT_AVAILABLE": {
+            "title": "Die Indizierung kann nicht abgebrochen werden.",
+            "detail": (
+                "Die Indizierung ist bereits fertig, fehlgeschlagen oder abgebrochen."
+            ),
+            "suggested_action": "Liste aktualisieren und den aktuellen Status prüfen.",
+        },
+    }.get(
+        code,
+        {
+            "title": "Die Aktion konnte nicht abgeschlossen werden.",
+            "detail": (
+                "Ein unerwarteter Fehler ist aufgetreten; die Eingaben bleiben "
+                "soweit sicher erhalten."
+            ),
+            "suggested_action": (
+                "Bitte erneut versuchen oder den aktuellen Stand neu laden."
+            ),
+        },
+    )
+
+
+def _analysis_problem_response(error: AnalysisError) -> JSONResponse:
+    status_code = error.status_code
+    contract = _analysis_problem_contract(error.code)
+    return JSONResponse(
+        status_code=status_code,
+        content={
+            "type": f"urn:skm:error:{error.code}",
+            "title": contract["title"],
+            "status": status_code,
+            "detail": contract["detail"],
+            "code": error.code,
+            "correlationId": None,
+            "retryable": error.retryable,
+            "suggestedAction": contract["suggested_action"],
+            "fieldErrors": [
+                {"field": field, "message": message}
+                for field, message in error.field_errors.items()
+            ],
+        },
     )
 
 
@@ -929,6 +971,50 @@ def create_app(
             for entry in import_service.get_log_entries(project_id, import_log_id)
         ]
 
+    @app.patch(
+        "/api/projects/{project_id}/dataset-versions/{dataset_version_id}",
+        response_model=DatasetVersionResponse,
+    )
+    def rename_dataset_version(
+        project_id: UUID,
+        dataset_version_id: UUID,
+        payload: RenameDatasetVersionRequest,
+        actor: CurrentUser = Depends(current_user),
+    ) -> DatasetVersionResponse:
+        try:
+            dataset = import_service.rename_dataset_version(
+                project_id,
+                dataset_version_id,
+                payload.display_name,
+                actor_user_id=actor.id,
+            )
+        except ImportError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+            ) from exc
+        return DatasetVersionResponse.model_validate(dataset)
+
+    @app.delete(
+        "/api/projects/{project_id}/dataset-versions/{dataset_version_id}",
+        response_model=DatasetVersionResponse,
+    )
+    def delete_dataset_version(
+        project_id: UUID,
+        dataset_version_id: UUID,
+        actor: CurrentUser = Depends(current_user),
+    ) -> DatasetVersionResponse:
+        try:
+            dataset = import_service.delete_dataset_version(
+                project_id,
+                dataset_version_id,
+                actor_user_id=actor.id,
+            )
+        except ImportError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+            ) from exc
+        return DatasetVersionResponse.model_validate(dataset)
+
     @app.get("/api/providers", response_model=list[ProviderConfigurationResponse])
     def list_providers(
         _: CurrentUser = Depends(current_user),
@@ -999,130 +1085,83 @@ def create_app(
             ) from exc
         return _provider_response(configuration)
 
-    @app.get(
-        "/api/projects/{project_id}/analysis-profiles",
-        response_model=list[AnalysisProfileResponse],
-    )
-    def list_analysis_profiles(
-        project_id: UUID,
-        _: CurrentUser = Depends(current_user),
-    ) -> list[AnalysisProfileResponse]:
-        return [
-            _analysis_profile_response(profile)
-            for profile in provider_service.list_profiles(project_id)
-        ]
-
     @app.post(
-        "/api/projects/{project_id}/analysis-profiles",
-        response_model=AnalysisProfileResponse,
+        "/api/projects/{project_id}/indexing-runs",
+        response_model=IndexingRunResponse,
         status_code=status.HTTP_201_CREATED,
     )
-    def create_analysis_profile(
+    def start_indexing_run(
         project_id: UUID,
-        payload: AnalysisProfileRequest,
+        payload: IndexingRunRequest,
         actor: CurrentUser = Depends(current_user),
-    ) -> AnalysisProfileResponse:
+    ) -> IndexingRunResponse | JSONResponse:
         try:
-            profile = provider_service.create_profile(
-                project_id,
-                _analysis_profile_input(payload),
-                actor_user_id=actor.id,
-            )
-        except ProviderError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
-            ) from exc
-        return _analysis_profile_response(profile)
-
-    @app.patch(
-        "/api/projects/{project_id}/analysis-profiles/{profile_id}",
-        response_model=AnalysisProfileResponse,
-    )
-    def update_analysis_profile(
-        project_id: UUID,
-        profile_id: UUID,
-        payload: AnalysisProfileRequest,
-        actor: CurrentUser = Depends(current_user),
-    ) -> AnalysisProfileResponse:
-        try:
-            profile = provider_service.update_profile(
-                project_id,
-                profile_id,
-                _analysis_profile_input(payload),
-                actor_user_id=actor.id,
-            )
-        except ProviderError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
-            ) from exc
-        return _analysis_profile_response(profile)
-
-    @app.post(
-        "/api/projects/{project_id}/analysis-runs",
-        response_model=AnalysisRunResponse,
-        status_code=status.HTTP_201_CREATED,
-    )
-    def start_analysis_run(
-        project_id: UUID,
-        payload: AnalysisRunRequest,
-        actor: CurrentUser = Depends(current_user),
-    ) -> AnalysisRunResponse:
-        try:
+            if "parameters" in payload.model_fields_set:
+                raise AnalysisError(
+                    "indexing run parameters are no longer accepted",
+                    code="INDEXING_MODEL_UNAVAILABLE",
+                    status_code=422,
+                    suggested_action="correct-input",
+                    field_errors={
+                        "parameters": (
+                            "indexing parameters are no longer accepted; "
+                            "cluster algorithm settings are set during clustering"
+                        )
+                    },
+                )
             run = analysis_service.start_run(
                 project_id,
-                AnalysisRunInput(
+                IndexingRunInput(
                     dataset_version_id=payload.dataset_version_id,
-                    analysis_profile_id=payload.analysis_profile_id,
-                    parameters=payload.parameters,
+                    provider=payload.provider,
+                    model=payload.model,
+                    parameters={},
+                    cloud_use_confirmed=payload.cloud_use_confirmed,
                 ),
                 actor_user_id=actor.id,
             )
             analysis_service.enqueue_run(run.id)
         except AnalysisQueueFull as exc:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
-            ) from exc
+            return _analysis_problem_response(exc)
         except AnalysisError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
-            ) from exc
-        return _analysis_run_response(run)
+            return _analysis_problem_response(exc)
+        return _indexing_run_response(run)
 
     @app.get(
-        "/api/projects/{project_id}/analysis-runs",
-        response_model=list[AnalysisRunResponse],
+        "/api/projects/{project_id}/indexing-runs",
+        response_model=list[IndexingRunResponse],
     )
-    def list_analysis_runs(
+    def list_indexing_runs(
         project_id: UUID,
         _: CurrentUser = Depends(current_user),
-    ) -> list[AnalysisRunResponse]:
+    ) -> list[IndexingRunResponse]:
         return [
-            _analysis_run_response(run)
+            _indexing_run_response(run)
             for run in analysis_service.list_runs(project_id)
         ]
 
     @app.get(
-        "/api/projects/{project_id}/analysis-runs/{run_id}",
-        response_model=AnalysisRunResponse,
+        "/api/projects/{project_id}/indexing-runs/{run_id}",
+        response_model=IndexingRunResponse,
     )
-    def get_analysis_run(
+    def get_indexing_run(
         project_id: UUID,
         run_id: UUID,
         _: CurrentUser = Depends(current_user),
-    ) -> AnalysisRunResponse:
+    ) -> IndexingRunResponse:
         run = analysis_service.get_run(project_id, run_id)
         if run is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail="analysis run not found",
+                detail="indexing run not found",
             )
-        return _analysis_run_response(run)
+        return _indexing_run_response(run)
 
     @app.get(
-        "/api/projects/{project_id}/analysis-runs/{run_id}/embeddings",
+        "/api/projects/{project_id}/indexing-runs/{run_id}/embeddings",
         response_model=list[EmbeddingRecordResponse],
     )
-    def list_analysis_run_embeddings(
+    def list_indexing_run_embeddings(
         project_id: UUID,
         run_id: UUID,
         _: CurrentUser = Depends(current_user),
@@ -1131,6 +1170,41 @@ def create_app(
             _embedding_response(record)
             for record in analysis_service.list_embeddings(project_id, run_id)
         ]
+
+    @app.post(
+        "/api/projects/{project_id}/indexing-runs/{run_id}/cancel",
+        response_model=IndexingRunResponse,
+    )
+    def cancel_indexing_run(
+        project_id: UUID,
+        run_id: UUID,
+        actor: CurrentUser = Depends(current_user),
+    ) -> IndexingRunResponse | JSONResponse:
+        try:
+            run = analysis_service.cancel_run(
+                project_id, run_id, actor_user_id=actor.id
+            )
+        except AnalysisError as exc:
+            return _analysis_problem_response(exc)
+        return _indexing_run_response(run)
+
+    @app.delete(
+        "/api/projects/{project_id}/indexing-runs/{run_id}",
+        status_code=status.HTTP_204_NO_CONTENT,
+        response_model=None,
+    )
+    def delete_indexing_run(
+        project_id: UUID,
+        run_id: UUID,
+        response: Response,
+        actor: CurrentUser = Depends(current_user),
+    ) -> Response | JSONResponse:
+        try:
+            analysis_service.delete_run(project_id, run_id, actor_user_id=actor.id)
+        except AnalysisError as exc:
+            return _analysis_problem_response(exc)
+        response.status_code = status.HTTP_204_NO_CONTENT
+        return response
 
     @app.post(
         "/api/projects/{project_id}/analysis-runs/{run_id}/clusters/generate",

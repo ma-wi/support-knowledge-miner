@@ -3,7 +3,7 @@ from __future__ import annotations
 from importlib import resources
 
 
-def test_provider_profile_migration_defines_global_settings_and_profiles() -> None:
+def test_provider_migration_defines_global_settings_before_profile_removal() -> None:
     migration = (
         resources.files("backend.db.migrations")
         .joinpath("0005_providers_profiles.sql")
@@ -21,6 +21,17 @@ def test_provider_profile_migration_defines_global_settings_and_profiles() -> No
     )
     assert "CONSTRAINT analysis_profiles_project_name_unique" in migration
     assert "api_key_plaintext" not in migration
+
+
+def test_profile_tables_are_removed_by_indexing_forward_migration() -> None:
+    migration = (
+        resources.files("backend.db.migrations")
+        .joinpath("0014_indexing_runs_without_profiles.sql")
+        .read_text(encoding="utf-8")
+    )
+
+    assert "DROP TABLE IF EXISTS analysis_profiles" in migration
+    assert "DROP COLUMN IF EXISTS analysis_profile_id" in migration
 
 
 def test_ollama_provider_migration_extends_existing_constraints() -> None:

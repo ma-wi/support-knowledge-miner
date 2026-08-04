@@ -22,6 +22,7 @@ def test_import_migration_is_ordered_after_projects() -> None:
         "0011_email_identity.sql",
         "0012_import_snake_case_fields.sql",
         "0013_remove_prompt_identifier_run_mode.sql",
+        "0014_indexing_runs_without_profiles.sql",
     ]
 
 

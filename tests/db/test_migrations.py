@@ -22,6 +22,7 @@ def test_migration_files_are_ordered() -> None:
         "0011_email_identity.sql",
         "0012_import_snake_case_fields.sql",
         "0013_remove_prompt_identifier_run_mode.sql",
+        "0014_indexing_runs_without_profiles.sql",
     ]
 
 
@@ -32,7 +33,7 @@ def test_foundation_migration_enables_pgvector() -> None:
     )
 
 
-def test_removed_profile_and_run_fields_have_forward_migration() -> None:
+def test_removed_prompt_and_run_mode_fields_have_forward_migration() -> None:
     migration = resources.files("backend.db.migrations").joinpath(
         "0013_remove_prompt_identifier_run_mode.sql"
     )
@@ -41,3 +42,19 @@ def test_removed_profile_and_run_fields_have_forward_migration() -> None:
     assert "DROP COLUMN prompt_identifier" in sql
     assert "profile_snapshot - 'prompt_identifier'" in sql
     assert "parameters - 'mode'" in sql
+
+
+def test_analysis_profiles_have_destructive_forward_migration() -> None:
+    migration = resources.files("backend.db.migrations").joinpath(
+        "0014_indexing_runs_without_profiles.sql"
+    )
+    sql = migration.read_text(encoding="utf-8")
+
+    assert "TRUNCATE TABLE" in sql
+    assert "DROP TABLE IF EXISTS analysis_profiles" in sql
+    assert "DROP COLUMN IF EXISTS analysis_profile_id" in sql
+    assert "DROP COLUMN IF EXISTS profile_snapshot" in sql
+    assert "ADD COLUMN IF NOT EXISTS phase text" in sql
+    assert "ADD COLUMN IF NOT EXISTS error_code text" in sql
+    assert "ADD COLUMN IF NOT EXISTS display_name text" in sql
+    assert "UPDATE export_logs" in sql

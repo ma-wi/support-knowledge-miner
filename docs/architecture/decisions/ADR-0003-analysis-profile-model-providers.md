@@ -1,10 +1,21 @@
 # ADR-0003: Global provider configuration with analysis-profile model selection
 
-- Status: accepted
+- Status: superseded by ADR-0007
 - Date: 2026-07-19
 - Owners: User
 - Related requirement: support-knowledge-miner-mvp1
 - External reference identifiers: none
+
+## Supersession
+
+ADR-0007 supersedes this decision on 2026-08-04. Analysis profiles are no longer an
+active product concept. Provider configuration remains global, but model and
+runtime choices move to the action that uses them:
+
+- Embedding model selection belongs to an Indizierung.
+- Cluster algorithm, vector basis and optional LLM model selection belong to a
+  Cluster-Set.
+- LLM providers are configured separately from embedding providers.
 
 ## Context
 

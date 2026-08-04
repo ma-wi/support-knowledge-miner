@@ -1,10 +1,13 @@
-"""Analysis-run service exports."""
+"""Indexing service exports."""
 
 from backend.analysis.service import (
     AnalysisError,
     AnalysisQueueFull,
     AnalysisRun,
     AnalysisRunInput,
+    IndexingError,
+    IndexingRun,
+    IndexingRunInput,
     AnalysisService,
     EmbeddingRecord,
 )
@@ -14,6 +17,9 @@ __all__ = [
     "AnalysisQueueFull",
     "AnalysisRun",
     "AnalysisRunInput",
+    "IndexingError",
+    "IndexingRun",
+    "IndexingRunInput",
     "AnalysisService",
     "EmbeddingRecord",
 ]

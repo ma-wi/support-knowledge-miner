@@ -57,11 +57,10 @@ def settings(name: str) -> DatabaseSettings:
     return DatabaseSettings(url=os.environ[name])
 
 
-def assert_provider_constraints(database: DatabaseSettings, user_id: UUID) -> None:
+def assert_indexing_provider_constraints(database: DatabaseSettings, user_id: UUID) -> None:
     project_id = uuid4()
     import_id = uuid4()
     dataset_id = uuid4()
-    profile_id = uuid4()
     with open_database_connection(database) as connection:
         connection.execute(
             "INSERT INTO projects (id, name, created_by_user_id) VALUES (%s, %s, %s)",
@@ -89,16 +88,6 @@ def assert_provider_constraints(database: DatabaseSettings, user_id: UUID) -> No
         )
         connection.execute(
             """
-            INSERT INTO analysis_profiles (
-                id, project_id, name, provider, model, is_cloud_provider,
-                created_by_user_id
-            )
-            VALUES (%s, %s, 'Ollama', 'ollama', 'local-model', false, %s)
-            """,
-            (profile_id, project_id, user_id),
-        )
-        connection.execute(
-            """
             INSERT INTO provider_configurations (provider, manual_models)
             VALUES ('ollama', '["local-model"]'::jsonb)
             """
@@ -106,13 +95,13 @@ def assert_provider_constraints(database: DatabaseSettings, user_id: UUID) -> No
         connection.execute(
             """
             INSERT INTO analysis_runs (
-                id, project_id, dataset_version_id, analysis_profile_id, status,
-                profile_snapshot, provider, model, created_by_user_id
+                id, project_id, dataset_version_id, status, provider, model,
+                parameters, created_by_user_id
             )
-            VALUES (%s, %s, %s, %s, 'queued', '{}'::jsonb, 'ollama',
-                    'local-model', %s)
+            VALUES (%s, %s, %s, 'queued', 'ollama', 'local-model',
+                    '{}'::jsonb, %s)
             """,
-            (uuid4(), project_id, dataset_id, profile_id, user_id),
+            (uuid4(), project_id, dataset_id, user_id),
         )
         for table, statement in (
             (
@@ -123,30 +112,18 @@ def assert_provider_constraints(database: DatabaseSettings, user_id: UUID) -> No
                 """,
             ),
             (
-                "analysis_profiles",
-                """
-                INSERT INTO analysis_profiles (
-                    id, project_id, name, provider, model, is_cloud_provider
-                )
-                VALUES (%s, %s, 'Invalid', 'unsupported', 'model', false)
-                """,
-            ),
-            (
                 "analysis_runs",
                 """
                 INSERT INTO analysis_runs (
-                    id, project_id, dataset_version_id, analysis_profile_id,
-                    status, profile_snapshot, provider, model
+                    id, project_id, dataset_version_id, status, provider, model
                 )
-                VALUES (%s, %s, %s, %s, 'queued', '{}'::jsonb,
-                        'unsupported', 'model')
+                VALUES (%s, %s, %s, 'queued', 'unsupported', 'model')
                 """,
             ),
         ):
             parameters = {
                 "provider_configurations": (),
-                "analysis_profiles": (uuid4(), project_id),
-                "analysis_runs": (uuid4(), project_id, dataset_id, profile_id),
+                "analysis_runs": (uuid4(), project_id, dataset_id),
             }[table]
             try:
                 with connection.transaction():
@@ -177,18 +154,21 @@ def assert_import_source_id_columns(database: DatabaseSettings) -> None:
         raise AssertionError(f"legacy import columns remain: {columns}")
 
 
-def assert_removed_profile_run_fields(
+def assert_profile_free_indexing_schema(
     database: DatabaseSettings, legacy_run_id: UUID | None = None
 ) -> None:
     with open_database_connection(database) as connection:
-        profile_columns = {
+        profile_table = connection.execute(
+            "SELECT to_regclass('analysis_profiles') AS table_name"
+        ).fetchone()["table_name"]
+        run_columns = {
             str(row["column_name"])
             for row in connection.execute(
                 """
                 SELECT column_name
                 FROM information_schema.columns
                 WHERE table_schema = current_schema()
-                  AND table_name = 'analysis_profiles'
+                  AND table_name = 'analysis_runs'
                 """
             ).fetchall()
         }
@@ -196,31 +176,28 @@ def assert_removed_profile_run_fields(
             run = None
         else:
             run = connection.execute(
-                """
-                SELECT profile_snapshot, parameters
-                FROM analysis_runs
-                WHERE id = %s
-                """,
+                "SELECT id FROM analysis_runs WHERE id = %s",
                 (legacy_run_id,),
             ).fetchone()
-    if "prompt_identifier" in profile_columns:
-        raise AssertionError("prompt_identifier column remains")
-    if "prompt_template" not in profile_columns:
-        raise AssertionError("prompt_template column was removed")
-    if legacy_run_id is not None:
-        if run is None:
-            raise AssertionError("seeded legacy analysis run is missing")
-        if run["profile_snapshot"] != {
-            "name": "Legacy profile",
-            "prompt_template": "retained",
-        }:
-            raise AssertionError(
-                f"profile snapshot cleanup changed other keys: {run['profile_snapshot']}"
-            )
-        if run["parameters"] != {"cloud_use_confirmed": True}:
-            raise AssertionError(
-                f"run parameter cleanup changed other keys: {run['parameters']}"
-            )
+    if profile_table is not None:
+        raise AssertionError("analysis_profiles table remains")
+    if {"analysis_profile_id", "profile_snapshot"} & run_columns:
+        raise AssertionError(f"profile-coupled run columns remain: {run_columns}")
+    required_columns = {
+        "dataset_version_id",
+        "provider",
+        "model",
+        "parameters",
+        "phase",
+        "error_code",
+        "cancel_requested_at",
+        "deleted_at",
+        "deleted_by_user_id",
+    }
+    if not required_columns.issubset(run_columns):
+        raise AssertionError(f"indexing run columns missing: {run_columns}")
+    if legacy_run_id is not None and run is not None:
+        raise AssertionError("legacy derived analysis run survived destructive migration")
 
 
 fresh = settings("FRESH_DATABASE_URL")
@@ -228,10 +205,11 @@ fresh_result = run_migrations(fresh)
 if not {
     "0012_import_snake_case_fields.sql",
     "0013_remove_prompt_identifier_run_mode.sql",
+    "0014_indexing_runs_without_profiles.sql",
 }.issubset(fresh_result.applied_versions):
     raise AssertionError("fresh migration did not apply the latest migrations")
 assert_import_source_id_columns(fresh)
-assert_removed_profile_run_fields(fresh)
+assert_profile_free_indexing_schema(fresh)
 fresh_user_id = uuid4()
 with open_database_connection(fresh) as connection:
     connection.execute(
@@ -242,7 +220,7 @@ with open_database_connection(fresh) as connection:
         (fresh_user_id, hash_password("fresh-password")),
     )
     connection.commit()
-assert_provider_constraints(fresh, fresh_user_id)
+assert_indexing_provider_constraints(fresh, fresh_user_id)
 
 upgrade = settings("UPGRADE_DATABASE_URL")
 legacy_run_id = uuid4()
@@ -359,10 +337,11 @@ if upgrade_result.applied_versions != (
     "0011_email_identity.sql",
     "0012_import_snake_case_fields.sql",
     "0013_remove_prompt_identifier_run_mode.sql",
+    "0014_indexing_runs_without_profiles.sql",
 ):
     raise AssertionError(f"unexpected upgrade set: {upgrade_result.applied_versions}")
 assert_import_source_id_columns(upgrade)
-assert_removed_profile_run_fields(upgrade, legacy_run_id)
+assert_profile_free_indexing_schema(upgrade, legacy_run_id)
 with open_database_connection(upgrade) as connection:
     username_column = connection.execute(
         """
@@ -378,6 +357,6 @@ if username_column is not None:
 token = AuthService(upgrade).sign_in("user-b@example.test", "user-b-password")
 if token.user.id != second_user_id:
     raise AssertionError("email login resolved the wrong legacy account")
-assert_provider_constraints(upgrade, second_user_id)
-print("fresh_and_0009_upgrade_migrations=ok")
+assert_indexing_provider_constraints(upgrade, second_user_id)
+print("fresh_and_0009_to_0014_migrations=ok")
 PY

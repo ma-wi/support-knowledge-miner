@@ -41,7 +41,7 @@ run_smoke_script() {
     "smoke-imports.sh|imports-project|56102|imports_smoke=ok"
     "smoke-postgres.sh|postgres-project|56103|smoke_persistence_marker"
     "smoke-projects.sh|projects-project|56104|project_lifecycle_smoke=ok"
-    "smoke-providers-profiles.sh|providers-project|56105|providers_profiles_smoke=ok"
+    "smoke-providers-profiles.sh|providers-project|56105|providers_indexing_smoke=ok"
   )
   local case_value script_name project_name port payload_marker
 
@@ -97,7 +97,7 @@ run_smoke_script() {
   assert_contains "${FAKE_UV_LOG}" \
     "UPGRADE_DATABASE_URL=postgresql://support_knowledge_miner:support_knowledge_miner_dev_password@localhost:56111/support_knowledge_miner_upgrade"
   assert_contains "${FAKE_UV_PAYLOAD_LOG}" \
-    "fresh_and_0009_upgrade_migrations=ok"
+    "fresh_and_0009_to_0014_migrations=ok"
 }
 
 @test "readiness exhaustion fails closed, skips Python, and removes Compose resources" {

@@ -1,8 +1,6 @@
-"""Global provider settings and project analysis profiles."""
+"""Global provider settings."""
 
 from backend.providers.service import (
-    AnalysisProfile,
-    AnalysisProfileInput,
     ProviderCheckResult,
     ProviderConfiguration,
     ProviderError,
@@ -11,8 +9,6 @@ from backend.providers.service import (
 )
 
 __all__ = [
-    "AnalysisProfile",
-    "AnalysisProfileInput",
     "ProviderCheckResult",
     "ProviderConfiguration",
     "ProviderError",

@@ -10,15 +10,14 @@ import pytest
 import backend.analysis.service as analysis_service_module
 from backend.analysis import (
     AnalysisQueueFull,
-    AnalysisRunInput,
     AnalysisService,
+    IndexingRunInput,
 )
 from backend.providers import ProviderError
 
 ACTOR_ID = UUID("11111111-1111-1111-1111-111111111111")
 PROJECT_ID = UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
 DATASET_ID = UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
-PROFILE_ID = UUID("cccccccc-cccc-cccc-cccc-cccccccccccc")
 PAIR_ID = UUID("eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee")
 NOW = datetime(2026, 7, 22, tzinfo=UTC)
 
@@ -80,17 +79,22 @@ class AnalysisConnection:
     def __init__(
         self,
         *,
-        is_cloud_provider: bool = False,
+        provider: str = "vllm",
+        api_key_set: bool = False,
+        endpoint_url: str | None = "http://localhost:8000/",
         message: str = "How do I reset it?",
-        messages: list[str] | None = None,
+        answer: str = "Use the reset flow.",
+        messages: list[tuple[str, str]] | None = None,
     ) -> None:
         self.run: dict[str, object] | None = None
         self.embeddings: list[dict[str, object]] = []
         self.progress_updates: list[int] = []
         self.active_server_cursor: str | None = None
         self.server_cursor_events: list[tuple[str, str]] = []
-        self.is_cloud_provider = is_cloud_provider
-        self.messages = messages if messages is not None else [message]
+        self.provider = provider
+        self.api_key_secret = "encrypted" if api_key_set else None
+        self.endpoint_url = endpoint_url
+        self.messages = messages if messages is not None else [(message, answer)]
 
     def __enter__(self) -> AnalysisConnection:
         return self
@@ -109,17 +113,25 @@ class AnalysisConnection:
     ) -> FakeResult:
         assert params == (PROJECT_ID, DATASET_ID)
         normalized = " ".join(query.split())
-        if normalized.startswith("SELECT message FROM message_pairs"):
-            return FakeResult([{"message": message} for message in self.messages])
-        if normalized.startswith("SELECT id, ordinal, message FROM message_pairs"):
+        if normalized.startswith("SELECT message, answer FROM message_pairs"):
+            return FakeResult(
+                [
+                    {"message": message, "answer": answer}
+                    for message, answer in self.messages
+                ]
+            )
+        if normalized.startswith(
+            "SELECT id, ordinal, message, answer FROM message_pairs"
+        ):
             return FakeResult(
                 [
                     {
                         "id": PAIR_ID if index == 0 else UUID(int=index + 1),
                         "ordinal": index + 1,
                         "message": message,
+                        "answer": answer,
                     }
-                    for index, message in enumerate(self.messages)
+                    for index, (message, answer) in enumerate(self.messages)
                 ]
             )
         raise AssertionError(f"unexpected server-cursor query: {normalized}")
@@ -128,25 +140,25 @@ class AnalysisConnection:
         self, query: str, params: tuple[object, ...] | None = None
     ) -> FakeResult:
         normalized = " ".join(query.split())
-        if normalized.startswith("SELECT id, record_count FROM dataset_versions"):
-            return FakeResult([{"id": DATASET_ID, "record_count": len(self.messages)}])
-        if normalized.startswith("SELECT id, name, provider, model"):
+        if normalized.startswith("SELECT id, record_count, display_name, deleted_at"):
             return FakeResult(
                 [
                     {
-                        "id": PROFILE_ID,
-                        "name": "Local profile",
-                        "provider": "vllm",
-                        "model": "local-embed",
-                        "is_cloud_provider": self.is_cloud_provider,
-                        "thresholds": {"similarity": 0.78},
-                        "algorithm_settings": {
-                            "algorithm": "hdbscan",
-                            "min_cluster_size": 5,
-                        },
-                        "prompt_template": None,
-                        "created_at": NOW,
-                        "updated_at": NOW,
+                        "id": DATASET_ID,
+                        "record_count": len(self.messages),
+                        "display_name": "Support import",
+                        "deleted_at": None,
+                    }
+                ]
+            )
+        if normalized.startswith("SELECT manual_models, api_key_secret, endpoint_url"):
+            assert params == (self.provider,)
+            return FakeResult(
+                [
+                    {
+                        "manual_models": ["local-embed"],
+                        "api_key_secret": self.api_key_secret,
+                        "endpoint_url": self.endpoint_url,
                     }
                 ]
             )
@@ -156,17 +168,21 @@ class AnalysisConnection:
                 "id": params[0],
                 "project_id": params[1],
                 "dataset_version_id": params[2],
-                "analysis_profile_id": params[3],
+                "dataset_display_name": params[7],
+                "dataset_deleted_at": None,
                 "status": "queued",
                 "progress": 0,
-                "profile_snapshot": unwrap_json(params[4]),
-                "provider": params[5],
-                "model": params[6],
-                "parameters": unwrap_json(params[7]),
+                "phase": "queued",
+                "provider": params[3],
+                "model": params[4],
+                "parameters": unwrap_json(params[5]),
+                "error_code": None,
                 "error_message": None,
                 "diagnostics": {},
                 "started_at": None,
                 "completed_at": None,
+                "cancel_requested_at": None,
+                "deleted_at": None,
                 "created_at": NOW,
                 "updated_at": NOW,
             }
@@ -178,6 +194,7 @@ class AnalysisConnection:
             self.run["status"] = "running"
             assert params is not None
             self.run["progress"] = params[0]
+            self.run["phase"] = "embedding"
             self.run["started_at"] = NOW
             return FakeResult(
                 [
@@ -185,12 +202,14 @@ class AnalysisConnection:
                         "id": self.run["id"],
                         "project_id": self.run["project_id"],
                         "dataset_version_id": self.run["dataset_version_id"],
-                        "analysis_profile_id": self.run["analysis_profile_id"],
                         "provider": self.run["provider"],
                         "model": self.run["model"],
                     }
                 ]
             )
+        if normalized.startswith("SELECT status FROM analysis_runs WHERE id ="):
+            assert self.run is not None
+            return FakeResult([{"status": self.run["status"]}])
         if normalized.startswith("INSERT INTO embeddings"):
             assert params is not None
             self.embeddings.append(
@@ -199,9 +218,8 @@ class AnalysisConnection:
                     "project_id": params[1],
                     "analysis_run_id": params[2],
                     "dataset_version_id": params[3],
-                    "analysis_profile_id": params[4],
-                    "source_object_id": params[5],
-                    "text_variant": "message",
+                    "source_object_id": params[4],
+                    "text_variant": params[5],
                     "model": params[6],
                     "dimensions": params[7],
                     "embedding": params[8],
@@ -209,13 +227,22 @@ class AnalysisConnection:
                 }
             )
             return FakeResult()
-        if normalized.startswith("UPDATE analysis_runs SET status = 'completed'"):
+        if normalized.startswith("UPDATE analysis_runs SET status = CASE"):
             assert params is not None
             assert self.run is not None
-            self.run["status"] = "completed"
-            self.run["progress"] = 100
+            if self.run["status"] == "cancelling":
+                self.run["status"] = "cancelled"
+                self.run["phase"] = "cancelled"
+            else:
+                self.run["status"] = "completed"
+                self.run["progress"] = 100
+                self.run["phase"] = "completed"
             self.run["completed_at"] = NOW
-            self.run["diagnostics"] = unwrap_json(params[0])
+            existing_diagnostics = self.run["diagnostics"]
+            next_diagnostics = unwrap_json(params[0])
+            assert isinstance(existing_diagnostics, dict)
+            assert isinstance(next_diagnostics, dict)
+            self.run["diagnostics"] = {**existing_diagnostics, **next_diagnostics}
             return FakeResult()
         if normalized.startswith("UPDATE analysis_runs SET progress ="):
             assert params is not None
@@ -232,14 +259,17 @@ class AnalysisConnection:
             assert params is not None
             assert self.run is not None
             self.run["status"] = "failed"
+            self.run["phase"] = "failed"
             if len(params) == 2:
+                self.run["error_code"] = "UNEXPECTED_ERROR"
                 self.run["error_message"] = "AnalysisQueueFull"
                 self.run["diagnostics"] = unwrap_json(params[0])
             else:
-                self.run["error_message"] = params[0]
-                self.run["diagnostics"] = unwrap_json(params[1])
+                self.run["error_code"] = params[0]
+                self.run["error_message"] = params[1]
+                self.run["diagnostics"] = unwrap_json(params[2])
             return FakeResult()
-        if normalized.startswith("SELECT id, project_id, dataset_version_id"):
+        if normalized.startswith("SELECT r.id, r.project_id, r.dataset_version_id"):
             assert self.run is not None
             return FakeResult([self.run])
         raise AssertionError(f"unexpected query: {normalized}")
@@ -341,7 +371,7 @@ def test_message_chunks_are_consumed_only_as_provider_batches_need_them(
     assert embedded == [([1.0, 0.0], 129, 9, "byte_weighted_mean_l2")]
 
 
-def test_start_run_returns_queued_before_batched_embedding_completes(
+def test_start_indexing_returns_queued_before_batched_embedding_completes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     fake_connection = AnalysisConnection()
@@ -355,19 +385,21 @@ def test_start_run_returns_queued_before_batched_embedding_completes(
     service = AnalysisService(provider_service=embedding_provider)  # type: ignore[arg-type]
     run = service.start_run(
         PROJECT_ID,
-        AnalysisRunInput(
+        IndexingRunInput(
             dataset_version_id=DATASET_ID,
-            analysis_profile_id=PROFILE_ID,
-            parameters={"experiment": "baseline"},
+            provider="vllm",
+            model="local-embed",
+            parameters={},
         ),
         actor_user_id=ACTOR_ID,
     )
 
     assert run.status == "queued"
     assert run.progress == 0
-    assert run.profile_snapshot["model"] == "local-embed"
-    assert run.parameters == {"experiment": "baseline"}
-    assert "prompt_identifier" not in run.profile_snapshot
+    assert run.phase == "queued"
+    assert run.provider == "vllm"
+    assert run.model == "local-embed"
+    assert run.parameters == {}
     assert fake_connection.embeddings == []
 
     service.execute_queued_run(run.id)
@@ -376,9 +408,14 @@ def test_start_run_returns_queued_before_batched_embedding_completes(
     assert completed is not None
     assert completed.status == "completed"
     assert completed.progress == 100
-    assert completed.diagnostics["embeddings_written"] == 1
-    assert len(fake_connection.embeddings) == 1
-    assert fake_connection.embeddings[0]["text_variant"] == "message"
+    assert completed.diagnostics["embeddings_written"] == 2
+    assert completed.diagnostics["message_embeddings"] == 1
+    assert completed.diagnostics["answer_embeddings"] == 1
+    assert len(fake_connection.embeddings) == 2
+    assert {item["text_variant"] for item in fake_connection.embeddings} == {
+        "message",
+        "answer",
+    }
     assert all(item["dimensions"] == 3 for item in fake_connection.embeddings)
     assert (
         fake_connection.embeddings[0]["embedding"]
@@ -387,10 +424,13 @@ def test_start_run_returns_queued_before_batched_embedding_completes(
     assert all(
         item["source_object_id"] == PAIR_ID for item in fake_connection.embeddings
     )
-    assert embedding_provider.calls == [("vllm", "local-embed", ["How do I reset it?"])]
+    assert embedding_provider.calls == [
+        ("vllm", "local-embed", ["How do I reset it?"]),
+        ("vllm", "local-embed", ["Use the reset flow."]),
+    ]
 
 
-def test_long_message_run_persists_one_pooled_embedding_with_provenance(
+def test_long_message_run_persists_pooled_embeddings_with_provenance(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     message = "ä" * 20_711
@@ -404,9 +444,10 @@ def test_long_message_run_persists_one_pooled_embedding_with_provenance(
     service = AnalysisService(provider_service=embedding_provider)  # type: ignore[arg-type]
     run = service.start_run(
         PROJECT_ID,
-        AnalysisRunInput(
+        IndexingRunInput(
             dataset_version_id=DATASET_ID,
-            analysis_profile_id=PROFILE_ID,
+            provider="vllm",
+            model="local-embed",
             parameters={},
         ),
         actor_user_id=ACTOR_ID,
@@ -417,14 +458,17 @@ def test_long_message_run_persists_one_pooled_embedding_with_provenance(
 
     assert completed is not None
     assert completed.status == "completed"
-    assert len(fake_connection.embeddings) == 1
-    metadata = fake_connection.embeddings[0]["metadata"]
+    assert len(fake_connection.embeddings) == 2
+    message_embedding = next(
+        item for item in fake_connection.embeddings if item["text_variant"] == "message"
+    )
+    metadata = message_embedding["metadata"]
     assert isinstance(metadata, dict)
     assert metadata["source_chunk_count"] == 41
     assert metadata["source_bytes"] == len(message.encode("utf-8"))
     assert metadata["pooling"] == "byte_weighted_mean_l2"
-    assert completed.diagnostics["chunked_messages"] == 1
-    assert completed.diagnostics["chunks_embedded"] == 41
+    assert completed.diagnostics["chunked_texts"] == 1
+    assert completed.diagnostics["chunks_embedded"] == 42
     assert (
         max(
             len(text.encode("utf-8"))
@@ -453,9 +497,10 @@ def test_provider_failure_persists_safe_actionable_message(
     service = AnalysisService(provider_service=FailingProvider())  # type: ignore[arg-type]
     run = service.start_run(
         PROJECT_ID,
-        AnalysisRunInput(
+        IndexingRunInput(
             dataset_version_id=DATASET_ID,
-            analysis_profile_id=PROFILE_ID,
+            provider="vllm",
+            model="local-embed",
             parameters={},
         ),
         actor_user_id=ACTOR_ID,
@@ -468,6 +513,7 @@ def test_provider_failure_persists_safe_actionable_message(
     assert failed.status == "failed"
     assert failed.progress == 5
     assert failed.error_message == "embedding provider is temporarily unavailable"
+    assert failed.error_code == "INDEXING_MODEL_UNAVAILABLE"
     assert failed.diagnostics["failure_type"] == "ProviderError"
     assert fake_connection.embeddings == []
 
@@ -486,9 +532,10 @@ def test_chunked_message_provider_batches_publish_monotone_confirmed_progress(
     )
     run = service.start_run(
         PROJECT_ID,
-        AnalysisRunInput(
+        IndexingRunInput(
             dataset_version_id=DATASET_ID,
-            analysis_profile_id=PROFILE_ID,
+            provider="vllm",
+            model="local-embed",
             parameters={},
         ),
         actor_user_id=ACTOR_ID,
@@ -497,12 +544,12 @@ def test_chunked_message_provider_batches_publish_monotone_confirmed_progress(
     service.execute_queued_run(run.id)
     completed = service.get_run(PROJECT_ID, run.id)
 
-    assert fake_connection.progress_updates == [27, 50, 72, 95]
+    assert fake_connection.progress_updates == [23, 41, 59, 77, 95]
     assert fake_connection.server_cursor_events == [
-        ("open", f"analysis_count_{run.id.hex}"),
-        ("close", f"analysis_count_{run.id.hex}"),
-        ("open", f"analysis_embed_{run.id.hex}"),
-        ("close", f"analysis_embed_{run.id.hex}"),
+        ("open", f"indexing_count_{run.id.hex}"),
+        ("close", f"indexing_count_{run.id.hex}"),
+        ("open", f"indexing_embed_{run.id.hex}"),
+        ("close", f"indexing_embed_{run.id.hex}"),
     ]
     assert fake_connection.active_server_cursor is None
     assert completed is not None
@@ -532,9 +579,10 @@ def test_later_chunked_message_provider_batch_failure_preserves_progress(
     )
     run = service.start_run(
         PROJECT_ID,
-        AnalysisRunInput(
+        IndexingRunInput(
             dataset_version_id=DATASET_ID,
-            analysis_profile_id=PROFILE_ID,
+            provider="vllm",
+            model="local-embed",
             parameters={},
         ),
         actor_user_id=ACTOR_ID,
@@ -543,14 +591,14 @@ def test_later_chunked_message_provider_batch_failure_preserves_progress(
     service.execute_queued_run(run.id)
     failed = service.get_run(PROJECT_ID, run.id)
 
-    assert fake_connection.progress_updates == [27, 50]
+    assert fake_connection.progress_updates == [23, 41]
     assert failed is not None
     assert failed.status == "failed"
-    assert failed.progress == 50
+    assert failed.progress == 41
     assert failed.error_message == "embedding provider is temporarily unavailable"
 
 
-def test_start_run_rejects_removed_mode_before_insert(
+def test_start_indexing_rejects_removed_profile_parameters_before_insert(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     fake_connection = AnalysisConnection()
@@ -562,14 +610,15 @@ def test_start_run_rejects_removed_mode_before_insert(
 
     with pytest.raises(
         analysis_service_module.AnalysisError,
-        match=r"parameters\.mode is no longer supported",
+        match="profile",
     ):
         AnalysisService().start_run(
             PROJECT_ID,
-            AnalysisRunInput(
+            IndexingRunInput(
                 dataset_version_id=DATASET_ID,
-                analysis_profile_id=PROFILE_ID,
-                parameters={"mode": "fixture", "experiment": "baseline"},
+                provider="vllm",
+                model="local-embed",
+                parameters={"analysis_profile_id": "legacy"},
             ),
             actor_user_id=ACTOR_ID,
         )
@@ -577,10 +626,10 @@ def test_start_run_rejects_removed_mode_before_insert(
     assert fake_connection.run is None
 
 
-def test_openai_run_requires_explicit_cloud_confirmation_before_insert(
+def test_start_indexing_rejects_any_indexing_parameters_before_insert(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    fake_connection = AnalysisConnection(is_cloud_provider=True)
+    fake_connection = AnalysisConnection()
     monkeypatch.setattr(
         analysis_service_module,
         "open_database_connection",
@@ -589,18 +638,93 @@ def test_openai_run_requires_explicit_cloud_confirmation_before_insert(
 
     with pytest.raises(
         analysis_service_module.AnalysisError,
-        match="cloud_use_confirmed",
-    ):
+        match="parameters",
+    ) as error:
         AnalysisService().start_run(
             PROJECT_ID,
-            AnalysisRunInput(
+            IndexingRunInput(
                 dataset_version_id=DATASET_ID,
-                analysis_profile_id=PROFILE_ID,
+                provider="vllm",
+                model="local-embed",
+                parameters={"algorithm_settings": {"algorithm": "agglomerative"}},
+            ),
+            actor_user_id=ACTOR_ID,
+        )
+
+    assert error.value.status_code == 422
+    assert fake_connection.run is None
+
+
+def test_execute_queued_run_finalizes_late_cancellation_as_cancelled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_connection = AnalysisConnection()
+    monkeypatch.setattr(
+        analysis_service_module,
+        "open_database_connection",
+        lambda _: fake_connection,
+    )
+    service = AnalysisService(provider_service=FakeEmbeddingProvider())  # type: ignore[arg-type]
+    original_insert = service._insert_embedding
+
+    def request_cancel_after_embeddings(*args: object, **kwargs: object) -> None:
+        original_insert(*args, **kwargs)  # type: ignore[arg-type]
+        if len(fake_connection.embeddings) == 2:
+            assert fake_connection.run is not None
+            fake_connection.run["status"] = "cancelling"
+
+    monkeypatch.setattr(service, "_insert_embedding", request_cancel_after_embeddings)
+    run = service.start_run(
+        PROJECT_ID,
+        IndexingRunInput(
+            dataset_version_id=DATASET_ID,
+            provider="vllm",
+            model="local-embed",
+            parameters={},
+        ),
+        actor_user_id=ACTOR_ID,
+    )
+
+    service.execute_queued_run(run.id)
+    cancelled = service.get_run(PROJECT_ID, run.id)
+
+    assert cancelled is not None
+    assert cancelled.status == "cancelled"
+    assert cancelled.phase == "cancelled"
+    assert cancelled.progress == 95
+    assert cancelled.diagnostics["embeddings_written"] == 2
+
+
+def test_openai_indexing_requires_explicit_cloud_confirmation_before_insert(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_connection = AnalysisConnection(
+        provider="openai",
+        api_key_set=True,
+        endpoint_url=None,
+    )
+    monkeypatch.setattr(
+        analysis_service_module,
+        "open_database_connection",
+        lambda _: fake_connection,
+    )
+
+    with pytest.raises(
+        analysis_service_module.AnalysisError,
+        match="cloud confirmation",
+    ) as error:
+        AnalysisService().start_run(
+            PROJECT_ID,
+            IndexingRunInput(
+                dataset_version_id=DATASET_ID,
+                provider="openai",
+                model="local-embed",
                 parameters={},
             ),
             actor_user_id=ACTOR_ID,
         )
 
+    assert error.value.code == "INDEXING_CLOUD_CONFIRMATION_REQUIRED"
     assert fake_connection.run is None
 
 
@@ -641,7 +765,7 @@ def test_enqueue_overload_marks_queued_run_failed(
 ) -> None:
     class FullRunner:
         def submit(self, _: object) -> None:
-            raise AnalysisQueueFull("local analysis capacity is exhausted; retry later")
+            raise AnalysisQueueFull("local indexing capacity is exhausted; retry later")
 
     fake_connection = AnalysisConnection()
     monkeypatch.setattr(
@@ -655,9 +779,10 @@ def test_enqueue_overload_marks_queued_run_failed(
     )
     run = service.start_run(
         PROJECT_ID,
-        AnalysisRunInput(
+        IndexingRunInput(
             dataset_version_id=DATASET_ID,
-            analysis_profile_id=PROFILE_ID,
+            provider="vllm",
+            model="local-embed",
             parameters={},
         ),
         actor_user_id=ACTOR_ID,

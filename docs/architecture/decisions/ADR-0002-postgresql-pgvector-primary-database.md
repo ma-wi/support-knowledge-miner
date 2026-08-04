@@ -8,7 +8,11 @@
 
 ## Context
 
-The MVP must persist projects, imported source text, dataset versions, analysis profiles, analysis runs, embeddings, clusters, curation state, candidates, audit/import/export metadata, and traceability links. The draft Lastenheft mentioned MongoDB, but discovery identified a stronger need for relational consistency, joins, migrations, project isolation, and vector search.
+The MVP must persist projects, imported source text, dataset versions, indexing
+runs, embeddings, cluster sets, cluster memberships, analyst edits,
+audit/import/export metadata and traceability links. The draft Lastenheft mentioned
+MongoDB, but discovery identified a stronger need for relational consistency,
+joins, migrations, project isolation and vector search.
 
 ## Decision
 
@@ -27,7 +31,7 @@ Use PostgreSQL with pgvector as the primary local database. PostgreSQL is provid
 - One durable database for relational state and vector search.
 - Stronger constraints and migrations.
 - Simpler Docker Compose topology than database plus separate vector store.
-- Better fit for candidate/source/run traceability.
+- Better fit for cluster-set/source/indexing traceability.
 
 ### Negative
 
@@ -43,5 +47,6 @@ Use PostgreSQL with pgvector as the primary local database. PostgreSQL is provid
 ## Validation
 
 - Migration/schema tests confirm pgvector availability.
-- Persistence tests verify source text, embeddings, runs, clusters, candidates, and exports survive container restart.
+- Persistence tests verify source text, embeddings, indexing runs, cluster sets,
+  explorer source traceability and exports survive container restart.
 - Performance design/tests verify clustering does not require full pairwise all-record distance computation.

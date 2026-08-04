@@ -8,7 +8,11 @@
 
 ## Context
 
-Support Knowledge Miner must let users create/open saved work states. A dataset/analysis is understood as a project. Projects must be absolutely independent so that imports, analysis runs, curation, candidates, exports, model/profile choices, and artifacts can be reopened without leaking or mixing state across workspaces.
+Support Knowledge Miner must let users create/open saved work states. A dataset and
+its derived analysis are understood as a project. Projects must be absolutely
+independent so that imports, indexing runs, cluster sets, explorer state, exports,
+provider/model choices, lineage and artifacts can be reopened without leaking or
+mixing state across workspaces.
 
 ## Decision
 
@@ -18,7 +22,9 @@ Project deletion is a confirmed destructive operation that removes project-owned
 
 ## Alternatives considered
 
-- Dataset as the top-level boundary: rejected because one project can contain multiple dataset versions, profiles, runs, curation states, and exports.
+- Dataset as the top-level boundary: rejected because one project can contain
+  multiple dataset versions, indexing runs, cluster sets, exploration states and
+  exports.
 - Global datasets with filters: rejected because it increases leakage risk and makes reopenable project state ambiguous.
 
 ## Consequences
@@ -27,8 +33,8 @@ Project deletion is a confirmed destructive operation that removes project-owned
 
 - Clear user mental model.
 - Stronger data isolation.
-- Easier traceability from candidate/export back to source import.
-- Supports multiple analysis profiles and runs per project.
+- Easier traceability from cluster-set/export back to source import.
+- Supports multiple indexing runs and cluster sets per project.
 
 ### Negative
 
@@ -42,5 +48,6 @@ Project deletion is a confirmed destructive operation that removes project-owned
 
 ## Validation
 
-- Project isolation tests create two projects and verify imports, profiles, runs, candidates, and exports are not cross-visible.
+- Project isolation tests create two projects and verify imports, indexing runs,
+  cluster sets, explorer sources and exports are not cross-visible.
 - Delete tests verify project-owned data/artifacts are removed or marked deleted according to the specification.

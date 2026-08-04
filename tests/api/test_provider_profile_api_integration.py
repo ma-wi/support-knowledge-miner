@@ -10,8 +10,6 @@ from backend.api import create_app
 from backend.auth import CurrentUser
 from backend.auth.service import AuthenticationError
 from backend.providers import (
-    AnalysisProfile,
-    AnalysisProfileInput,
     ProviderCheckResult,
     ProviderConfiguration,
     ProviderError,
@@ -21,7 +19,6 @@ from backend.providers import (
 
 OWNER_ID = UUID("11111111-1111-1111-1111-111111111111")
 PROJECT_ID = UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
-PROFILE_ID = UUID("99999999-9999-9999-9999-999999999999")
 NOW = datetime(2026, 7, 22, tzinfo=UTC)
 
 
@@ -47,7 +44,6 @@ class FakeProviderService:
     def __init__(self) -> None:
         self.configurations: dict[str, ProviderConfiguration] = {}
         self.received_api_key: str | None = None
-        self.profiles: list[AnalysisProfile] = []
 
     def list_configurations(self) -> list[ProviderConfiguration]:
         return list(self.configurations.values())
@@ -103,63 +99,6 @@ class FakeProviderService:
         )
         self.configurations["ollama"] = configuration
         return configuration
-
-    def list_profiles(self, project_id: UUID) -> list[AnalysisProfile]:
-        return [
-            profile for profile in self.profiles if profile.project_id == project_id
-        ]
-
-    def create_profile(
-        self,
-        project_id: UUID,
-        payload: AnalysisProfileInput,
-        *,
-        actor_user_id: UUID,
-    ) -> AnalysisProfile:
-        assert actor_user_id == OWNER_ID
-        profile = AnalysisProfile(
-            id=PROFILE_ID,
-            project_id=project_id,
-            name=payload.name,
-            provider=payload.provider,
-            model=payload.model,
-            is_cloud_provider=payload.provider == "openai",
-            thresholds=payload.thresholds,
-            algorithm_settings=payload.algorithm_settings,
-            prompt_template=payload.prompt_template,
-            created_at=NOW,
-            updated_at=NOW,
-        )
-        self.profiles.append(profile)
-        return profile
-
-    def update_profile(
-        self,
-        project_id: UUID,
-        profile_id: UUID,
-        payload: AnalysisProfileInput,
-        *,
-        actor_user_id: UUID,
-    ) -> AnalysisProfile:
-        assert actor_user_id == OWNER_ID
-        for index, profile in enumerate(self.profiles):
-            if profile.id == profile_id and profile.project_id == project_id:
-                updated = AnalysisProfile(
-                    id=profile_id,
-                    project_id=project_id,
-                    name=payload.name,
-                    provider=payload.provider,
-                    model=payload.model,
-                    is_cloud_provider=payload.provider == "openai",
-                    thresholds=payload.thresholds,
-                    algorithm_settings=payload.algorithm_settings,
-                    prompt_template=payload.prompt_template,
-                    created_at=profile.created_at,
-                    updated_at=NOW,
-                )
-                self.profiles[index] = updated
-                return updated
-        raise ProviderError("analysis profile not found")
 
 
 @pytest.fixture
@@ -219,8 +158,8 @@ def test_openai_provider_key_is_write_only_in_api_responses(
     assert removed.json()["api_key_set"] is False
 
 
-def test_vllm_provider_check_and_project_profile_contract(
-    client: TestClient, fake_provider_service: FakeProviderService
+def test_vllm_provider_check_and_removed_project_profile_contract(
+    client: TestClient,
 ) -> None:
     configured = client.put(
         "/api/providers/vllm",
@@ -244,63 +183,18 @@ def test_vllm_provider_check_and_project_profile_contract(
             "provider": "vllm",
             "model": "local-embed",
             "thresholds": {"similarity": 0.78},
-            "algorithm_settings": {
-                "algorithm": "hdbscan",
-                "min_cluster_size": 5,
-            },
+            "algorithm_settings": {"algorithm": "hdbscan"},
         },
     )
-    assert created.status_code == 201
-    assert created.json()["project_id"] == str(PROJECT_ID)
-    assert created.json()["is_cloud_provider"] is False
-    assert created.json()["thresholds"]["similarity"] == 0.78
-    assert "prompt_identifier" not in created.json()
-
-    rejected = client.post(
-        f"/api/projects/{PROJECT_ID}/analysis-profiles",
-        headers=auth_headers(),
-        json={
-            "name": "Legacy prompt profile",
-            "provider": "vllm",
-            "model": "local-embed",
-            "algorithm_settings": {
-                "algorithm": "hdbscan",
-                "min_cluster_size": 5,
-            },
-            "prompt_identifier": "faq-v1",
-        },
-    )
-    assert rejected.status_code == 422
-    assert len(fake_provider_service.profiles) == 1
+    assert created.status_code == 404
 
     listed = client.get(
         f"/api/projects/{PROJECT_ID}/analysis-profiles", headers=auth_headers()
     )
-    assert listed.status_code == 200
-    assert listed.json()[0]["name"] == "Local clustering"
-
-    updated = client.patch(
-        f"/api/projects/{PROJECT_ID}/analysis-profiles/{PROFILE_ID}",
-        headers=auth_headers(),
-        json={
-            "name": "Cloud comparison",
-            "provider": "openai",
-            "model": "gpt-4.1-mini",
-            "thresholds": {"similarity": 0.82},
-            "algorithm_settings": {
-                "algorithm": "agglomerative",
-                "n_clusters": 2,
-                "linkage": "ward",
-            },
-        },
-    )
-    assert updated.status_code == 200
-    assert updated.json()["is_cloud_provider"] is True
+    assert listed.status_code == 404
 
 
-def test_ollama_provider_check_and_project_profile_contract(
-    client: TestClient,
-) -> None:
+def test_ollama_provider_check_and_pull_contract(client: TestClient) -> None:
     configured = client.put(
         "/api/providers/ollama",
         headers=auth_headers(),
@@ -317,32 +211,21 @@ def test_ollama_provider_check_and_project_profile_contract(
     assert check.status_code == 200
     assert check.json()["models"] == ["nomic-embed-text", "mxbai-embed-large"]
 
-    created = client.post(
-        f"/api/projects/{PROJECT_ID}/analysis-profiles",
-        headers=auth_headers(),
-        json={
-            "name": "Ollama local clustering",
-            "provider": "ollama",
-            "model": "nomic-embed-text",
-            "thresholds": {"similarity": 0.78},
-            "algorithm_settings": {
-                "algorithm": "hdbscan",
-                "min_cluster_size": 5,
-            },
-        },
-    )
-    assert created.status_code == 201
-    assert created.json()["provider"] == "ollama"
-    assert created.json()["is_cloud_provider"] is False
-
     pulled = client.post(
         "/api/providers/ollama/pull",
         headers=auth_headers(),
-        json={"model": "embeddinggemma"},
+        json={"model": "all-minilm"},
     )
     assert pulled.status_code == 200
     assert pulled.json()["manual_models"] == [
         "nomic-embed-text",
         "mxbai-embed-large",
-        "embeddinggemma",
+        "all-minilm",
     ]
+
+
+def test_provider_errors_are_safe(client: TestClient) -> None:
+    response = client.post("/api/providers/vllm/check", headers=auth_headers())
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "provider is not configured"

@@ -6,7 +6,6 @@ from uuid import UUID
 import numpy as np
 from pgvector import Vector
 import pytest
-from sklearn import get_config  # type: ignore[import-untyped]
 
 import backend.clusters.service as cluster_service_module
 from backend.clusters import ClusterError, ClusterService
@@ -159,9 +158,7 @@ class ClusterConnection:
                         "project_id": PROJECT_ID,
                         "dataset_version_id": DATASET_ID,
                         "status": "completed",
-                        "profile_snapshot": {
-                            "algorithm_settings": self.algorithm_settings
-                        },
+                        "parameters": {"algorithm_settings": self.algorithm_settings},
                         "provider": "vllm",
                         "model": "local-embed",
                     }
@@ -245,29 +242,12 @@ def unwrap_json(value: object) -> object:
     return getattr(value, "obj", value)
 
 
-@pytest.mark.parametrize(
-    ("algorithm_settings", "expected_algorithm"),
-    [
-        (
-            {
-                "algorithm": "hdbscan",
-                "min_cluster_size": 2,
-                "min_samples": 1,
-            },
-            "hdbscan",
-        ),
-        (
-            {"algorithm": "agglomerative", "n_clusters": 2, "linkage": "ward"},
-            "agglomerative",
-        ),
-    ],
-)
-def test_generate_for_run_clusters_persisted_vectors(
+def test_generate_for_run_clusters_persisted_vectors_with_transitional_hdbscan_default(
     monkeypatch: pytest.MonkeyPatch,
-    algorithm_settings: dict[str, object],
-    expected_algorithm: str,
 ) -> None:
-    fake_connection = ClusterConnection(algorithm_settings=algorithm_settings)
+    fake_connection = ClusterConnection(
+        algorithm_settings={"algorithm": "agglomerative", "linkage": "ward"}
+    )
     monkeypatch.setattr(
         cluster_service_module,
         "open_database_connection",
@@ -285,12 +265,9 @@ def test_generate_for_run_clusters_persisted_vectors(
     ]
     assert len(clusters) == 2
     assert {cluster.member_count for cluster in clusters} == {2}
-    assert all(cluster.algorithm == expected_algorithm for cluster in clusters)
+    assert all(cluster.algorithm == "hdbscan" for cluster in clusters)
     assert all(cluster.metadata["non_quadratic"] is True for cluster in clusters)
-    if expected_algorithm == "agglomerative":
-        assert all(
-            cluster.metadata["parameters"]["linkage"] == "ward" for cluster in clusters
-        )
+    assert all("linkage" not in cluster.metadata["parameters"] for cluster in clusters)
     assert len(fake_connection.memberships) == 4
 
 
@@ -354,79 +331,17 @@ def _embedding_rows(count: int) -> list[dict[str, object]]:
     ]
 
 
-def test_agglomerative_rejects_10001_records_before_writes(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    fake_connection = ClusterConnection(
-        algorithm_settings={"algorithm": "agglomerative"},
-        embedding_rows=_embedding_rows(10_001),
-    )
-    monkeypatch.setattr(
-        cluster_service_module,
-        "open_database_connection",
-        lambda _: fake_connection,
-    )
+def test_agglomerative_rejects_10001_records_before_estimator() -> None:
+    config = validate_algorithm_settings({"algorithm": "agglomerative"})
 
     with pytest.raises(ClusterError, match="at most 10000"):
-        ClusterService().generate_for_run(PROJECT_ID, RUN_ID, actor_user_id=ACTOR_ID)
-
-    assert fake_connection.clusters == []
-    assert fake_connection.memberships == []
-
-
-def test_agglomerative_10000_records_reaches_bounded_algorithm_seam(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    called = False
-    neighbor_graph_called = False
-
-    class FakeAgglomerative:
-        def __init__(self, **_: object) -> None:
-            return None
-
-        def fit_predict(self, vectors: np.ndarray) -> list[int]:
-            nonlocal called
-            called = True
-            assert vectors.dtype == np.float32
-            assert vectors.flags.c_contiguous
-            return [0] * len(vectors)
-
-    fake_connection = ClusterConnection(
-        algorithm_settings={"algorithm": "agglomerative"},
-        embedding_rows=_embedding_rows(10_000),
-    )
-
-    def fake_kneighbors_graph(*_args: object, **_kwargs: object) -> object:
-        nonlocal neighbor_graph_called
-        neighbor_graph_called = True
-        assert get_config()["working_memory"] == 64
-        return object()
-
-    monkeypatch.setattr(
-        cluster_service_module,
-        "open_database_connection",
-        lambda _: fake_connection,
-    )
-    monkeypatch.setattr(
-        cluster_service_module,
-        "kneighbors_graph",
-        fake_kneighbors_graph,
-    )
-    monkeypatch.setattr(
-        cluster_service_module,
-        "connected_components",
-        lambda *_args, **_kwargs: 1,
-    )
-    monkeypatch.setattr(
-        cluster_service_module,
-        "AgglomerativeClustering",
-        FakeAgglomerative,
-    )
-
-    ClusterService().generate_for_run(PROJECT_ID, RUN_ID, actor_user_id=ACTOR_ID)
-
-    assert called is True
-    assert neighbor_graph_called is True
+        validate_cluster_input_budget(
+            config,
+            record_count=10_001,
+            embedding_count=10_001,
+            minimum_dimensions=2,
+            maximum_dimensions=2,
+        )
 
 
 def test_hdbscan_neighbor_budget_accepts_boundary_and_rejects_next_value() -> None:
@@ -542,40 +457,6 @@ def test_non_ward_budget_includes_all_edge_dimension_distance_intermediates(
         )
 
 
-def test_agglomerative_rejects_disconnected_neighbor_graph_before_estimator_or_writes(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    fake_connection = ClusterConnection(
-        algorithm_settings={"algorithm": "agglomerative"},
-    )
-    monkeypatch.setattr(
-        cluster_service_module,
-        "open_database_connection",
-        lambda _: fake_connection,
-    )
-    monkeypatch.setattr(
-        cluster_service_module,
-        "kneighbors_graph",
-        lambda *_args, **_kwargs: object(),
-    )
-    monkeypatch.setattr(
-        cluster_service_module,
-        "connected_components",
-        lambda *_args, **_kwargs: 2,
-    )
-    monkeypatch.setattr(
-        cluster_service_module,
-        "AgglomerativeClustering",
-        lambda **_kwargs: pytest.fail("estimator must not be constructed"),
-    )
-
-    with pytest.raises(ClusterError, match="2 disconnected components"):
-        ClusterService().generate_for_run(PROJECT_ID, RUN_ID, actor_user_id=ACTOR_ID)
-
-    assert fake_connection.clusters == []
-    assert fake_connection.memberships == []
-
-
 def test_hdbscan_effective_neighbors_cannot_exceed_record_count() -> None:
     config = validate_algorithm_settings({"algorithm": "hdbscan", "min_samples": 5})
 
@@ -610,9 +491,7 @@ def test_total_vector_budget_fails_before_loading_or_cluster_writes(
                 )
             return super().execute(query, params)
 
-    fake_connection = OversizedSummaryConnection(
-        algorithm_settings={"algorithm": "agglomerative"}
-    )
+    fake_connection = OversizedSummaryConnection()
     monkeypatch.setattr(
         cluster_service_module,
         "open_database_connection",
@@ -626,7 +505,7 @@ def test_total_vector_budget_fails_before_loading_or_cluster_writes(
     assert "10000 records" in message
     assert "8192 dimensions" in message
     assert f"{MAX_CLUSTER_WORKING_SET_BYTES}-byte (512 MiB) limit" in message
-    assert "select HDBSCAN" in message
+    assert "HDBSCAN min_samples" in message
     assert fake_connection.message_pair_selects == 0
     assert fake_connection.clusters == []
 
@@ -702,47 +581,19 @@ def test_native_pgvector_fixture_that_exceeded_old_text_peak_reaches_estimator(
     assert len(fake_connection.memberships) == record_count
 
 
-def test_hdbscan_neighbor_budget_fails_before_loading_or_estimator_or_writes(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    class OversizedNeighborSummaryConnection(ClusterConnection):
-        def execute(
-            self, query: str, params: tuple[object, ...] | None = None
-        ) -> FakeResult:
-            normalized = " ".join(query.split())
-            if normalized.startswith("SELECT COUNT(mp.id) AS record_count"):
-                return FakeResult(
-                    [
-                        {
-                            "record_count": 10_000,
-                            "embedding_count": 10_000,
-                            "minimum_dimensions": 2,
-                            "maximum_dimensions": 2,
-                        }
-                    ]
-                )
-            return super().execute(query, params)
-
-    fake_connection = OversizedNeighborSummaryConnection(
-        algorithm_settings={
+def test_hdbscan_neighbor_budget_fails_before_estimator() -> None:
+    config = validate_algorithm_settings(
+        {
             "algorithm": "hdbscan",
             "min_samples": 10_000,
         }
     )
-    monkeypatch.setattr(
-        cluster_service_module,
-        "open_database_connection",
-        lambda _: fake_connection,
-    )
-    monkeypatch.setattr(
-        cluster_service_module,
-        "HDBSCAN",
-        lambda **_kwargs: pytest.fail("estimator must not be constructed"),
-    )
 
     with pytest.raises(ClusterError, match="working set estimate .* exceeds"):
-        ClusterService().generate_for_run(PROJECT_ID, RUN_ID, actor_user_id=ACTOR_ID)
-
-    assert fake_connection.message_pair_selects == 0
-    assert fake_connection.clusters == []
-    assert fake_connection.memberships == []
+        validate_cluster_input_budget(
+            config,
+            record_count=10_000,
+            embedding_count=10_000,
+            minimum_dimensions=2,
+            maximum_dimensions=2,
+        )

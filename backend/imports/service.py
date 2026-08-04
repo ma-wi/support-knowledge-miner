@@ -57,6 +57,8 @@ class ImportLog:
     valid_records: int
     skipped_records: int
     dataset_version_id: UUID | None
+    dataset_display_name: str | None
+    dataset_deleted_at: datetime | None
     started_at: datetime
     completed_at: datetime
 
@@ -70,6 +72,8 @@ class DatasetVersion:
     record_count: int
     source_type: str
     source_name: str
+    display_name: str
+    deleted_at: datetime | None
     created_at: datetime
 
 
@@ -126,6 +130,12 @@ def _log_from_row(row: dict[str, object]) -> ImportLog:
         dataset_version_id=(
             UUID(str(dataset_version_id)) if dataset_version_id is not None else None
         ),
+        dataset_display_name=(
+            str(row["dataset_display_name"])
+            if row.get("dataset_display_name") is not None
+            else None
+        ),
+        dataset_deleted_at=row.get("dataset_deleted_at"),  # type: ignore[arg-type]
         started_at=row["started_at"],  # type: ignore[arg-type]
         completed_at=row["completed_at"],  # type: ignore[arg-type]
     )
@@ -140,6 +150,8 @@ def _dataset_from_row(row: dict[str, object]) -> DatasetVersion:
         record_count=int(str(row["record_count"])),
         source_type=str(row["source_type"]),
         source_name=str(row["source_name"]),
+        display_name=str(row["display_name"]),
+        deleted_at=row["deleted_at"],  # type: ignore[arg-type]
         created_at=row["created_at"],  # type: ignore[arg-type]
     )
 
@@ -246,12 +258,13 @@ class ImportService:
                         """
                         INSERT INTO dataset_versions (
                             id, project_id, version_number, import_log_id,
-                            record_count, source_type, source_name,
+                            record_count, source_type, source_name, display_name,
                             created_by_user_id
                         )
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                         RETURNING id, project_id, version_number, import_log_id,
-                                  record_count, source_type, source_name, created_at
+                                  record_count, source_type, source_name,
+                                  display_name, deleted_at, created_at
                         """,
                         (
                             dataset_version_id,
@@ -260,6 +273,7 @@ class ImportService:
                             log_id,
                             parsed.valid_records,
                             clean_source_type,
+                            clean_source_name,
                             clean_source_name,
                             actor_user_id,
                         ),
@@ -296,10 +310,12 @@ class ImportService:
                         WHERE id = %s
                         RETURNING id, project_id, source_type, source_name, status,
                                   failure_reason, total_records, valid_records,
-                                  skipped_records, dataset_version_id, started_at,
-                                  completed_at
+                                  skipped_records, dataset_version_id,
+                                  %s::text AS dataset_display_name,
+                                  NULL::timestamptz AS dataset_deleted_at,
+                                  started_at, completed_at
                         """,
-                        (dataset_version_id, log_id),
+                        (dataset_version_id, log_id, clean_source_name),
                     ).fetchone()
 
                 self._audit.record_event(
@@ -333,16 +349,90 @@ class ImportService:
         with open_database_connection(self._settings) as connection:
             rows = connection.execute(
                 """
-                SELECT id, project_id, source_type, source_name, status,
-                       failure_reason, total_records, valid_records,
-                       skipped_records, dataset_version_id, started_at, completed_at
-                FROM import_logs
-                WHERE project_id = %s
-                ORDER BY started_at DESC
+                SELECT l.id, l.project_id, l.source_type, l.source_name, l.status,
+                       l.failure_reason, l.total_records, l.valid_records,
+                       l.skipped_records, l.dataset_version_id,
+                       d.display_name AS dataset_display_name,
+                       d.deleted_at AS dataset_deleted_at,
+                       l.started_at, l.completed_at
+                FROM import_logs l
+                LEFT JOIN dataset_versions d
+                  ON d.id = l.dataset_version_id AND d.project_id = l.project_id
+                WHERE l.project_id = %s
+                ORDER BY l.started_at DESC
                 """,
                 (project_id,),
             ).fetchall()
         return [_log_from_row(dict(row)) for row in rows]
+
+    def rename_dataset_version(
+        self,
+        project_id: UUID,
+        dataset_version_id: UUID,
+        display_name: str,
+        *,
+        actor_user_id: UUID,
+    ) -> DatasetVersion:
+        cleaned = display_name.strip()
+        if not cleaned:
+            raise ImportError("display_name must not be empty")
+        with open_database_connection(self._settings) as connection:
+            with connection.transaction():
+                row = connection.execute(
+                    """
+                    UPDATE dataset_versions
+                    SET display_name = %s
+                    WHERE id = %s AND project_id = %s
+                    RETURNING id, project_id, version_number, import_log_id,
+                              record_count, source_type, source_name,
+                              display_name, deleted_at, created_at
+                    """,
+                    (cleaned, dataset_version_id, project_id),
+                ).fetchone()
+                if row is None:
+                    raise ImportError("dataset version not found")
+                self._audit.record_event(
+                    connection,
+                    actor_user_id=actor_user_id,
+                    action="dataset_version.rename",
+                    target_type="dataset_version",
+                    target_id=dataset_version_id,
+                    metadata={"project_id": str(project_id)},
+                )
+        return _dataset_from_row(dict(row))
+
+    def delete_dataset_version(
+        self,
+        project_id: UUID,
+        dataset_version_id: UUID,
+        *,
+        actor_user_id: UUID,
+    ) -> DatasetVersion:
+        with open_database_connection(self._settings) as connection:
+            with connection.transaction():
+                row = connection.execute(
+                    """
+                    UPDATE dataset_versions
+                    SET deleted_at = COALESCE(deleted_at, now()),
+                        deleted_by_user_id = COALESCE(deleted_by_user_id, %s)
+                    WHERE id = %s AND project_id = %s
+                    RETURNING id, project_id, version_number, import_log_id,
+                              record_count, source_type, source_name,
+                              display_name, deleted_at, created_at
+                    """,
+                    (actor_user_id, dataset_version_id, project_id),
+                ).fetchone()
+                if row is None:
+                    raise ImportError("dataset version not found")
+                self._audit.record_event(
+                    connection,
+                    actor_user_id=actor_user_id,
+                    action="dataset_version.delete",
+                    target_type="dataset_version",
+                    target_id=dataset_version_id,
+                    metadata={"project_id": str(project_id)},
+                )
+        return _dataset_from_row(dict(row))
 
     def get_log_entries(
         self, project_id: UUID, import_log_id: UUID

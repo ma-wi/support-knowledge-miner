@@ -40,6 +40,8 @@ type ApiImportLog = {
   valid_records: number;
   skipped_records: number;
   dataset_version_id: string | null;
+  dataset_display_name: string | null;
+  dataset_deleted_at: string | null;
 };
 
 type ApiImportLogEntry = {
@@ -58,6 +60,8 @@ type ImportLog = {
   validRecords: number;
   skippedRecords: number;
   datasetVersionId: string | null;
+  datasetDisplayName: string | null;
+  datasetDeletedAt: string | null;
 };
 
 const MAX_IMPORT_BYTES = 512 * 1024 * 1024;
@@ -86,12 +90,6 @@ type ProviderConfiguration = {
 };
 
 type ConfigurableProvider = "openai" | "ollama" | "vllm";
-type ProfileAlgorithm = "hdbscan" | "agglomerative";
-type AgglomerativeCriterion = "n_clusters" | "distance_threshold";
-type ProjectProfileLoadState = {
-  projectId: string | null;
-  status: "idle" | "loading" | "ready" | "error";
-};
 type AuthoritativeProjectContext = {
   projectId: string | null;
   generation: number;
@@ -103,64 +101,48 @@ type ClusterGenerationRequest = {
   generation: number;
 };
 
-type ApiAnalysisProfile = {
-  id: string;
-  project_id: string;
-  name: string;
-  provider: string;
-  model: string;
-  is_cloud_provider: boolean;
-  thresholds: Record<string, unknown>;
-  algorithm_settings: Record<string, unknown>;
-  prompt_template: string | null;
-};
-
-type AnalysisProfile = {
-  id: string;
-  projectId: string;
-  name: string;
-  provider: string;
-  model: string;
-  isCloudProvider: boolean;
-  thresholds: Record<string, unknown>;
-  algorithmSettings: Record<string, unknown>;
-  promptTemplate: string | null;
-};
-
-type ApiAnalysisRun = {
+type ApiIndexingRun = {
   id: string;
   project_id: string;
   dataset_version_id: string;
-  analysis_profile_id: string;
+  dataset_display_name: string | null;
+  dataset_deleted_at: string | null;
   status: string;
   progress: number;
-  profile_snapshot: Record<string, unknown>;
+  phase: string;
   provider: string;
   model: string;
   parameters: Record<string, unknown>;
+  error_code: string | null;
   error_message: string | null;
   diagnostics: Record<string, unknown>;
   started_at: string | null;
   completed_at: string | null;
+  cancel_requested_at: string | null;
+  deleted_at: string | null;
   created_at: string;
   updated_at: string;
 };
 
-type AnalysisRun = {
+type IndexingRun = {
   id: string;
   projectId: string;
   datasetVersionId: string;
-  analysisProfileId: string;
+  datasetDisplayName: string | null;
+  datasetDeletedAt: string | null;
   status: string;
   progress: number;
-  profileSnapshot: Record<string, unknown>;
+  phase: string;
   provider: string;
   model: string;
   parameters: Record<string, unknown>;
+  errorCode: string | null;
   errorMessage: string | null;
   diagnostics: Record<string, unknown>;
   startedAt: string | null;
   completedAt: string | null;
+  cancelRequestedAt: string | null;
+  deletedAt: string | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -400,13 +382,7 @@ type Feedback = {
 type ActivePage = "projects" | "settings";
 type SettingsTab = "providers" | "users";
 type ProjectTab =
-  | "profiles"
-  | "import"
-  | "runs"
-  | "clusters"
-  | "candidates"
-  | "exports"
-  | "delete";
+  "import" | "indexing" | "clusters" | "candidates" | "exports" | "delete";
 
 const API_BASE = import.meta.env.VITE_SKM_API_BASE_URL ?? "";
 const INTERNAL_LAST_NAME_PLACEHOLDER = "-";
@@ -417,6 +393,16 @@ const FEEDBACK_LABELS: Record<FeedbackKind, string> = {
   info: "Hinweis",
   warning: "Warnung",
   error: "Fehler",
+};
+const ERROR_MESSAGES_BY_CODE: Record<string, string> = {
+  UNEXPECTED_ERROR:
+    "Die Aktion konnte nicht abgeschlossen werden. Bitte erneut versuchen oder den aktuellen Stand neu laden.",
+  INDEXING_MODEL_UNAVAILABLE:
+    "Das gewählte Embedding-Modell ist nicht verfügbar. Bitte Provider-Einstellungen prüfen oder ein anderes Modell wählen.",
+  INDEXING_CLOUD_CONFIRMATION_REQUIRED:
+    "Diese Indizierung würde Originaltexte an OpenAI senden. Bitte Cloud-Nutzung bewusst bestätigen oder ein lokales Modell wählen.",
+  INDEXING_CANCEL_NOT_AVAILABLE:
+    "Diese Indizierung kann nicht mehr abgebrochen werden. Bitte Liste aktualisieren.",
 };
 
 function readStoredSessionToken(): string | null {
@@ -503,6 +489,8 @@ function toImportLog(log: ApiImportLog): ImportLog {
     validRecords: log.valid_records,
     skippedRecords: log.skipped_records,
     datasetVersionId: log.dataset_version_id,
+    datasetDisplayName: log.dataset_display_name,
+    datasetDeletedAt: log.dataset_deleted_at,
   };
 }
 
@@ -518,36 +506,26 @@ function toProviderConfiguration(
   };
 }
 
-function toAnalysisProfile(profile: ApiAnalysisProfile): AnalysisProfile {
-  return {
-    id: profile.id,
-    projectId: profile.project_id,
-    name: profile.name,
-    provider: profile.provider,
-    model: profile.model,
-    isCloudProvider: profile.is_cloud_provider,
-    thresholds: profile.thresholds,
-    algorithmSettings: profile.algorithm_settings,
-    promptTemplate: profile.prompt_template,
-  };
-}
-
-function toAnalysisRun(run: ApiAnalysisRun): AnalysisRun {
+function toIndexingRun(run: ApiIndexingRun): IndexingRun {
   return {
     id: run.id,
     projectId: run.project_id,
     datasetVersionId: run.dataset_version_id,
-    analysisProfileId: run.analysis_profile_id,
+    datasetDisplayName: run.dataset_display_name,
+    datasetDeletedAt: run.dataset_deleted_at,
     status: run.status,
     progress: run.progress,
-    profileSnapshot: run.profile_snapshot,
+    phase: run.phase,
     provider: run.provider,
     model: run.model,
     parameters: run.parameters,
+    errorCode: run.error_code,
     errorMessage: run.error_message,
     diagnostics: run.diagnostics,
     startedAt: run.started_at,
     completedAt: run.completed_at,
+    cancelRequestedAt: run.cancel_requested_at,
+    deletedAt: run.deleted_at,
     createdAt: run.created_at,
     updatedAt: run.updated_at,
   };
@@ -681,19 +659,6 @@ function parseModels(value: FormDataEntryValue | null): string[] {
     .filter(Boolean);
 }
 
-function suggestedAnalysisProfileName(
-  profiles: Pick<AnalysisProfile, "name">[],
-): string {
-  const highestSequence = profiles.reduce((highest, profile) => {
-    const match = /^analysis-(\d+)$/.exec(profile.name);
-    if (match === null) {
-      return highest;
-    }
-    return Math.max(highest, Number.parseInt(match[1], 10));
-  }, 0);
-  return `analysis-${highestSequence + 1}`;
-}
-
 function formatJsonObject(value: Record<string, unknown> | null): string {
   if (value === null || Object.keys(value).length === 0) {
     return "-";
@@ -703,12 +668,35 @@ function formatJsonObject(value: Record<string, unknown> | null): string {
 
 class ApiRequestError extends Error {
   readonly status: number;
+  readonly code: string | null;
 
-  constructor(message: string, status: number) {
+  constructor(message: string, status: number, code: string | null = null) {
     super(message);
     this.name = "ApiRequestError";
     this.status = status;
+    this.code = code;
   }
+}
+
+function normalizeApiError(payload: {
+  title?: unknown;
+  detail?: unknown;
+  code?: unknown;
+}): { message: string | null; code: string | null } {
+  const code = typeof payload.code === "string" ? payload.code : null;
+  if (code !== null && ERROR_MESSAGES_BY_CODE[code] !== undefined) {
+    return { message: ERROR_MESSAGES_BY_CODE[code], code };
+  }
+  if (code !== null) {
+    return { message: ERROR_MESSAGES_BY_CODE.UNEXPECTED_ERROR, code };
+  }
+  if (typeof payload.detail === "string" && payload.detail.trim() !== "") {
+    return { message: payload.detail, code };
+  }
+  if (typeof payload.title === "string" && payload.title.trim() !== "") {
+    return { message: payload.title, code };
+  }
+  return { message: null, code };
 }
 
 function actionErrorMessage(error: unknown, fallback: string): string {
@@ -730,15 +718,23 @@ async function apiRequest<T>(
   const response = await fetch(`${API_BASE}${path}`, { ...options, headers });
   if (!response.ok) {
     let detail: string | null = null;
+    let code: string | null = null;
     try {
-      const payload = (await response.json()) as { detail?: unknown };
-      detail = typeof payload.detail === "string" ? payload.detail : null;
+      const payload = (await response.json()) as {
+        title?: unknown;
+        detail?: unknown;
+        code?: unknown;
+      };
+      const normalized = normalizeApiError(payload);
+      detail = normalized.message;
+      code = normalized.code;
     } catch {
       detail = null;
     }
     throw new ApiRequestError(
       detail ?? `Anfrage fehlgeschlagen (HTTP ${response.status}).`,
       response.status,
+      code,
     );
   }
   if (response.status === 204) {
@@ -768,15 +764,7 @@ function App() {
     [],
   );
   const [providers, setProviders] = useState<ProviderConfiguration[]>([]);
-  const [analysisProfiles, setAnalysisProfiles] = useState<AnalysisProfile[]>(
-    [],
-  );
-  const [projectProfileLoadState, setProjectProfileLoadState] =
-    useState<ProjectProfileLoadState>({
-      projectId: null,
-      status: "idle",
-    });
-  const [analysisRuns, setAnalysisRuns] = useState<AnalysisRun[]>([]);
+  const [indexingRuns, setIndexingRuns] = useState<IndexingRun[]>([]);
   const [clusters, setClusters] = useState<Cluster[]>([]);
   const [clusterSources, setClusterSources] = useState<ClusterSource[]>([]);
   const [candidates, setCandidates] = useState<Candidate[]>([]);
@@ -800,15 +788,9 @@ function App() {
   const [openAiSelectedModels, setOpenAiSelectedModels] = useState<string[]>(
     [],
   );
-  const [profileName, setProfileName] = useState("analysis-1");
-  const [profileProvider, setProfileProvider] =
+  const [indexingProvider, setIndexingProvider] =
     useState<ConfigurableProvider>("vllm");
-  const [profileModel, setProfileModel] = useState("");
-  const [profileAlgorithm, setProfileAlgorithm] =
-    useState<ProfileAlgorithm>("hdbscan");
-  const [agglomerativeCriterion, setAgglomerativeCriterion] =
-    useState<AgglomerativeCriterion>("n_clusters");
-  const [runAnalysisProfileId, setRunAnalysisProfileId] = useState("");
+  const [indexingModel, setIndexingModel] = useState("");
   const [cloudUseConfirmed, setCloudUseConfirmed] = useState(false);
   const projectOpenGeneration = useRef(0);
   const clusterGenerationRequestRef = useRef<ClusterGenerationRequest | null>(
@@ -883,24 +865,16 @@ function App() {
     }
   }
 
-  async function fetchAnalysisProfiles(token: string, projectId: string) {
-    const apiProfiles = await apiRequest<ApiAnalysisProfile[]>(
-      `/api/projects/${projectId}/analysis-profiles`,
-      { token },
-    );
-    return apiProfiles.map(toAnalysisProfile);
-  }
-
-  async function fetchAnalysisRuns(
+  async function fetchIndexingRuns(
     token: string,
     projectId: string,
     signal?: AbortSignal,
   ) {
-    const apiRuns = await apiRequest<ApiAnalysisRun[]>(
-      `/api/projects/${projectId}/analysis-runs`,
+    const apiRuns = await apiRequest<ApiIndexingRun[]>(
+      `/api/projects/${projectId}/indexing-runs`,
       { token, signal },
     );
-    return apiRuns.map(toAnalysisRun);
+    return apiRuns.map(toIndexingRun);
   }
 
   async function loadClusters(token: string, projectId: string, runId: string) {
@@ -916,7 +890,7 @@ function App() {
         apiClusters.length > 0 ? "success" : "info",
         apiClusters.length > 0
           ? "Cluster geladen."
-          : "Für diesen abgeschlossenen Run wurden noch keine Cluster erzeugt.",
+          : "Für diese abgeschlossene Indizierung wurden noch keine Cluster erzeugt.",
       );
     } catch (error: unknown) {
       showFeedback(
@@ -1048,9 +1022,7 @@ function App() {
       setImportLogs([]);
       setImportLogEntries([]);
       setProviders([]);
-      setAnalysisProfiles([]);
-      setProjectProfileLoadState({ projectId: null, status: "idle" });
-      setAnalysisRuns([]);
+      setIndexingRuns([]);
       setClusters([]);
       setClusterLoadRunId(null);
       setClusterSources([]);
@@ -1081,9 +1053,7 @@ function App() {
     setImportLogs([]);
     setImportLogEntries([]);
     setProviders([]);
-    setAnalysisProfiles([]);
-    setProjectProfileLoadState({ projectId: null, status: "idle" });
-    setAnalysisRuns([]);
+    setIndexingRuns([]);
     setClusters([]);
     setClusterLoadRunId(null);
     setClusterSources([]);
@@ -1130,8 +1100,7 @@ function App() {
     invalidateProjectContext();
     setActivePage("projects");
     setCurrentProject(null);
-    setAnalysisProfiles([]);
-    setProjectProfileLoadState({ projectId: null, status: "idle" });
+    setIndexingRuns([]);
     setProjectTab("import");
     setFeedback(null);
   }
@@ -1179,8 +1148,7 @@ function App() {
     setCurrentProject(null);
     setImportLogs([]);
     setImportLogEntries([]);
-    setAnalysisProfiles([]);
-    setAnalysisRuns([]);
+    setIndexingRuns([]);
     setClusters([]);
     setClusterLoadRunId(null);
     setClusterSources([]);
@@ -1188,10 +1156,6 @@ function App() {
     setCandidateSources([]);
     setExportLogs([]);
     setLastExportCsv("");
-    setProjectProfileLoadState({
-      projectId,
-      status: "loading",
-    });
     setProjectTab("import");
     setActivePage("projects");
     try {
@@ -1205,22 +1169,16 @@ function App() {
         return;
       }
       const project = toProject(opened);
-      setProjectProfileLoadState({
-        projectId: project.id,
-        status: "loading",
-      });
       setCurrentProject(project);
       setProjectTab("import");
       rememberProjectAccess(project.id);
       setActivePage("projects");
 
-      const [logs, profiles, nextCandidates, exports] =
-        await Promise.allSettled([
-          fetchImportLogs(session.token, projectId),
-          fetchAnalysisProfiles(session.token, projectId),
-          fetchCandidates(session.token, projectId),
-          fetchExports(session.token, projectId),
-        ]);
+      const [logs, nextCandidates, exports] = await Promise.allSettled([
+        fetchImportLogs(session.token, projectId),
+        fetchCandidates(session.token, projectId),
+        fetchExports(session.token, projectId),
+      ]);
       if (projectOpenGeneration.current !== generation) {
         return;
       }
@@ -1229,29 +1187,11 @@ function App() {
         nextCandidates.status === "fulfilled" ? nextCandidates.value : [],
       );
       setExportLogs(exports.status === "fulfilled" ? exports.value : []);
-      if (profiles.status === "fulfilled") {
-        authoritativeProjectContext.current = {
-          projectId: project.id,
-          generation,
-          ready: true,
-        };
-        setAnalysisProfiles(profiles.value);
-        setProjectProfileLoadState({
-          projectId: project.id,
-          status: "ready",
-        });
-      } else {
-        authoritativeProjectContext.current = {
-          projectId: project.id,
-          generation,
-          ready: false,
-        };
-        setAnalysisProfiles([]);
-        setProjectProfileLoadState({
-          projectId: project.id,
-          status: "error",
-        });
-      }
+      authoritativeProjectContext.current = {
+        projectId: project.id,
+        generation,
+        ready: true,
+      };
       showFeedback("success", "Projekt geöffnet.");
     } catch (error: unknown) {
       if (projectOpenGeneration.current === generation) {
@@ -1318,9 +1258,7 @@ function App() {
         setProjectTab("import");
         setImportLogs([]);
         setImportLogEntries([]);
-        setAnalysisProfiles([]);
-        setProjectProfileLoadState({ projectId: null, status: "idle" });
-        setAnalysisRuns([]);
+        setIndexingRuns([]);
         setClusters([]);
         setClusterLoadRunId(null);
         setClusterSources([]);
@@ -1812,107 +1750,123 @@ function App() {
     }
   }
 
-  async function createAnalysisProfile(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const context = authoritativeProjectContext.current;
-    if (
-      session === null ||
-      currentProject === null ||
-      !context.ready ||
-      context.projectId !== currentProject.id ||
-      projectProfileLoadState.projectId !== currentProject.id ||
-      projectProfileLoadState.status !== "ready"
-    ) {
-      showFeedback(
-        "info",
-        "Analyseprofile werden noch geladen und können noch nicht gespeichert werden.",
-      );
+  async function renameDatasetVersion(
+    datasetVersionId: string,
+    displayName: string,
+  ) {
+    if (session === null || currentProject === null || !displayName.trim()) {
       return;
     }
-    const formElement = event.currentTarget;
-    const originProjectId = currentProject.id;
-    const generation = context.generation;
-    const form = new FormData(formElement);
-    const similarity = Number.parseFloat(String(form.get("similarity") ?? ""));
-    const thresholds = Number.isFinite(similarity) ? { similarity } : {};
-    const algorithmSettings: Record<string, number | string> = {
-      algorithm: profileAlgorithm,
-    };
-    if (profileAlgorithm === "hdbscan") {
-      algorithmSettings.min_cluster_size = Number.parseInt(
-        String(form.get("minClusterSize") ?? ""),
-        10,
-      );
-      const minSamples = String(form.get("minSamples") ?? "").trim();
-      if (minSamples) {
-        algorithmSettings.min_samples = Number.parseInt(minSamples, 10);
-      }
-      algorithmSettings.cluster_selection_epsilon = Number.parseFloat(
-        String(form.get("clusterSelectionEpsilon") ?? ""),
-      );
-    } else {
-      if (agglomerativeCriterion === "n_clusters") {
-        algorithmSettings.n_clusters = Number.parseInt(
-          String(form.get("nClusters") ?? ""),
-          10,
-        );
-      } else {
-        algorithmSettings.distance_threshold = Number.parseFloat(
-          String(form.get("distanceThreshold") ?? ""),
-        );
-      }
-      algorithmSettings.linkage = String(form.get("linkage") ?? "ward");
-    }
     try {
-      const created = await apiRequest<ApiAnalysisProfile>(
-        `/api/projects/${originProjectId}/analysis-profiles`,
+      const updated = await apiRequest<{
+        id: string;
+        display_name: string | null;
+        deleted_at: string | null;
+      }>(
+        `/api/projects/${currentProject.id}/dataset-versions/${datasetVersionId}`,
         {
-          method: "POST",
+          method: "PATCH",
           token: session.token,
-          body: JSON.stringify({
-            name: profileName.trim(),
-            provider: profileProvider,
-            model: profileModel,
-            thresholds,
-            algorithm_settings: algorithmSettings,
-          }),
+          body: JSON.stringify({ display_name: displayName.trim() }),
         },
       );
-      if (!isAuthoritativeProjectContext(originProjectId, generation)) {
-        return;
-      }
-      const nextProfiles = [toAnalysisProfile(created), ...analysisProfiles];
-      setAnalysisProfiles(nextProfiles);
-      setProfileName(suggestedAnalysisProfileName(nextProfiles));
-      formElement.reset();
-      showFeedback("success", "Analyseprofil gespeichert.");
+      setImportLogs((existing) =>
+        existing.map((log) =>
+          log.datasetVersionId === datasetVersionId
+            ? {
+                ...log,
+                datasetDisplayName: updated.display_name,
+                datasetDeletedAt: updated.deleted_at,
+              }
+            : log,
+        ),
+      );
+      setIndexingRuns((existing) =>
+        existing.map((run) =>
+          run.datasetVersionId === datasetVersionId
+            ? {
+                ...run,
+                datasetDisplayName: updated.display_name,
+                datasetDeletedAt: updated.deleted_at,
+              }
+            : run,
+        ),
+      );
+      showFeedback("success", "Datensatz umbenannt.");
     } catch (error: unknown) {
-      if (isAuthoritativeProjectContext(originProjectId, generation)) {
-        showFeedback(
-          "error",
-          actionErrorMessage(
-            error,
-            "Analyseprofil konnte nicht gespeichert werden. Provider und Modell prüfen.",
-          ),
-        );
-      }
+      showFeedback(
+        "error",
+        actionErrorMessage(error, "Datensatz konnte nicht umbenannt werden."),
+      );
     }
   }
 
-  async function startAnalysisRun(event: FormEvent<HTMLFormElement>) {
+  async function deleteDatasetVersion(datasetVersionId: string) {
+    if (session === null || currentProject === null) {
+      return;
+    }
+    if (
+      !window.confirm(
+        "Datensatz wirklich löschen? Bestehende Indizierungen bleiben sichtbar, der Datensatz kann aber nicht erneut ausgewählt werden.",
+      )
+    ) {
+      return;
+    }
+    try {
+      const updated = await apiRequest<{
+        id: string;
+        display_name: string | null;
+        deleted_at: string | null;
+      }>(
+        `/api/projects/${currentProject.id}/dataset-versions/${datasetVersionId}`,
+        {
+          method: "DELETE",
+          token: session.token,
+        },
+      );
+      setImportLogs((existing) =>
+        existing.map((log) =>
+          log.datasetVersionId === datasetVersionId
+            ? {
+                ...log,
+                datasetDisplayName: updated.display_name,
+                datasetDeletedAt: updated.deleted_at,
+              }
+            : log,
+        ),
+      );
+      setIndexingRuns((existing) =>
+        existing.map((run) =>
+          run.datasetVersionId === datasetVersionId
+            ? {
+                ...run,
+                datasetDisplayName: updated.display_name,
+                datasetDeletedAt: updated.deleted_at,
+              }
+            : run,
+        ),
+      );
+      showFeedback("success", "Datensatz gelöscht.");
+    } catch (error: unknown) {
+      showFeedback(
+        "error",
+        actionErrorMessage(error, "Datensatz konnte nicht gelöscht werden."),
+      );
+    }
+  }
+
+  async function startIndexingRun(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const context = authoritativeProjectContext.current;
     if (
       session === null ||
       currentProject === null ||
       !context.ready ||
-      context.projectId !== currentProject.id ||
-      projectProfileLoadState.projectId !== currentProject.id ||
-      projectProfileLoadState.status !== "ready"
+      context.projectId !== currentProject.id
     ) {
       showFeedback(
         "info",
-        "Analyseprofile werden noch geladen; ein Run kann noch nicht gestartet werden.",
+        "Projekt wird noch geladen; die Indizierung kann noch nicht gestartet werden.",
       );
       return;
     }
@@ -1921,49 +1875,41 @@ function App() {
     const formElement = event.currentTarget;
     const form = new FormData(formElement);
     const datasetVersionId = String(form.get("datasetVersionId") ?? "");
-    const selectedProfile = authoritativeAnalysisProfiles.find(
-      (profile) => profile.id === runAnalysisProfileId,
-    );
-    if (selectedProfile === undefined) {
-      showFeedback(
-        "warning",
-        "Bitte ein Profil des aktuellen Projekts auswählen.",
-      );
+    if (!datasetVersionId || !indexingModel) {
+      showFeedback("warning", "Bitte Datensatz und Embedding-Modell wählen.");
       return;
     }
-    if (selectedProfile?.isCloudProvider && !cloudUseConfirmed) {
+    if (indexingProvider === "openai" && !cloudUseConfirmed) {
       showFeedback(
         "warning",
-        "OpenAI Cloud-Nutzung muss vor dem Analysestart bestätigt werden.",
+        "OpenAI Cloud-Nutzung muss vor dem Start bestätigt werden.",
       );
       return;
     }
     try {
-      const created = await apiRequest<ApiAnalysisRun>(
-        `/api/projects/${originProjectId}/analysis-runs`,
+      const created = await apiRequest<ApiIndexingRun>(
+        `/api/projects/${originProjectId}/indexing-runs`,
         {
           method: "POST",
           token: session.token,
           body: JSON.stringify({
             dataset_version_id: datasetVersionId,
-            analysis_profile_id: runAnalysisProfileId,
-            parameters: {
-              ...(selectedProfile?.isCloudProvider
-                ? { cloud_use_confirmed: true }
-                : {}),
-            },
+            provider: indexingProvider,
+            model: indexingModel,
+            cloud_use_confirmed:
+              indexingProvider === "openai" ? cloudUseConfirmed : undefined,
           }),
         },
       );
       if (!isAuthoritativeProjectContext(originProjectId, generation)) {
         return;
       }
-      setAnalysisRuns((existing) => [toAnalysisRun(created), ...existing]);
+      setIndexingRuns((existing) => [toIndexingRun(created), ...existing]);
       formElement.reset();
       setCloudUseConfirmed(false);
       showFeedback(
         "success",
-        `Analyse gestartet: ${created.status}, Fortschritt ${created.progress}%.`,
+        `Indizierung gestartet: ${created.status}, Fortschritt ${created.progress}%.`,
       );
     } catch (error: unknown) {
       if (isAuthoritativeProjectContext(originProjectId, generation)) {
@@ -1971,10 +1917,73 @@ function App() {
           "error",
           actionErrorMessage(
             error,
-            "Analyse konnte nicht gestartet werden. Dataset-Version und Profil prüfen.",
+            "Indizierung konnte nicht gestartet werden. Datensatz, Provider und Modell prüfen.",
           ),
         );
       }
+    }
+  }
+
+  async function cancelIndexingRun(runId: string) {
+    if (session === null || currentProject === null) {
+      return;
+    }
+    try {
+      const updated = await apiRequest<ApiIndexingRun>(
+        `/api/projects/${currentProject.id}/indexing-runs/${runId}/cancel`,
+        {
+          method: "POST",
+          token: session.token,
+        },
+      );
+      setIndexingRuns((existing) =>
+        existing.map((run) =>
+          run.id === runId ? toIndexingRun(updated) : run,
+        ),
+      );
+      showFeedback("success", "Indizierung wird abgebrochen.");
+    } catch (error: unknown) {
+      showFeedback(
+        "error",
+        actionErrorMessage(
+          error,
+          "Indizierung konnte nicht abgebrochen werden.",
+        ),
+      );
+    }
+  }
+
+  async function deleteIndexingRun(runId: string) {
+    if (session === null || currentProject === null) {
+      return;
+    }
+    if (
+      !window.confirm(
+        "Indizierung wirklich löschen? Sie wird aus der Liste entfernt und laufende Arbeit wird abgebrochen.",
+      )
+    ) {
+      return;
+    }
+    try {
+      await apiRequest<void>(
+        `/api/projects/${currentProject.id}/indexing-runs/${runId}`,
+        {
+          method: "DELETE",
+          token: session.token,
+        },
+      );
+      setIndexingRuns((existing) => existing.filter((run) => run.id !== runId));
+      if (clusterLoadRunId === runId) {
+        setClusters([]);
+        setClusterSources([]);
+        setClusterLoadRunId(null);
+      }
+      showFeedback("success", "Indizierung gelöscht.");
+    } catch (error: unknown) {
+      showFeedback(
+        "error",
+        actionErrorMessage(error, "Indizierung konnte nicht gelöscht werden."),
+      );
     }
   }
 
@@ -1993,7 +2002,7 @@ function App() {
     };
     clusterGenerationRequestRef.current = request;
     setClusterGenerationRequest(request);
-    showFeedback("info", `Clustererzeugung für Run ${runId} läuft.`);
+    showFeedback("info", `Clustererzeugung für Indizierung ${runId} läuft.`);
     try {
       const apiClusters = await apiRequest<ApiCluster[]>(
         `/api/projects/${request.projectId}/analysis-runs/${runId}/clusters/generate`,
@@ -2012,7 +2021,7 @@ function App() {
           "error",
           actionErrorMessage(
             error,
-            "Cluster konnten nicht erzeugt werden. Run-Status prüfen.",
+            "Cluster konnten nicht erzeugt werden. Indizierungsstatus prüfen.",
           ),
         );
       }
@@ -2292,23 +2301,13 @@ function App() {
     })
     .slice(0, 10);
   const runnableDatasetLogs = importLogs.filter(
-    (log) => log.datasetVersionId !== null,
+    (log) => log.datasetVersionId !== null && log.datasetDeletedAt === null,
   );
-  const profileProviderConfiguration = providers.find(
-    (provider) => provider.provider === profileProvider,
+  const indexingProviderConfiguration = providers.find(
+    (provider) => provider.provider === indexingProvider,
   );
-  const profileProviderModels =
-    profileProviderConfiguration?.manualModels ?? [];
-  const currentProjectProfilesAreReady =
-    currentProject !== null &&
-    projectProfileLoadState.projectId === currentProject.id &&
-    projectProfileLoadState.status === "ready";
-  const authoritativeAnalysisProfiles = currentProjectProfilesAreReady
-    ? analysisProfiles
-    : [];
-  const selectedRunProfile = authoritativeAnalysisProfiles.find(
-    (profile) => profile.id === runAnalysisProfileId,
-  );
+  const indexingProviderModels =
+    indexingProviderConfiguration?.manualModels ?? [];
 
   function rememberProjectAccess(projectId: string) {
     setRecentProjectIds((existing) =>
@@ -2316,48 +2315,43 @@ function App() {
     );
   }
 
-  useEffect(() => {
-    setProfileName(
-      suggestedAnalysisProfileName(
-        currentProjectProfilesAreReady ? analysisProfiles : [],
-      ),
+  function datasetLabel(
+    log: Pick<
+      ImportLog,
+      "sourceName" | "datasetVersionId" | "datasetDisplayName"
+    >,
+  ) {
+    return (
+      log.datasetDisplayName ?? log.sourceName ?? log.datasetVersionId ?? "-"
     );
-  }, [currentProject?.id, currentProjectProfilesAreReady, analysisProfiles]);
+  }
 
   useEffect(() => {
     const availableModels =
-      providers.find((provider) => provider.provider === profileProvider)
+      providers.find((provider) => provider.provider === indexingProvider)
         ?.manualModels ?? [];
-    setProfileModel((currentModel) =>
+    setIndexingModel((currentModel) =>
       availableModels.includes(currentModel)
         ? currentModel
         : (availableModels[0] ?? ""),
     );
-  }, [profileProvider, providers]);
+  }, [indexingProvider, providers]);
 
   useEffect(() => {
-    setRunAnalysisProfileId((currentProfileId) =>
-      currentProjectProfilesAreReady &&
-      analysisProfiles.some((profile) => profile.id === currentProfileId)
-        ? currentProfileId
-        : currentProjectProfilesAreReady
-          ? (analysisProfiles[0]?.id ?? "")
-          : "",
-    );
     setCloudUseConfirmed(false);
-  }, [currentProject?.id, currentProjectProfilesAreReady, analysisProfiles]);
+  }, [currentProject?.id, indexingProvider]);
 
   useEffect(() => {
     if (
       session === null ||
       currentProject === null ||
       activePage !== "projects" ||
-      (projectTab !== "runs" && projectTab !== "clusters")
+      (projectTab !== "indexing" && projectTab !== "clusters")
     ) {
       return undefined;
     }
 
-    const shouldPoll = projectTab === "runs";
+    const shouldPoll = projectTab === "indexing";
     const token = session.token;
     const projectId = currentProject.id;
     const projectGeneration = projectOpenGeneration.current;
@@ -2393,24 +2387,24 @@ function App() {
       clearScheduledPoll();
       timer = window.setTimeout(() => {
         timer = null;
-        void refreshRuns();
+        void refreshIndexingRuns();
       }, delay);
     }
 
-    async function refreshRuns() {
+    async function refreshIndexingRuns() {
       if (activeRequest !== null || !isCurrentPollingContext(true)) {
         return;
       }
       const request = { controller: new AbortController() };
       activeRequest = request;
       try {
-        const runs = await fetchAnalysisRuns(
+        const runs = await fetchIndexingRuns(
           token,
           projectId,
           request.controller.signal,
         );
         if (activeRequest === request && isCurrentPollingContext(true)) {
-          setAnalysisRuns(runs);
+          setIndexingRuns(runs);
         }
       } catch (error: unknown) {
         if (
@@ -2433,13 +2427,13 @@ function App() {
       clearScheduledPoll();
       cancelActiveRequest();
       if (document.visibilityState === "visible") {
-        void refreshRuns();
+        void refreshIndexingRuns();
       }
     }
 
     document.addEventListener("visibilitychange", handleVisibilityChange);
     if (document.visibilityState === "visible") {
-      void refreshRuns();
+      void refreshIndexingRuns();
     }
 
     return () => {
@@ -2635,8 +2629,7 @@ function App() {
                 {(
                   [
                     ["import", "Import"],
-                    ["profiles", "Profile"],
-                    ["runs", "Runs"],
+                    ["indexing", "Indizieren"],
                     ["clusters", "Cluster"],
                     ["candidates", "Kandidaten"],
                     ["exports", "Export"],
@@ -2892,270 +2885,6 @@ function App() {
 
           {activePage === "projects" && (
             <>
-              {currentProject && projectTab === "profiles" && (
-                <section id="profiles" className="panel-grid profile-grid">
-                  {!currentProjectProfilesAreReady ? (
-                    <section
-                      className="panel stack"
-                      role="status"
-                      aria-label="Analyseprofile werden geladen"
-                    >
-                      <p className="eyebrow">Profile</p>
-                      <h2>
-                        {projectProfileLoadState.status === "error"
-                          ? "Profile nicht verfügbar"
-                          : "Analyseprofile werden geladen"}
-                      </h2>
-                      <p className="hint">
-                        {projectProfileLoadState.status === "error"
-                          ? "Die Profile dieses Projekts konnten nicht geladen werden. Wechseln Sie erneut in das Projekt, bevor Sie ein Profil anlegen."
-                          : "Das Profilformular wird freigegeben, sobald die projektlokalen Profile vollständig geladen sind."}
-                      </p>
-                    </section>
-                  ) : (
-                    <>
-                      <form
-                        className="panel stack"
-                        onSubmit={createAnalysisProfile}
-                        aria-label="Analyseprofil erstellen"
-                      >
-                        <p className="eyebrow">Profile</p>
-                        <h2>Analyseprofil erstellen</h2>
-                        <label>
-                          Profilname
-                          <input
-                            name="profileName"
-                            value={profileName}
-                            onChange={(event) =>
-                              setProfileName(event.target.value)
-                            }
-                            required
-                          />
-                        </label>
-                        <label>
-                          Provider
-                          <select
-                            name="provider"
-                            value={profileProvider}
-                            onChange={(event) =>
-                              setProfileProvider(
-                                event.target.value as ConfigurableProvider,
-                              )
-                            }
-                          >
-                            <option value="vllm">vLLM lokal</option>
-                            <option value="ollama">Ollama lokal</option>
-                            <option value="openai">OpenAI Cloud</option>
-                          </select>
-                        </label>
-                        <label>
-                          Modell
-                          <select
-                            name="model"
-                            value={profileModel}
-                            onChange={(event) =>
-                              setProfileModel(event.target.value)
-                            }
-                            aria-describedby="profile-model-status"
-                            disabled={profileProviderModels.length === 0}
-                            required
-                          >
-                            {profileProviderModels.length === 0 && (
-                              <option value="">Keine Modelle verfügbar</option>
-                            )}
-                            {profileProviderModels.map((model) => (
-                              <option key={model} value={model}>
-                                {model}
-                              </option>
-                            ))}
-                          </select>
-                        </label>
-                        <p
-                          id="profile-model-status"
-                          className={
-                            profileProviderModels.length === 0
-                              ? "status warning"
-                              : "hint"
-                          }
-                          role="status"
-                        >
-                          {profileProviderModels.length === 0
-                            ? "Für diesen Provider ist noch kein Modell konfiguriert. Bitte zuerst die Provider-Einstellungen ergänzen."
-                            : `${profileProviderModels.length} Modell(e) für ${profileProvider} verfügbar.`}
-                        </p>
-                        <label>
-                          Similarity Threshold
-                          <input
-                            name="similarity"
-                            type="number"
-                            min="0"
-                            max="1"
-                            step="any"
-                            placeholder="0.78"
-                          />
-                        </label>
-                        <label>
-                          Algorithmus
-                          <select
-                            name="algorithm"
-                            value={profileAlgorithm}
-                            onChange={(event) =>
-                              setProfileAlgorithm(
-                                event.target.value as ProfileAlgorithm,
-                              )
-                            }
-                          >
-                            <option value="hdbscan">HDBSCAN</option>
-                            <option value="agglomerative">Agglomerative</option>
-                          </select>
-                        </label>
-                        <fieldset className="parameter-group">
-                          <legend>
-                            {profileAlgorithm === "hdbscan"
-                              ? "HDBSCAN-Parameter"
-                              : "Agglomerative-Parameter"}
-                          </legend>
-                          {profileAlgorithm === "hdbscan" ? (
-                            <div className="stack">
-                              <label>
-                                Minimale Clustergröße
-                                <input
-                                  name="minClusterSize"
-                                  type="number"
-                                  min="2"
-                                  max="100000"
-                                  defaultValue="5"
-                                  required
-                                />
-                              </label>
-                              <label>
-                                Minimale Samples (optional)
-                                <input
-                                  name="minSamples"
-                                  type="number"
-                                  min="1"
-                                  max="100000"
-                                />
-                              </label>
-                              <label>
-                                Cluster-Auswahl-Epsilon
-                                <input
-                                  name="clusterSelectionEpsilon"
-                                  type="number"
-                                  min="0"
-                                  step="any"
-                                  defaultValue="0"
-                                  required
-                                />
-                              </label>
-                            </div>
-                          ) : (
-                            <div className="stack">
-                              <label>
-                                Abbruchkriterium
-                                <select
-                                  name="agglomerativeCriterion"
-                                  value={agglomerativeCriterion}
-                                  onChange={(event) =>
-                                    setAgglomerativeCriterion(
-                                      event.target
-                                        .value as AgglomerativeCriterion,
-                                    )
-                                  }
-                                >
-                                  <option value="n_clusters">
-                                    Anzahl Cluster
-                                  </option>
-                                  <option value="distance_threshold">
-                                    Distanzschwelle
-                                  </option>
-                                </select>
-                              </label>
-                              {agglomerativeCriterion === "n_clusters" ? (
-                                <label>
-                                  Anzahl Cluster
-                                  <input
-                                    name="nClusters"
-                                    type="number"
-                                    min="1"
-                                    defaultValue="2"
-                                    required
-                                  />
-                                </label>
-                              ) : (
-                                <label>
-                                  Distanzschwelle
-                                  <input
-                                    name="distanceThreshold"
-                                    type="number"
-                                    min="0"
-                                    step="any"
-                                    required
-                                  />
-                                </label>
-                              )}
-                              <label>
-                                Linkage
-                                <select name="linkage" defaultValue="ward">
-                                  <option value="ward">Ward</option>
-                                  <option value="complete">Complete</option>
-                                  <option value="average">Average</option>
-                                  <option value="single">Single</option>
-                                </select>
-                              </label>
-                            </div>
-                          )}
-                        </fieldset>
-                        <button
-                          type="submit"
-                          disabled={
-                            !profileName.trim() ||
-                            !profileProviderModels.includes(profileModel)
-                          }
-                        >
-                          Profil speichern
-                        </button>
-                      </form>
-
-                      <section className="panel" aria-label="Analyseprofile">
-                        <h2>Analyseprofile</h2>
-                        <div className="user-list">
-                          {analysisProfiles.length === 0 && (
-                            <p className="hint">
-                              Noch keine Analyseprofile für dieses Projekt.
-                            </p>
-                          )}
-                          {analysisProfiles.map((profile) => (
-                            <article className="user-card" key={profile.id}>
-                              <div className="user-heading">
-                                <strong>{profile.name}</strong>
-                                <span>
-                                  {profile.provider}/{profile.model}
-                                </span>
-                              </div>
-                              {profile.isCloudProvider && (
-                                <p className="status warning">
-                                  Cloud-Nutzung: OpenAI Profil sendet spätere
-                                  Analyseinhalte an den konfigurierten
-                                  Cloud-Provider.
-                                </p>
-                              )}
-                              <p className="hint">
-                                Thresholds: {JSON.stringify(profile.thresholds)}
-                              </p>
-                              <p className="hint">
-                                Algorithmus:{" "}
-                                {JSON.stringify(profile.algorithmSettings)}
-                              </p>
-                            </article>
-                          ))}
-                        </div>
-                      </section>
-                    </>
-                  )}
-                </section>
-              )}
-
               {projectTab === "exports" && (
                 <section id="exports" className="panel-grid">
                   <form
@@ -3228,8 +2957,8 @@ function App() {
                             {log.includeOriginalText ? "ja" : "nein"}
                           </p>
                           <p className="hint">
-                            Dataset-Version: {log.datasetVersionId ?? "-"}; Run:{" "}
-                            {log.analysisRunId ?? "-"}
+                            Dataset-Version: {log.datasetVersionId ?? "-"};
+                            Indizierung: {log.analysisRunId ?? "-"}
                           </p>
                           <p className="hint">Erstellt: {log.createdAt}</p>
                           {log.includeOriginalText && (
@@ -3252,54 +2981,86 @@ function App() {
                 </section>
               )}
 
-              {projectTab === "runs" && (
-                <section id="runs" className="panel-grid">
+              {projectTab === "indexing" && (
+                <section id="indexing" className="panel-grid">
                   <form
                     className="panel stack"
-                    onSubmit={startAnalysisRun}
-                    aria-label="Analyse starten"
+                    onSubmit={startIndexingRun}
+                    aria-label="Indizierung starten"
                   >
-                    <p className="eyebrow">Run Monitor</p>
-                    <h2>Analyse starten</h2>
+                    <p className="eyebrow">Indizierung</p>
+                    <h2>Datensatz indizieren</h2>
                     <p className="hint">
-                      Lokale Fixture-Workflows können ohne OpenAI abgeschlossen
-                      werden. OpenAI-Profile bleiben als Cloud-Nutzung sichtbar.
+                      Embeddings werden direkt für einen Datensatz erzeugt.
+                      Cluster-Parameter werden erst im nächsten Schritt gewählt.
                     </p>
                     <label>
-                      Dataset-Version
+                      Datensatz
                       <select name="datasetVersionId">
+                        {runnableDatasetLogs.length === 0 && (
+                          <option value="">Kein aktiver Datensatz</option>
+                        )}
                         {runnableDatasetLogs.map((log) => (
                           <option
                             key={log.datasetVersionId ?? log.id}
                             value={log.datasetVersionId ?? ""}
                           >
-                            {log.sourceName} / {log.datasetVersionId}
+                            {datasetLabel(log)} / {log.datasetVersionId}
                           </option>
                         ))}
                       </select>
                     </label>
                     <label>
-                      Analyseprofil
+                      Embedding-Provider
                       <select
-                        name="analysisProfileId"
-                        value={runAnalysisProfileId}
-                        disabled={!currentProjectProfilesAreReady}
+                        name="provider"
+                        value={indexingProvider}
                         onChange={(event) => {
-                          setRunAnalysisProfileId(event.target.value);
+                          setIndexingProvider(
+                            event.target.value as ConfigurableProvider,
+                          );
                           setCloudUseConfirmed(false);
                         }}
                       >
-                        {!currentProjectProfilesAreReady && (
-                          <option value="">Profile werden geladen</option>
+                        <option value="vllm">vLLM lokal</option>
+                        <option value="ollama">Ollama lokal</option>
+                        <option value="openai">OpenAI Cloud</option>
+                      </select>
+                    </label>
+                    <label>
+                      Embedding-Modell
+                      <select
+                        name="model"
+                        value={indexingModel}
+                        disabled={indexingProviderModels.length === 0}
+                        onChange={(event) =>
+                          setIndexingModel(event.target.value)
+                        }
+                        required
+                      >
+                        {indexingProviderModels.length === 0 && (
+                          <option value="">Keine Modelle verfügbar</option>
                         )}
-                        {authoritativeAnalysisProfiles.map((profile) => (
-                          <option key={profile.id} value={profile.id}>
-                            {profile.name} ({profile.provider}/{profile.model})
+                        {indexingProviderModels.map((model) => (
+                          <option key={model} value={model}>
+                            {model}
                           </option>
                         ))}
                       </select>
                     </label>
-                    {selectedRunProfile?.isCloudProvider && (
+                    <p
+                      className={
+                        indexingProviderModels.length === 0
+                          ? "status warning"
+                          : "hint"
+                      }
+                      role="status"
+                    >
+                      {indexingProviderModels.length === 0
+                        ? "Für diesen Provider ist noch kein Modell konfiguriert. Bitte zuerst die Provider-Einstellungen ergänzen."
+                        : `${indexingProviderModels.length} Modell(e) für ${indexingProvider} verfügbar.`}
+                    </p>
+                    {indexingProvider === "openai" && (
                       <label className="confirmation-field">
                         <input
                           name="cloudUseConfirmed"
@@ -3310,49 +3071,51 @@ function App() {
                           }
                         />
                         Ich bestätige, dass die importierten Nachrichtentexte
-                        für diesen Run an OpenAI übertragen werden.
+                        für diese Indizierung an OpenAI übertragen werden.
                       </label>
                     )}
                     <button
                       type="submit"
                       disabled={
                         runnableDatasetLogs.length === 0 ||
-                        !currentProjectProfilesAreReady ||
-                        authoritativeAnalysisProfiles.length === 0 ||
-                        (selectedRunProfile?.isCloudProvider === true &&
-                          !cloudUseConfirmed)
+                        !indexingProviderModels.includes(indexingModel) ||
+                        (indexingProvider === "openai" && !cloudUseConfirmed)
                       }
                     >
-                      Analyse starten
+                      Indizierung starten
                     </button>
                   </form>
 
-                  <section className="panel" aria-label="Analyse Runs">
-                    <h2>Analyse Runs</h2>
+                  <section className="panel" aria-label="Indizierungen">
+                    <h2>Indizierungen</h2>
                     <div className="user-list">
-                      {analysisRuns.length === 0 && (
+                      {indexingRuns.length === 0 && (
                         <p className="hint">
-                          Noch keine Analyse-Runs für dieses Projekt.
+                          Noch keine Indizierungen für dieses Projekt.
                         </p>
                       )}
-                      {analysisRuns.map((run) => (
+                      {indexingRuns.map((run) => (
                         <article className="user-card" key={run.id}>
                           <div className="user-heading">
                             <strong>{run.status}</strong>
                             <span>{run.progress}%</span>
                           </div>
+                          <progress value={run.progress} max={100}>
+                            {run.progress}%
+                          </progress>
+                          <p className="hint">Phase: {run.phase}</p>
                           <p className="hint">
                             Provider/Modell: {run.provider}/{run.model}
                           </p>
                           <p className="hint">
-                            Dataset-Version: {run.datasetVersionId}
+                            Datensatz: {run.datasetDisplayName ?? "-"}; Version:{" "}
+                            {run.datasetVersionId}
                           </p>
-                          <p className="hint">
-                            Profil-Snapshot:{" "}
-                            {String(
-                              run.profileSnapshot.name ?? run.analysisProfileId,
-                            )}
-                          </p>
+                          {run.datasetDeletedAt !== null && (
+                            <p className="status warning">
+                              Datensatz gelöscht: {run.datasetDeletedAt}
+                            </p>
+                          )}
                           <p className="hint">
                             Erstellt: {run.createdAt}; gestartet:{" "}
                             {run.startedAt ?? "noch nicht"}; abgeschlossen:{" "}
@@ -3364,6 +3127,26 @@ function App() {
                           <p className="hint">
                             Diagnose: {JSON.stringify(run.diagnostics)}
                           </p>
+                          <div className="form-actions">
+                            <button
+                              type="button"
+                              className="secondary"
+                              disabled={
+                                run.status !== "queued" &&
+                                run.status !== "running"
+                              }
+                              onClick={() => void cancelIndexingRun(run.id)}
+                            >
+                              Abbrechen
+                            </button>
+                            <button
+                              type="button"
+                              className="secondary"
+                              onClick={() => void deleteIndexingRun(run.id)}
+                            >
+                              Löschen
+                            </button>
+                          </div>
                         </article>
                       ))}
                     </div>
@@ -3377,17 +3160,16 @@ function App() {
                     <p className="eyebrow">Cluster Explorer</p>
                     <h2>Cluster erzeugen</h2>
                     <p className="hint">
-                      Abgeschlossene Runs können mit dem im Analyseprofil
-                      gewählten HDBSCAN- oder Agglomerative-Verfahren geclustert
-                      werden.
+                      Abgeschlossene Indizierungen können in diesem
+                      Übergangsschritt geclustert werden.
                     </p>
                     <div className="user-list">
-                      {analysisRuns.length === 0 && (
+                      {indexingRuns.length === 0 && (
                         <p className="hint">
-                          Noch keine Runs für Cluster vorhanden.
+                          Noch keine Indizierungen für Cluster vorhanden.
                         </p>
                       )}
-                      {analysisRuns.map((run) => (
+                      {indexingRuns.map((run) => (
                         <article
                           className="user-card"
                           key={`cluster-action-${run.id}`}
@@ -3396,7 +3178,11 @@ function App() {
                             <strong>{run.status}</strong>
                             <span>{run.model}</span>
                           </div>
-                          <p className="hint">Run: {run.id}</p>
+                          <p className="hint">Indizierung: {run.id}</p>
+                          <p className="hint">
+                            Datensatz: {run.datasetDisplayName ?? "-"}; Version:{" "}
+                            {run.datasetVersionId}
+                          </p>
                           <button
                             type="button"
                             className="secondary"
@@ -3416,7 +3202,7 @@ function App() {
                             currentProject?.id &&
                             clusterGenerationRequest?.runId === run.id && (
                               <p className="status info" role="status">
-                                Clustererzeugung läuft für Run {run.id}.
+                                Clustererzeugung läuft für Indizierung {run.id}.
                               </p>
                             )}
                           <button
@@ -3447,7 +3233,7 @@ function App() {
                         <p className="hint">
                           {clusterLoadRunId === null
                             ? "Noch keine Cluster geladen."
-                            : "Für den ausgewählten abgeschlossenen Run wurden noch keine Cluster erzeugt. Bitte zuerst „Cluster erzeugen“ ausführen."}
+                            : "Für die ausgewählte abgeschlossene Indizierung wurden noch keine Cluster erzeugt. Bitte zuerst „Cluster erzeugen“ ausführen."}
                         </p>
                       )}
                       {clusters.map((cluster) => (
@@ -3876,9 +3662,46 @@ function App() {
                             <p className="error">{log.failureReason}</p>
                           )}
                           {log.datasetVersionId && (
-                            <p className="hint">
-                              Dataset-Version: {log.datasetVersionId}
-                            </p>
+                            <div className="stack">
+                              <p className="hint">
+                                Dataset-Version: {log.datasetVersionId}
+                              </p>
+                              <label>
+                                Datensatzname
+                                <input
+                                  defaultValue={datasetLabel(log)}
+                                  disabled={log.datasetDeletedAt !== null}
+                                  onBlur={(event) => {
+                                    if (
+                                      event.target.value.trim() !==
+                                      datasetLabel(log)
+                                    ) {
+                                      void renameDatasetVersion(
+                                        log.datasetVersionId ?? "",
+                                        event.target.value,
+                                      );
+                                    }
+                                  }}
+                                />
+                              </label>
+                              {log.datasetDeletedAt === null ? (
+                                <button
+                                  type="button"
+                                  className="secondary"
+                                  onClick={() =>
+                                    void deleteDatasetVersion(
+                                      log.datasetVersionId ?? "",
+                                    )
+                                  }
+                                >
+                                  Datensatz löschen
+                                </button>
+                              ) : (
+                                <p className="status warning">
+                                  Datensatz gelöscht: {log.datasetDeletedAt}
+                                </p>
+                              )}
+                            </div>
                           )}
                           <button
                             type="button"

@@ -3,7 +3,7 @@ Name: support-knowledge-miner
 Version: 0.1.0
 Requires-Python: >=3.13
 Requires-Dist: argon2-cffi<26,>=25
-Requires-Dist: cryptography<49,>=48
+Requires-Dist: cryptography<51,>=50
 Requires-Dist: fastapi<1,>=0.116
 Requires-Dist: ijson<4,>=3.5
 Requires-Dist: pgvector<1,>=0.5

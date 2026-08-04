@@ -1,4 +1,4 @@
-"""Provider configuration and analysis-profile persistence."""
+"""Provider configuration and embedding-provider calls."""
 
 from __future__ import annotations
 
@@ -10,12 +10,11 @@ import math
 import os
 from typing import Any
 from urllib.parse import urlparse
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from psycopg.types.json import Jsonb
 
 from backend.audit import AuditService
-from backend.clusters.service import ClusterError, validate_algorithm_settings
 from backend.config import DatabaseSettings
 from backend.db.connection import open_database_connection
 from backend.providers.secrets import (
@@ -49,7 +48,7 @@ LOCAL_PROVIDER_HOSTS = {
 
 
 class ProviderError(ValueError):
-    """Raised when provider/profile input is invalid."""
+    """Raised when provider input is invalid."""
 
 
 @dataclass(frozen=True)
@@ -76,31 +75,6 @@ class ProviderCheckResult:
     ok: bool
     models: list[str]
     message: str
-
-
-@dataclass(frozen=True)
-class AnalysisProfileInput:
-    name: str
-    provider: str
-    model: str
-    thresholds: dict[str, Any]
-    algorithm_settings: dict[str, Any]
-    prompt_template: str | None = None
-
-
-@dataclass(frozen=True)
-class AnalysisProfile:
-    id: UUID
-    project_id: UUID
-    name: str
-    provider: str
-    model: str
-    is_cloud_provider: bool
-    thresholds: dict[str, Any]
-    algorithm_settings: dict[str, Any]
-    prompt_template: str | None
-    created_at: datetime
-    updated_at: datetime
 
 
 def _provider(provider: str) -> str:
@@ -185,12 +159,6 @@ def _openai_compatible_path(base_path: str, resource: str) -> str:
     return f"{prefix}/{resource}".removeprefix("//")
 
 
-def _object(value: dict[str, Any], field: str) -> dict[str, Any]:
-    if not isinstance(value, dict):
-        raise ProviderError(f"{field} must be an object")
-    return value
-
-
 def _safe_embedding_http_error(status: int, raw: bytes) -> str:
     diagnostic = raw[:64_000].decode("utf-8", errors="ignore").casefold()
     context_markers = (
@@ -223,28 +191,6 @@ def _configuration_from_row(row: dict[str, object]) -> ProviderConfiguration:
         ),
         manual_models=list(manual_models) if isinstance(manual_models, list) else [],
         api_key_set=row["api_key_secret"] is not None,
-        updated_at=row["updated_at"],  # type: ignore[arg-type]
-    )
-
-
-def _profile_from_row(row: dict[str, object]) -> AnalysisProfile:
-    thresholds = row["thresholds"]
-    algorithm_settings = row["algorithm_settings"]
-    return AnalysisProfile(
-        id=UUID(str(row["id"])),
-        project_id=UUID(str(row["project_id"])),
-        name=str(row["name"]),
-        provider=str(row["provider"]),
-        model=str(row["model"]),
-        is_cloud_provider=bool(row["is_cloud_provider"]),
-        thresholds=dict(thresholds) if isinstance(thresholds, dict) else {},
-        algorithm_settings=(
-            dict(algorithm_settings) if isinstance(algorithm_settings, dict) else {}
-        ),
-        prompt_template=(
-            str(row["prompt_template"]) if row["prompt_template"] is not None else None
-        ),
-        created_at=row["created_at"],  # type: ignore[arg-type]
         updated_at=row["updated_at"],  # type: ignore[arg-type]
     )
 
@@ -485,140 +431,6 @@ class ProviderService:
             )
         return self._validate_embeddings(embeddings, len(texts))
 
-    def list_profiles(self, project_id: UUID) -> list[AnalysisProfile]:
-        with open_database_connection(self._settings) as connection:
-            rows = connection.execute(
-                """
-                SELECT id, project_id, name, provider, model, is_cloud_provider,
-                       thresholds, algorithm_settings, prompt_template,
-                       created_at, updated_at
-                FROM analysis_profiles
-                WHERE project_id = %s
-                ORDER BY updated_at DESC, name ASC
-                """,
-                (project_id,),
-            ).fetchall()
-        return [_profile_from_row(dict(row)) for row in rows]
-
-    def create_profile(
-        self,
-        project_id: UUID,
-        payload: AnalysisProfileInput,
-        *,
-        actor_user_id: UUID,
-    ) -> AnalysisProfile:
-        clean_payload = self._clean_profile_input(payload)
-        profile_id = uuid4()
-        with open_database_connection(self._settings) as connection:
-            with connection.transaction():
-                self._require_project(connection, project_id)
-                self._require_configured_model(
-                    connection, clean_payload.provider, clean_payload.model
-                )
-                row = connection.execute(
-                    """
-                    INSERT INTO analysis_profiles (
-                        id, project_id, name, provider, model, is_cloud_provider,
-                        thresholds, algorithm_settings, prompt_template,
-                        created_by_user_id, updated_by_user_id
-                    )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    RETURNING id, project_id, name, provider, model,
-                              is_cloud_provider, thresholds, algorithm_settings,
-                              prompt_template, created_at, updated_at
-                    """,
-                    (
-                        profile_id,
-                        project_id,
-                        clean_payload.name,
-                        clean_payload.provider,
-                        clean_payload.model,
-                        _is_cloud_provider(clean_payload.provider),
-                        Jsonb(clean_payload.thresholds),
-                        Jsonb(clean_payload.algorithm_settings),
-                        clean_payload.prompt_template,
-                        actor_user_id,
-                        actor_user_id,
-                    ),
-                ).fetchone()
-                if row is None:
-                    raise RuntimeError("analysis profile insert returned no row")
-                self._audit.record_event(
-                    connection,
-                    actor_user_id=actor_user_id,
-                    action="analysis_profile.create",
-                    target_type="analysis_profile",
-                    target_id=profile_id,
-                    metadata={
-                        "project_id": str(project_id),
-                        "provider": clean_payload.provider,
-                        "model": clean_payload.model,
-                        "cloud": _is_cloud_provider(clean_payload.provider),
-                    },
-                )
-        return _profile_from_row(dict(row))
-
-    def update_profile(
-        self,
-        project_id: UUID,
-        profile_id: UUID,
-        payload: AnalysisProfileInput,
-        *,
-        actor_user_id: UUID,
-    ) -> AnalysisProfile:
-        clean_payload = self._clean_profile_input(payload)
-        with open_database_connection(self._settings) as connection:
-            with connection.transaction():
-                self._require_configured_model(
-                    connection, clean_payload.provider, clean_payload.model
-                )
-                row = connection.execute(
-                    """
-                    UPDATE analysis_profiles
-                    SET name = %s,
-                        provider = %s,
-                        model = %s,
-                        is_cloud_provider = %s,
-                        thresholds = %s,
-                        algorithm_settings = %s,
-                        prompt_template = %s,
-                        updated_by_user_id = %s,
-                        updated_at = now()
-                    WHERE id = %s AND project_id = %s
-                    RETURNING id, project_id, name, provider, model,
-                              is_cloud_provider, thresholds, algorithm_settings,
-                              prompt_template, created_at, updated_at
-                    """,
-                    (
-                        clean_payload.name,
-                        clean_payload.provider,
-                        clean_payload.model,
-                        _is_cloud_provider(clean_payload.provider),
-                        Jsonb(clean_payload.thresholds),
-                        Jsonb(clean_payload.algorithm_settings),
-                        clean_payload.prompt_template,
-                        actor_user_id,
-                        profile_id,
-                        project_id,
-                    ),
-                ).fetchone()
-                if row is None:
-                    raise ProviderError("analysis profile not found")
-                self._audit.record_event(
-                    connection,
-                    actor_user_id=actor_user_id,
-                    action="analysis_profile.update",
-                    target_type="analysis_profile",
-                    target_id=profile_id,
-                    metadata={
-                        "project_id": str(project_id),
-                        "provider": clean_payload.provider,
-                        "model": clean_payload.model,
-                        "cloud": _is_cloud_provider(clean_payload.provider),
-                    },
-                )
-        return _profile_from_row(dict(row))
-
     def _get_configuration(self, provider: str) -> ProviderConfiguration | None:
         with open_database_connection(self._settings) as connection:
             row = connection.execute(
@@ -644,63 +456,6 @@ class ProviderService:
         if row is None or row["api_key_secret"] is None:
             return None
         return str(row["api_key_secret"])
-
-    def _clean_profile_input(
-        self, payload: AnalysisProfileInput
-    ) -> AnalysisProfileInput:
-        name = payload.name.strip()
-        if not name:
-            raise ProviderError("profile name must not be empty")
-        algorithm_settings = _object(payload.algorithm_settings, "algorithm_settings")
-        try:
-            normalized_algorithm = validate_algorithm_settings(
-                algorithm_settings
-            ).as_settings()
-        except ClusterError as exc:
-            raise ProviderError(str(exc)) from exc
-        return AnalysisProfileInput(
-            name=name,
-            provider=_provider(payload.provider),
-            model=_clean_model(payload.model),
-            thresholds=_object(payload.thresholds, "thresholds"),
-            algorithm_settings=normalized_algorithm,
-            prompt_template=(
-                payload.prompt_template.strip()
-                if payload.prompt_template is not None
-                and payload.prompt_template.strip()
-                else None
-            ),
-        )
-
-    def _require_project(self, connection: Any, project_id: UUID) -> None:
-        row = connection.execute(
-            "SELECT id FROM projects WHERE id = %s AND deleted_at IS NULL",
-            (project_id,),
-        ).fetchone()
-        if row is None:
-            raise ProviderError("project not found")
-
-    def _require_configured_model(
-        self, connection: Any, provider: str, model: str
-    ) -> None:
-        row = connection.execute(
-            """
-            SELECT manual_models, api_key_secret, endpoint_url
-            FROM provider_configurations
-            WHERE provider = %s
-            """,
-            (provider,),
-        ).fetchone()
-        if row is None:
-            raise ProviderError("provider is not configured")
-        models = row["manual_models"]
-        manual_models = list(models) if isinstance(models, list) else []
-        if model not in manual_models:
-            raise ProviderError("model is not configured for provider")
-        if provider == "openai" and row["api_key_secret"] is None:
-            raise ProviderError("OpenAI API key is not configured")
-        if provider in {"ollama", "vllm"} and row["endpoint_url"] is None:
-            raise ProviderError(f"{provider} endpoint_url is required")
 
     def _check_ollama(
         self, endpoint_url: str, manual_models: list[str]
@@ -1060,7 +815,3 @@ class ProviderService:
             if model is not None:
                 models.append(model)
         return _clean_models(models)
-
-
-def _is_cloud_provider(provider: str) -> bool:
-    return provider == "openai"

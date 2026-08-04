@@ -7,7 +7,6 @@ from typing import Any
 import pytest
 
 from backend.providers import (
-    AnalysisProfileInput,
     ProviderConfiguration,
     ProviderError,
     ProviderService,
@@ -627,38 +626,3 @@ def test_embedding_rejects_non_local_vllm_endpoint_before_connecting(
 
     with pytest.raises(ProviderError, match="allowed local endpoint"):
         service.embed_texts("vllm", "local-embed", ["source"])
-
-
-def test_profile_algorithm_settings_are_normalized() -> None:
-    cleaned = ProviderService()._clean_profile_input(
-        AnalysisProfileInput(
-            name="Local",
-            provider="vllm",
-            model="local-embed",
-            thresholds={},
-            algorithm_settings={"algorithm": "agglomerative"},
-        )
-    )
-
-    assert cleaned.algorithm_settings == {
-        "algorithm": "agglomerative",
-        "n_clusters": 2,
-        "distance_threshold": None,
-        "linkage": "ward",
-    }
-
-
-def test_profile_algorithm_settings_reject_unknown_parameters() -> None:
-    with pytest.raises(ProviderError, match="unknown hdbscan setting"):
-        ProviderService()._clean_profile_input(
-            AnalysisProfileInput(
-                name="Local",
-                provider="vllm",
-                model="local-embed",
-                thresholds={},
-                algorithm_settings={
-                    "algorithm": "hdbscan",
-                    "n_clusters": 2,
-                },
-            )
-        )

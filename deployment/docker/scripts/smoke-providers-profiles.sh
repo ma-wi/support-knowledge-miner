@@ -108,56 +108,77 @@ with TestClient(create_app()) as client:
     if stored_secret == secret or not str(stored_secret).startswith("fernet:"):
         raise SystemExit("openai credential was not encrypted in storage")
 
-    project = client.post("/api/projects", headers=headers, json={"name": "Profiles"})
+    project = client.post("/api/projects", headers=headers, json={"name": "Indexing"})
     if project.status_code != 201:
         raise SystemExit("project creation failed")
     project_id = project.json()["id"]
 
-    local_profile = client.post(
-        f"/api/projects/{project_id}/analysis-profiles",
+    imported = client.post(
+        f"/api/projects/{project_id}/imports",
+        headers={
+            **headers,
+            "Content-Type": "text/csv",
+            "Content-Disposition": "attachment; filename*=UTF-8''smoke.csv",
+        },
+        content=(
+            b"ticket_id,message_group_id,message,answer\n"
+            b"T-1,G-1,How do I reset it?,Use the reset link.\n"
+        ),
+    )
+    if imported.status_code != 201:
+        raise SystemExit(f"import failed: {imported.text}")
+    dataset_id = imported.json()["dataset_version"]["id"]
+
+    local_run = client.post(
+        f"/api/projects/{project_id}/indexing-runs",
         headers=headers,
         json={
-            "name": "Local profile",
+            "dataset_version_id": dataset_id,
             "provider": "vllm",
             "model": "local-embed",
-            "thresholds": {"similarity": 0.78},
-            "algorithm_settings": {
-                "algorithm": "hdbscan",
-                "min_cluster_size": 5,
-                "cluster_selection_epsilon": 0,
-            },
         },
     )
-    if local_profile.status_code != 201:
-        raise SystemExit(f"local profile creation failed: {local_profile.text}")
-    if local_profile.json()["is_cloud_provider"]:
-        raise SystemExit("vllm profile was marked as cloud")
+    if local_run.status_code != 201:
+        raise SystemExit(f"local indexing run creation failed: {local_run.text}")
+    if local_run.json()["provider"] != "vllm":
+        raise SystemExit("local indexing run provider was not persisted")
 
-    cloud_profile = client.post(
-        f"/api/projects/{project_id}/analysis-profiles",
+    rejected_cloud = client.post(
+        f"/api/projects/{project_id}/indexing-runs",
         headers=headers,
         json={
-            "name": "Cloud profile",
+            "dataset_version_id": dataset_id,
             "provider": "openai",
             "model": "gpt-4.1-mini",
-            "thresholds": {"similarity": 0.82},
-            "algorithm_settings": {
-                "algorithm": "agglomerative",
-                "n_clusters": 2,
-                "linkage": "ward",
-            },
         },
     )
-    if cloud_profile.status_code != 201:
-        raise SystemExit(f"cloud profile creation failed: {cloud_profile.text}")
-    if not cloud_profile.json()["is_cloud_provider"]:
-        raise SystemExit("openai profile was not marked as cloud")
+    if (
+        rejected_cloud.status_code != 400
+        or rejected_cloud.json().get("code")
+        != "INDEXING_CLOUD_CONFIRMATION_REQUIRED"
+    ):
+        raise SystemExit("openai indexing run was not gated by confirmation")
 
-    profiles = client.get(
-        f"/api/projects/{project_id}/analysis-profiles", headers=headers
+    cloud_run = client.post(
+        f"/api/projects/{project_id}/indexing-runs",
+        headers=headers,
+        json={
+            "dataset_version_id": dataset_id,
+            "provider": "openai",
+            "model": "gpt-4.1-mini",
+            "cloud_use_confirmed": True,
+        },
     )
-    if profiles.status_code != 200 or len(profiles.json()) != 2:
-        raise SystemExit("profiles were not persisted")
+    if cloud_run.status_code != 201:
+        raise SystemExit(f"cloud indexing run creation failed: {cloud_run.text}")
+    if cloud_run.json()["provider"] != "openai":
+        raise SystemExit("cloud indexing run provider was not persisted")
+
+    runs = client.get(f"/api/projects/{project_id}/indexing-runs", headers=headers)
+    if runs.status_code != 200 or len(runs.json()) != 2:
+        raise SystemExit("indexing runs were not persisted")
+    if any("analysis_profile_id" in run for run in runs.json()):
+        raise SystemExit("indexing run response exposed an analysis profile id")
 
     removed = client.put(
         "/api/providers/openai",
@@ -171,12 +192,17 @@ with open_database_connection() as connection:
     secret_row = connection.execute(
         "SELECT api_key_secret FROM provider_configurations WHERE provider = 'openai'"
     ).fetchone()
-    profile_count = connection.execute(
-        "SELECT COUNT(*) AS count FROM analysis_profiles"
+    run_count = connection.execute(
+        "SELECT COUNT(*) AS count FROM analysis_runs"
+    ).fetchone()
+    profile_table = connection.execute(
+        "SELECT to_regclass('analysis_profiles') AS table_name"
     ).fetchone()
 if secret_row is None or secret_row["api_key_secret"] is not None:
     raise SystemExit("openai secret was not removed in storage")
-if int(profile_count["count"]) != 2:
-    raise SystemExit("analysis profiles were not persisted as expected")
-print("providers_profiles_smoke=ok")
+if int(run_count["count"]) != 2:
+    raise SystemExit("indexing runs were not persisted as expected")
+if profile_table["table_name"] is not None:
+    raise SystemExit("analysis profile table still exists")
+print("providers_indexing_smoke=ok")
 PY
