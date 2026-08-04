@@ -325,9 +325,13 @@ The table shows:
 - membership score.
 - assignment type.
 
-For large clusters, the source dialog needs pagination, search or virtualized
-rendering. The dialog is accessible, traps focus, closes by button/Escape and
-returns focus to the opener.
+The source dialog loads raw source text in bounded pages. The initial request uses
+at most 50 source pairs and further pages are loaded explicitly with „Weitere
+Quellen laden“. Failed source loads render a persistent alert inside the dialog,
+preserve the Explorer filters and never substitute a normal empty state.
+
+The dialog is accessible, traps focus, closes by button/Escape and returns focus to
+the opener.
 
 ### Exclusion, outlier management and refinement
 
@@ -599,6 +603,8 @@ Required:
 - Conceptual indexing routes include list, create, get, cancel and delete.
 - Conceptual cluster-set routes include list/tree, create, get, cancel, lineage,
   events, clusters, sources, refinements and export.
+- Cluster source responses are page-bounded and include `limit`, `offset`,
+  `next_offset` and `has_more` metadata.
 - Conceptual provider routes are separated for embedding providers and LLM
   providers.
 - Explorer export request includes loaded cluster-set ID, format and current
@@ -670,46 +676,46 @@ status and safe diagnostic metadata so the UI can recover after reload.
 
 ## Acceptance criteria
 
-- [ ] AC-1: A user can create, open/list, rename and delete projects.
-- [ ] AC-2: Project isolation is enforced across imports, indexing runs, cluster
+- [x] AC-1: A user can create, open/list, rename and delete projects.
+- [x] AC-2: Project isolation is enforced across imports, indexing runs, cluster
   sets, explorer sources and exports.
-- [ ] AC-3: Valid CSV and JSON imports create immutable dataset versions; invalid
+- [x] AC-3: Valid CSV and JSON imports create immutable dataset versions; invalid
   files/records produce safe specific feedback and logs.
-- [ ] AC-4: Imports through 512 MiB use bounded streaming and atomic persistence.
-- [ ] AC-5: Users can sign in, restore tab-scoped sessions after server validation,
+- [x] AC-4: Imports through 512 MiB use bounded streaming and atomic persistence.
+- [x] AC-5: Users can sign in, restore tab-scoped sessions after server validation,
   manage other users and cannot delete themselves.
-- [ ] AC-6: Provider settings are split into Embedding-Provider and LLM-Provider and
+- [x] AC-6: Provider settings are split into Embedding-Provider and LLM-Provider and
   never expose stored secrets.
-- [ ] AC-7: OpenAI use for embeddings or LLM summaries requires explicit
+- [x] AC-7: OpenAI use for embeddings or LLM summaries requires explicit
   confirmation before original texts are sent.
-- [ ] AC-8: A user can start an indexing run that persists both `message` and
+- [x] AC-8: A user can start an indexing run that persists both `message` and
   `answer` embeddings for every valid support pair.
-- [ ] AC-9: Indexing progress, phase, cancellation, terminal status and safe errors
+- [x] AC-9: Indexing progress, phase, cancellation, terminal status and safe errors
   are visible; running jobs cannot be clustered.
-- [ ] AC-10: A user can create multiple cluster sets per completed indexing run with
+- [x] AC-10: A user can create multiple cluster sets per completed indexing run with
   selected vector basis, algorithm, parameters and optional LLM summary generation.
-- [ ] AC-11: Cluster-set jobs show percentage progress, phase and cancel action;
+- [x] AC-11: Cluster-set jobs show percentage progress, phase and cancel action;
   running/failed/cancelled sets cannot be loaded.
-- [ ] AC-12: HDBSCAN/Agglomerative clustering preserves algorithm, parameter,
+- [x] AC-12: HDBSCAN/Agglomerative clustering preserves algorithm, parameter,
   membership, outlier and capacity provenance without pairwise all-record distance
   matrices.
-- [ ] AC-13: LLM summaries use default sample count `10`, positive-integer
+- [x] AC-13: LLM summaries use default sample count `10`, positive-integer
   validation, all-examples mode, random sampling and persisted sample provenance.
-- [ ] AC-14: The Cluster Explorer shows a table with title, category, summarized
+- [x] AC-14: The Cluster Explorer shows a table with title, category, summarized
   question, summarized answer, counts, hints and actions.
-- [ ] AC-15: The source dialog shows real customer questions/support answers with
-  traceability fields.
-- [ ] AC-16: Exclusion, outlier exclusion and refinement create or preserve
+- [x] AC-15: The source dialog shows page-bounded real customer
+  questions/support answers with traceability fields.
+- [x] AC-16: Exclusion, outlier exclusion and refinement create or preserve
   cluster-set lineage as specified.
-- [ ] AC-17: Child cluster sets can use a different vector basis than the parent.
-- [ ] AC-18: Cluster sets are displayed as expandable parent/child analysis tree.
-- [ ] AC-19: There are no active project Profile, Runs, Kandidaten or separate
+- [x] AC-17: Child cluster sets can use a different vector basis than the parent.
+- [x] AC-18: Cluster sets are displayed as expandable parent/child analysis tree.
+- [x] AC-19: There are no active project Profile, Runs, Kandidaten or separate
   Export tabs.
-- [ ] AC-20: Explorer export is a separate section and exports current filtered
+- [x] AC-20: Explorer export is a separate section and exports current filtered
   table state as CSV or JSON.
-- [ ] AC-21: All changed user-visible failures use catalogued safe errors, preserve
+- [x] AC-21: All changed user-visible failures use catalogued safe errors, preserve
   safe input and avoid false success.
-- [ ] AC-22: Focused tests, migration/schema tests, UI tests, browser evidence,
+- [x] AC-22: Focused tests, migration/schema tests, UI tests, browser evidence,
   security checks and `./.ai/tools/verify.sh` pass after implementation.
 
 ## Decisions and accepted assumptions
@@ -738,7 +744,6 @@ status and safe diagnostic metadata so the UI can recover after reload.
 - Exact route names as long as the old profile/run/candidate contracts are not
   required.
 - Exact frontend component boundaries.
-- Exact pagination/virtualization approach for large source dialogs.
 - Exact LLM prompt wording, within the schema, bounds and provenance rules.
 
 ## External standards references

@@ -43,6 +43,217 @@ const MAX_DIFFERENT_PIXEL_RATIO = 0.001;
 const WORK_DIRECTORY_PATTERN =
   /^\.ai\/work\/([A-Za-z0-9][A-Za-z0-9._-]{0,63})\/?$/;
 const WCAG_TAGS = ["wcag2a", "wcag2aa", "wcag21aa", "wcag22aa"];
+const SYNTHETIC_USER = {
+  id: "local-owner",
+  first_name: "Local",
+  last_name: "Owner",
+  email: "owner@example.test",
+};
+const SYNTHETIC_PROJECT = {
+  id: "project-alpha",
+  name: "Alpha",
+  lifecycle_state: "active",
+  created_at: "2026-07-22T00:00:00Z",
+  updated_at: "2026-07-22T00:00:00Z",
+};
+const SYNTHETIC_IMPORT_LOG = {
+  id: "import-log-1",
+  source_type: "csv",
+  source_name: "fixture.csv",
+  status: "completed",
+  failure_reason: null,
+  total_records: 4,
+  valid_records: 4,
+  skipped_records: 0,
+  dataset_version_id: "dataset-1",
+  dataset_display_name: "Fixture dataset",
+  dataset_deleted_at: null,
+};
+const SYNTHETIC_PROVIDER = {
+  provider: "vllm",
+  endpoint_url: "http://localhost:8000",
+  manual_models: ["local-embed"],
+  llm_models: [],
+  api_key_set: false,
+  updated_at: "2026-07-22T00:00:00Z",
+};
+const SYNTHETIC_INDEXING_RUN = {
+  id: "run-completed",
+  project_id: "project-alpha",
+  dataset_version_id: "dataset-1",
+  dataset_display_name: "Fixture dataset",
+  dataset_deleted_at: null,
+  status: "completed",
+  progress: 100,
+  phase: "completed",
+  provider: "vllm",
+  model: "local-embed",
+  parameters: {},
+  error_code: null,
+  error_message: null,
+  diagnostics: { embeddings_written: 8 },
+  started_at: "2026-07-22T00:00:00Z",
+  completed_at: "2026-07-22T00:00:01Z",
+  cancel_requested_at: null,
+  deleted_at: null,
+  created_at: "2026-07-22T00:00:00Z",
+  updated_at: "2026-07-22T00:00:01Z",
+};
+const SYNTHETIC_CLUSTER_SET = {
+  id: "cluster-set-1",
+  project_id: "project-alpha",
+  indexing_run_id: "run-completed",
+  dataset_version_id: "dataset-1",
+  dataset_display_name: "Fixture dataset",
+  indexing_deleted_at: null,
+  parent_cluster_set_id: null,
+  display_name: "Antworten fein",
+  status: "completed",
+  progress: 100,
+  phase: "completed",
+  derivation_type: "root",
+  vector_basis: "combined",
+  message_weight: 0.4,
+  answer_weight: 0.6,
+  algorithm: "hdbscan",
+  parameters: { min_cluster_size: 2, outlier_threshold: 0.72 },
+  source_snapshot: { type: "all_dataset_pairs", source_pair_count: 4 },
+  llm_provider: "ollama",
+  llm_model: "llama3.1",
+  llm_parameters: { enabled: true },
+  llm_sample_strategy: { strategy: "random", requested: 2, seed: 7 },
+  error_code: null,
+  error_message: null,
+  diagnostics: {},
+  started_at: "2026-07-22T00:00:00Z",
+  completed_at: "2026-07-22T00:00:03Z",
+  cancel_requested_at: null,
+  deleted_at: null,
+  created_at: "2026-07-22T00:00:00Z",
+  updated_at: "2026-07-22T00:00:03Z",
+  cluster_count: 3,
+};
+const SYNTHETIC_CHILD_CLUSTER_SET = {
+  ...SYNTHETIC_CLUSTER_SET,
+  id: "cluster-set-child-1",
+  parent_cluster_set_id: "cluster-set-1",
+  display_name: "Antworten fein — Retouren",
+  derivation_type: "refinement",
+  vector_basis: "answer",
+  cluster_count: 1,
+  created_at: "2026-07-22T00:05:00Z",
+  updated_at: "2026-07-22T00:05:03Z",
+};
+const SYNTHETIC_CLUSTERS = [
+  {
+    id: "cluster-1",
+    project_id: "project-alpha",
+    analysis_run_id: "run-completed",
+    dataset_version_id: "dataset-1",
+    cluster_set_id: "cluster-set-1",
+    auto_title: "Passwort zurücksetzen",
+    manual_title: null,
+    effective_title: "Passwort zurücksetzen",
+    auto_category: "Konto",
+    manual_category: null,
+    effective_category: "Konto",
+    auto_status: "unreviewed",
+    manual_status: null,
+    effective_status: "unreviewed",
+    score: 0.91,
+    is_outlier: false,
+    algorithm: "hdbscan",
+    member_count: 2,
+    metadata: { qa_mismatch: { average: 0.12, maximum: 0.44 } },
+    auto_summary_question: "Wie können Kunden ihr Passwort zurücksetzen?",
+    auto_summary_answer: "Sende den Link zum Zurücksetzen und erkläre die Frist.",
+  },
+  {
+    id: "cluster-2",
+    project_id: "project-alpha",
+    analysis_run_id: "run-completed",
+    dataset_version_id: "dataset-1",
+    cluster_set_id: "cluster-set-1",
+    auto_title: "Veraltete Abrechnung",
+    manual_title: null,
+    effective_title: "Veraltete Abrechnung",
+    auto_category: "Abrechnung",
+    manual_category: null,
+    effective_category: "Abrechnung",
+    auto_status: "unreviewed",
+    manual_status: "rejected",
+    effective_status: "rejected",
+    score: 0.61,
+    is_outlier: false,
+    algorithm: "hdbscan",
+    member_count: 1,
+    metadata: {},
+    auto_summary_question: "Warum wurde eine alte Rechnung belastet?",
+    auto_summary_answer: "Prüfe Rechnungsdatum und Erstattungspfad.",
+  },
+  {
+    id: "cluster-3",
+    project_id: "project-alpha",
+    analysis_run_id: "run-completed",
+    dataset_version_id: "dataset-1",
+    cluster_set_id: "cluster-set-1",
+    auto_title: "Einzelne Retourenfrage",
+    manual_title: null,
+    effective_title: "Einzelne Retourenfrage",
+    auto_category: "Retoure",
+    manual_category: null,
+    effective_category: "Retoure",
+    auto_status: "outlier",
+    manual_status: null,
+    effective_status: "outlier",
+    score: 0.22,
+    is_outlier: true,
+    algorithm: "hdbscan",
+    member_count: 1,
+    metadata: { qa_mismatch: { maximum: 0.78 } },
+    auto_summary_question: "Wie wird ein Zubehörteil retourniert?",
+    auto_summary_answer: "Erzeuge ein Retourenlabel für Zubehör.",
+  },
+];
+const SYNTHETIC_CLUSTER_SOURCES = [
+  {
+    cluster_id: "cluster-1",
+    message_pair_id: "pair-1",
+    ticket_id: "T-1",
+    message_group_id: "G-1",
+    message: "Ich habe mein Passwort vergessen. Was kann ich tun?",
+    answer: "Nutze den Link zum Zurücksetzen. Der Link ist 30 Minuten gültig.",
+    membership_score: 0.91,
+    is_outlier: false,
+    assignment_type: "automatic",
+  },
+  {
+    cluster_id: "cluster-1",
+    message_pair_id: "pair-2",
+    ticket_id: "T-2",
+    message_group_id: "G-2",
+    message: "Der Reset-Link ist abgelaufen.",
+    answer: "Fordere einen neuen Reset-Link an und prüfe den Spam-Ordner.",
+    membership_score: 0.86,
+    is_outlier: false,
+    assignment_type: "automatic",
+  },
+];
+const SYNTHETIC_EXPORT_LOG = {
+  id: "export-explorer-1",
+  project_id: "project-alpha",
+  export_type: "explorer_csv",
+  include_original_text: false,
+  filters: {},
+  selection: {},
+  dataset_version_id: "dataset-1",
+  analysis_run_id: "run-completed",
+  cluster_set_id: "cluster-set-1",
+  output_filename: "explorer_csv-cluster-set-1.csv",
+  output_path: null,
+  row_count: 2,
+  created_at: "2026-07-23T00:00:00Z",
+};
 
 function fail(message) {
   throw new Error(message);
@@ -477,7 +688,117 @@ async function withBrowser(configuration, callback) {
   }
 }
 
-async function configureScenarioPage(browser, configuration, viewport) {
+function apiJson(route, body, status = 200) {
+  return route.fulfill({
+    status,
+    contentType: "application/json",
+    body: JSON.stringify(body),
+  });
+}
+
+async function fulfillSyntheticApi(route, requestUrl, method, apiMode) {
+  const path = requestUrl.pathname;
+  const pathWithQuery = `${requestUrl.pathname}${requestUrl.search}`;
+  if (path === "/api/auth/sign-in" && method === "POST") {
+    if (apiMode === "signed-in") {
+      await apiJson(route, {
+        access_token: "synthetic-local-token",
+        user: SYNTHETIC_USER,
+      });
+      return true;
+    }
+    await apiJson(route, { detail: "Anmeldung fehlgeschlagen." }, 401);
+    return true;
+  }
+  if (apiMode !== "signed-in") {
+    await apiJson(route, {
+      detail: "Nicht in diesem UI-Testzustand verfügbar.",
+    }, 404);
+    return true;
+  }
+  if (path === "/api/auth/sign-out" && method === "POST") {
+    await route.fulfill({ status: 204, body: "" });
+    return true;
+  }
+  if (path === "/api/users" && method === "GET") {
+    await apiJson(route, [SYNTHETIC_USER]);
+    return true;
+  }
+  if (path === "/api/projects" && method === "GET") {
+    await apiJson(route, [SYNTHETIC_PROJECT]);
+    return true;
+  }
+  if (path === "/api/providers" && method === "GET") {
+    await apiJson(route, [SYNTHETIC_PROVIDER]);
+    return true;
+  }
+  if (path === "/api/projects/project-alpha" && method === "GET") {
+    await apiJson(route, SYNTHETIC_PROJECT);
+    return true;
+  }
+  if (path === "/api/projects/project-alpha/imports" && method === "GET") {
+    await apiJson(route, [SYNTHETIC_IMPORT_LOG]);
+    return true;
+  }
+  if (path === "/api/projects/project-alpha/indexing-runs" && method === "GET") {
+    await apiJson(route, [SYNTHETIC_INDEXING_RUN]);
+    return true;
+  }
+  if (path === "/api/projects/project-alpha/cluster-sets" && method === "GET") {
+    await apiJson(route, [SYNTHETIC_CLUSTER_SET, SYNTHETIC_CHILD_CLUSTER_SET]);
+    return true;
+  }
+  if (
+    path === "/api/projects/project-alpha/cluster-sets/cluster-set-1/clusters" &&
+    method === "GET"
+  ) {
+    await apiJson(route, SYNTHETIC_CLUSTERS);
+    return true;
+  }
+  if (
+    pathWithQuery ===
+      "/api/projects/project-alpha/clusters/cluster-1/sources?limit=50&offset=0" &&
+    method === "GET"
+  ) {
+    await apiJson(route, {
+      sources: SYNTHETIC_CLUSTER_SOURCES,
+      limit: 50,
+      offset: 0,
+      next_offset: null,
+      has_more: false,
+    });
+    return true;
+  }
+  if (path === "/api/projects/project-alpha/exports" && method === "GET") {
+    await apiJson(route, []);
+    return true;
+  }
+  if (
+    path === "/api/projects/project-alpha/exports/explorer" &&
+    method === "POST"
+  ) {
+    await apiJson(
+      route,
+      {
+        export: SYNTHETIC_EXPORT_LOG,
+        content:
+          "cluster_id,status,title,category,summary_question,summary_answer\ncluster-1,unreviewed,Passwort zurücksetzen,Konto,Wie können Kunden ihr Passwort zurücksetzen?,Sende den Link zum Zurücksetzen.\n",
+        content_type: "text/csv",
+        warning: null,
+      },
+      201,
+    );
+    return true;
+  }
+  return false;
+}
+
+async function configureScenarioPage(
+  browser,
+  configuration,
+  viewport,
+  apiMode = "signed-out",
+) {
   const context = await browser.newContext({
     viewport: { width: viewport.width, height: viewport.height },
     locale: "de-DE",
@@ -501,23 +822,17 @@ async function configureScenarioPage(browser, configuration, viewport) {
     const requestUrl = new URL(request.url());
     if (requestUrl.pathname.startsWith("/api/")) {
       if (
-        requestUrl.pathname === "/api/auth/sign-in" &&
-        request.method() === "POST"
+        await fulfillSyntheticApi(route, requestUrl, request.method(), apiMode)
       ) {
-        await route.fulfill({
-          status: 401,
-          contentType: "application/json",
-          body: JSON.stringify({ detail: "Anmeldung fehlgeschlagen." }),
-        });
         return;
       }
-      await route.fulfill({
-        status: 404,
-        contentType: "application/json",
-        body: JSON.stringify({
+      await apiJson(
+        route,
+        {
           detail: "Nicht in diesem UI-Testzustand verfügbar.",
-        }),
-      });
+        },
+        404,
+      );
       return;
     }
     await route.continue();
@@ -559,6 +874,128 @@ async function enterInvalidCredentials(page) {
   await page.getByRole("alert").waitFor({ state: "visible", timeout: 10_000 });
 }
 
+async function signInToSyntheticApp(page) {
+  await page.getByLabel("E-Mail").fill("owner@example.test");
+  await page.getByLabel("Passwort").fill("synthetic-test-password");
+  await page.getByRole("button", { name: "Anmelden" }).click();
+  await page
+    .getByRole("heading", { name: "Projekte & Analysen" })
+    .waitFor({ state: "visible", timeout: 10_000 });
+}
+
+async function openSyntheticProject(page) {
+  await page.getByRole("button", { name: "Projekte", exact: true }).click();
+  await page
+    .getByRole("region", { name: "Bestehende Projekte" })
+    .getByRole("button", { name: /Alpha, zuletzt aktualisiert/ })
+    .click();
+  await page
+    .getByRole("tab", { name: "Cluster-Sets", exact: true })
+    .waitFor({ state: "visible", timeout: 10_000 });
+}
+
+async function captureState(
+  captures,
+  page,
+  viewport,
+  outputRoot,
+  state,
+  id,
+  onState = null,
+) {
+  const image = await captureScreenshot(page);
+  const relative = screenshotRelativePath(viewport, state, id);
+  if (outputRoot !== null) {
+    await atomicWrite(path.join(outputRoot, relative), image);
+  }
+  const capture = {
+    id,
+    state,
+    viewport: {
+      width: viewport.width,
+      height: viewport.height,
+    },
+    viewportName: viewport.name,
+    file: relative,
+    image,
+  };
+  captures.push(capture);
+  if (onState !== null) {
+    await onState({ ...capture, page });
+  }
+}
+
+async function assertSourceDialogKeyboardBehavior(page) {
+  await page
+    .getByText("Angezeigt: 2 Quellen.")
+    .waitFor({ state: "visible", timeout: 10_000 });
+  const closeButton = page.getByRole("button", {
+    name: "Schließen",
+    exact: true,
+  });
+  await closeButton.waitFor({ state: "visible", timeout: 10_000 });
+  const focusedBeforeTab = await page.evaluate(
+    () => document.activeElement?.textContent?.trim() ?? "",
+  );
+  if (focusedBeforeTab !== "Schließen") {
+    fail("source dialog did not move focus to the close button");
+  }
+  await page.keyboard.press("Tab");
+  const focusedAfterTab = await page.evaluate(
+    () => document.activeElement?.textContent?.trim() ?? "",
+  );
+  if (focusedAfterTab !== "Schließen") {
+    fail("source dialog did not trap focus on Tab");
+  }
+}
+
+async function assertClusterSetTreeDisclosure(page) {
+  const collapseButton = page.getByRole("button", {
+    name: "Ast einklappen",
+    exact: true,
+  });
+  await collapseButton.waitFor({ state: "visible", timeout: 10_000 });
+  const expandedBefore = await collapseButton.getAttribute("aria-expanded");
+  if (expandedBefore !== "true") {
+    fail("cluster-set tree branch did not expose expanded state");
+  }
+  await page.getByText("Antworten fein — Retouren").waitFor({
+    state: "visible",
+    timeout: 10_000,
+  });
+  await collapseButton.click();
+  await page.getByText("Antworten fein — Retouren").waitFor({
+    state: "hidden",
+    timeout: 10_000,
+  });
+  const expandButton = page.getByRole("button", {
+    name: "Ast ausklappen",
+    exact: true,
+  });
+  const expandedAfterCollapse = await expandButton.getAttribute("aria-expanded");
+  if (expandedAfterCollapse !== "false") {
+    fail("cluster-set tree branch did not expose collapsed state");
+  }
+  await expandButton.click();
+  await page.getByText("Antworten fein — Retouren").waitFor({
+    state: "visible",
+    timeout: 10_000,
+  });
+}
+
+async function closeSourceDialogAndVerifyFocusReturn(page) {
+  await page.keyboard.press("Escape");
+  await page
+    .getByRole("dialog", { name: "Passwort zurücksetzen" })
+    .waitFor({ state: "hidden", timeout: 10_000 });
+  const focusedAfterEscape = await page.evaluate(
+    () => document.activeElement?.textContent?.trim() ?? "",
+  );
+  if (focusedAfterEscape !== "Quellen anzeigen") {
+    fail("source dialog did not return focus to its opener");
+  }
+}
+
 async function captureScreenshot(page) {
   const image = await page.screenshot({
     type: "png",
@@ -574,10 +1011,17 @@ async function captureScreenshot(page) {
 }
 
 function screenshotRelativePath(viewport, state, prefix = "signed-out") {
-  return `${viewport.name}/${prefix}-${state}.png`;
+  const safeState = state.replaceAll("/", "-");
+  return `${viewport.name}/${prefix}-${safeState}.png`;
 }
 
-async function captureScenarios(browser, configuration, outputRoot, prefix) {
+async function captureScenarios(
+  browser,
+  configuration,
+  outputRoot,
+  prefix,
+  onState = null,
+) {
   const captures = [];
   for (const viewport of configuration.viewports) {
     const configured = await configureScenarioPage(
@@ -586,7 +1030,7 @@ async function captureScenarios(browser, configuration, outputRoot, prefix) {
       viewport,
     );
     try {
-      for (const state of ["default", "invalid-credentials"]) {
+      for (const state of ["default", "invalid-credentials", "error/failure"]) {
         if (state === "invalid-credentials") {
           await enterInvalidCredentials(configured.page);
         }
@@ -595,7 +1039,7 @@ async function captureScenarios(browser, configuration, outputRoot, prefix) {
         if (outputRoot !== null) {
           await atomicWrite(path.join(outputRoot, relative), image);
         }
-        captures.push({
+        const capture = {
           id: "signed-out",
           state,
           viewport: {
@@ -605,7 +1049,11 @@ async function captureScenarios(browser, configuration, outputRoot, prefix) {
           viewportName: viewport.name,
           file: relative,
           image,
-        });
+        };
+        captures.push(capture);
+        if (onState !== null) {
+          await onState({ ...capture, page: configured.page });
+        }
       }
       if (configured.blockedRequests.length > 0) {
         fail(
@@ -617,6 +1065,209 @@ async function captureScenarios(browser, configuration, outputRoot, prefix) {
     }
   }
   return captures;
+}
+
+async function captureProjectScenarios(
+  browser,
+  configuration,
+  outputRoot,
+  onState = null,
+) {
+  const captures = [];
+  for (const viewport of configuration.viewports) {
+    const configured = await configureScenarioPage(
+      browser,
+      configuration,
+      viewport,
+      "signed-in",
+    );
+    try {
+      const { page } = configured;
+      await signInToSyntheticApp(page);
+      await openSyntheticProject(page);
+
+      await page
+        .getByRole("tab", { name: "Cluster-Sets", exact: true })
+        .click();
+      await page
+        .getByRole("button", { name: "Im Explorer laden" })
+        .first()
+        .waitFor({ state: "visible", timeout: 10_000 });
+      await captureState(
+        captures,
+        page,
+        viewport,
+        outputRoot,
+        "cluster-sets-tree",
+        "project",
+        onState,
+      );
+      await assertClusterSetTreeDisclosure(page);
+
+      await page
+        .getByRole("button", { name: "Cluster verfeinern" })
+        .first()
+        .click();
+      await page
+        .getByText("Verfeinerung vorausgefüllt")
+        .waitFor({ state: "visible", timeout: 10_000 });
+      await captureState(
+        captures,
+        page,
+        viewport,
+        outputRoot,
+        "cluster-set-refinement-draft",
+        "project",
+        onState,
+      );
+      await page
+        .getByRole("button", { name: "Verfeinerung zurücksetzen" })
+        .click();
+
+      await page
+        .getByRole("tab", { name: "Explorer", exact: true })
+        .click();
+      await page
+        .getByText(/Noch kein abgeschlossenes Cluster-Set geladen/)
+        .waitFor({ state: "visible", timeout: 10_000 });
+      await captureState(
+        captures,
+        page,
+        viewport,
+        outputRoot,
+        "explorer-empty",
+        "project",
+        onState,
+      );
+
+      await page.getByRole("button", { name: "Cluster-Set auswählen" }).click();
+      await page
+        .getByRole("button", { name: "Im Explorer laden" })
+        .first()
+        .click();
+      await page
+        .getByRole("heading", { name: "Cluster Explorer" })
+        .waitFor({ state: "visible", timeout: 10_000 });
+      await page
+        .getByRole("row", { name: /Passwort zurücksetzen/ })
+        .first()
+        .waitFor({ state: "visible", timeout: 10_000 });
+      await captureState(
+        captures,
+        page,
+        viewport,
+        outputRoot,
+        "explorer-loaded-table",
+        "project",
+        onState,
+      );
+
+      await page
+        .getByPlaceholder("Titel, Kategorie, Summary oder Status")
+        .fill("keine Treffer");
+      await page
+        .getByText("Keine Cluster entsprechen der aktuellen Textsuche oder dem Filter.")
+        .waitFor({ state: "visible", timeout: 10_000 });
+      await captureState(
+        captures,
+        page,
+        viewport,
+        outputRoot,
+        "explorer-no-results",
+        "project",
+        onState,
+      );
+      await page
+        .getByPlaceholder("Titel, Kategorie, Summary oder Status")
+        .fill("");
+
+      await page.getByLabel("Ausgeschlossene anzeigen").check();
+      await page
+        .getByRole("region", { name: "Ausgeschlossene Cluster" })
+        .waitFor({ state: "visible", timeout: 10_000 });
+      await captureState(
+        captures,
+        page,
+        viewport,
+        outputRoot,
+        "explorer-excluded-rows",
+        "project",
+        onState,
+      );
+
+      const sourceOpener = page
+        .getByRole("row", { name: /Passwort zurücksetzen/ })
+        .getByRole("button", { name: "Quellen anzeigen" });
+      await sourceOpener.click();
+      await page
+        .getByRole("dialog", { name: "Passwort zurücksetzen" })
+        .waitFor({ state: "visible", timeout: 10_000 });
+      await assertSourceDialogKeyboardBehavior(page);
+      await captureState(
+        captures,
+        page,
+        viewport,
+        outputRoot,
+        "explorer-source-dialog",
+        "project",
+        onState,
+      );
+      await closeSourceDialogAndVerifyFocusReturn(page);
+
+      await page
+        .getByRole("button", { name: "Aktuelle Tabelle exportieren" })
+        .click();
+      await page
+        .getByText(/Explorer-Export erstellt/)
+        .waitFor({ state: "visible", timeout: 10_000 });
+      await captureState(
+        captures,
+        page,
+        viewport,
+        outputRoot,
+        "explorer-export-output",
+        "project",
+        onState,
+      );
+
+      await page
+        .getByRole("button", { name: "Eingeschlossene Cluster verfeinern" })
+        .click();
+      await page
+        .getByText("Verfeinerung vorausgefüllt")
+        .waitFor({ state: "visible", timeout: 10_000 });
+      await captureState(
+        captures,
+        page,
+        viewport,
+        outputRoot,
+        "explorer-refinement-draft",
+        "project",
+        onState,
+      );
+
+      if (configured.blockedRequests.length > 0) {
+        fail(
+          `browser attempted external request(s): ${configured.blockedRequests.join(", ")}`,
+        );
+      }
+    } finally {
+      await configured.context.close();
+    }
+  }
+  return captures;
+}
+
+async function captureAllScenarios(browser, configuration, outputRoot) {
+  return [
+    ...(await captureScenarios(
+      browser,
+      configuration,
+      outputRoot,
+      "signed-out",
+    )),
+    ...(await captureProjectScenarios(browser, configuration, outputRoot)),
+  ];
 }
 
 function gitOutput(...arguments_) {
@@ -652,11 +1303,10 @@ async function runBrowserReview(configuration, activeWork) {
     fail("browser review command is not configured");
   }
   await withBrowser(configuration, async ({ browser }) => {
-    const captures = await captureScenarios(
+    const captures = await captureAllScenarios(
       browser,
       configuration,
       activeWork.evidenceDirectory,
-      "signed-out",
     );
     const manifest = {
       change_id: activeWork.changeId,
@@ -696,42 +1346,36 @@ function minimizedViolation(violation) {
   };
 }
 
+async function analyzeAccessibilityState(
+  AxeBuilder,
+  audits,
+  { id, state, viewportName, page },
+) {
+  const result = await new AxeBuilder({ page }).withTags(WCAG_TAGS).analyze();
+  audits.push({
+    screen: id,
+    state,
+    viewport: viewportName,
+    violations: result.violations.map(minimizedViolation),
+  });
+}
+
 async function runAccessibility(configuration, activeWork) {
   if (!configuration.accessibilityCommand.trim()) {
     fail("accessibility command is not configured");
   }
   await withBrowser(configuration, async ({ browser, AxeBuilder }) => {
     const audits = [];
-    for (const viewport of configuration.viewports) {
-      const configured = await configureScenarioPage(
-        browser,
-        configuration,
-        viewport,
-      );
-      try {
-        for (const state of ["default", "invalid-credentials"]) {
-          if (state === "invalid-credentials") {
-            await enterInvalidCredentials(configured.page);
-          }
-          const result = await new AxeBuilder({ page: configured.page })
-            .withTags(WCAG_TAGS)
-            .analyze();
-          audits.push({
-            screen: "signed-out",
-            state,
-            viewport: viewport.name,
-            violations: result.violations.map(minimizedViolation),
-          });
-        }
-        if (configured.blockedRequests.length > 0) {
-          fail(
-            `accessibility run attempted external request(s): ${configured.blockedRequests.join(", ")}`,
-          );
-        }
-      } finally {
-        await configured.context.close();
-      }
-    }
+    const onState = async (capture) =>
+      analyzeAccessibilityState(AxeBuilder, audits, capture);
+    await captureScenarios(
+      browser,
+      configuration,
+      null,
+      "signed-out",
+      onState,
+    );
+    await captureProjectScenarios(browser, configuration, null, onState);
     const violations = audits.flatMap((audit) =>
       audit.violations.map((violation) => ({
         ...violation,
@@ -893,11 +1537,10 @@ async function runVisualRegression(configuration, activeWork, updateBaselines) {
     fail("visual regression command is not configured");
   }
   await withBrowser(configuration, async ({ browser }) => {
-    const captures = await captureScenarios(
+    const captures = await captureAllScenarios(
       browser,
       configuration,
       activeWork.evidenceDirectory,
-      "visual-regression",
     );
     if (updateBaselines) {
       if (!(await exists(BASELINE_ROOT))) {
@@ -911,7 +1554,7 @@ async function runVisualRegression(configuration, activeWork, updateBaselines) {
         fail("visual baseline root must be a real directory");
       }
       for (const capture of captures) {
-        const baselineName = `${capture.viewportName}-signed-out-${capture.state}.png`;
+        const baselineName = capture.file.replaceAll("/", "-");
         await atomicWrite(
           path.join(BASELINE_ROOT, baselineName),
           capture.image,
@@ -925,7 +1568,7 @@ async function runVisualRegression(configuration, activeWork, updateBaselines) {
     const comparisons = [];
     try {
       for (const capture of captures) {
-        const baselineName = `${capture.viewportName}-signed-out-${capture.state}.png`;
+        const baselineName = capture.file.replaceAll("/", "-");
         const baseline = await validateBaselineFile(
           path.join(BASELINE_ROOT, baselineName),
         );
@@ -946,7 +1589,7 @@ async function runVisualRegression(configuration, activeWork, updateBaselines) {
           );
         }
         comparisons.push({
-          screen: "signed-out",
+          screen: capture.id,
           state: capture.state,
           viewport: capture.viewportName,
           baseline: `frontend/ui-baselines/${baselineName}`,

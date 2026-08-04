@@ -219,6 +219,7 @@ def provider_configuration(
         provider=provider,
         endpoint_url=endpoint_url,
         manual_models=[model],
+        llm_models=[model] if provider in {"openai", "ollama"} else [],
         api_key_set=provider == "openai",
         updated_at=datetime(2026, 7, 26, tzinfo=UTC),
     )
@@ -373,6 +374,7 @@ def test_ollama_embeddings_are_batched_and_validated(monkeypatch: Any) -> None:
             provider="ollama",
             endpoint_url="http://localhost:11434/",
             manual_models=["local-embed"],
+            llm_models=[],
             api_key_set=False,
             updated_at=datetime(2026, 7, 26, tzinfo=UTC),
         ),

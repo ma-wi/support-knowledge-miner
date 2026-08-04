@@ -196,9 +196,9 @@ Active codes are declared below or indexed to a capability catalog.
 - Input preservation: Preserve cluster parameters.
 - Correlation reference: safe request identifier
 - Security considerations: Do not create partial cluster-set writes.
-- Backend source: not-applicable: cluster-set implementation owns mapping
-- API contract: not-applicable: FastAPI mapping tested by owning task
-- Frontend mapping: not-applicable: frontend normalizer updated by owning task
+- Backend source: `backend/clusters/service.py`, `backend/api/app.py`
+- API contract: `backend/api/app.py` Cluster-Set Problem Details routes
+- Frontend mapping: `frontend/src/App.tsx` `ERROR_MESSAGES_BY_CODE`
 - Required tests: cluster-set negative tests
 
 ### `CLUSTER_VECTOR_BASIS_UNAVAILABLE`
@@ -217,9 +217,9 @@ Active codes are declared below or indexed to a capability catalog.
 - Input preservation: Preserve parameters.
 - Correlation reference: safe request identifier
 - Security considerations: Do not infer missing private data from other projects.
-- Backend source: not-applicable: cluster-set implementation owns mapping
-- API contract: not-applicable: FastAPI mapping tested by owning task
-- Frontend mapping: not-applicable: frontend normalizer updated by owning task
+- Backend source: `backend/clusters/service.py`, `backend/api/app.py`
+- API contract: `backend/api/app.py` Cluster-Set Problem Details routes
+- Frontend mapping: `frontend/src/App.tsx` `ERROR_MESSAGES_BY_CODE`
 - Required tests: cluster-set vector-basis tests
 
 ### `CLUSTER_SUMMARY_SAMPLE_COUNT_INVALID`
@@ -238,9 +238,9 @@ Active codes are declared below or indexed to a capability catalog.
 - Input preservation: Preserve all fields.
 - Correlation reference: safe request identifier
 - Security considerations: Reject before provider calls.
-- Backend source: not-applicable: cluster-set implementation owns mapping
-- API contract: not-applicable: FastAPI mapping tested by owning task
-- Frontend mapping: not-applicable: frontend normalizer updated by owning task
+- Backend source: `backend/clusters/service.py`, `backend/api/app.py`
+- API contract: `backend/api/app.py` Cluster-Set Problem Details routes
+- Frontend mapping: `frontend/src/App.tsx` `ERROR_MESSAGES_BY_CODE`
 - Required tests: validation and UI input tests
 
 ### `CLUSTER_BUDGET_EXCEEDED`
@@ -259,9 +259,9 @@ Active codes are declared below or indexed to a capability catalog.
 - Input preservation: Preserve all fields.
 - Correlation reference: safe request identifier
 - Security considerations: Report only safe capacity metadata.
-- Backend source: not-applicable: cluster-set implementation owns mapping
-- API contract: not-applicable: FastAPI mapping tested by owning task
-- Frontend mapping: not-applicable: frontend normalizer updated by owning task
+- Backend source: `backend/clusters/service.py`, `backend/api/app.py`
+- API contract: `backend/api/app.py` Cluster-Set Problem Details routes
+- Frontend mapping: `frontend/src/App.tsx` `ERROR_MESSAGES_BY_CODE`
 - Required tests: capacity rejection tests
 
 ### `LLM_PROVIDER_UNAVAILABLE`
@@ -280,9 +280,9 @@ Active codes are declared below or indexed to a capability catalog.
 - Input preservation: Preserve cluster assignments and parameters where safe.
 - Correlation reference: safe job identifier
 - Security considerations: Redact provider diagnostics and source text.
-- Backend source: not-applicable: LLM implementation owns mapping
-- API contract: not-applicable: FastAPI mapping tested by owning task
-- Frontend mapping: not-applicable: frontend normalizer updated by owning task
+- Backend source: `backend/clusters/service.py`, `backend/providers/service.py`, `backend/api/app.py`
+- API contract: `backend/api/app.py` Cluster-Set Problem Details routes
+- Frontend mapping: `frontend/src/App.tsx` `ERROR_MESSAGES_BY_CODE`
 - Required tests: provider unavailable tests
 
 ### `LLM_CLOUD_CONFIRMATION_REQUIRED`
@@ -301,9 +301,9 @@ Active codes are declared below or indexed to a capability catalog.
 - Input preservation: Preserve all cluster-set form fields.
 - Correlation reference: safe request identifier
 - Security considerations: Do not send source text before confirmation.
-- Backend source: not-applicable: LLM implementation owns mapping
-- API contract: not-applicable: FastAPI mapping tested by owning task
-- Frontend mapping: not-applicable: frontend normalizer updated by owning task
+- Backend source: `backend/clusters/service.py`, `backend/providers/service.py`, `backend/api/app.py`
+- API contract: `backend/api/app.py` Cluster-Set Problem Details routes
+- Frontend mapping: `frontend/src/App.tsx` `ERROR_MESSAGES_BY_CODE`
 - Required tests: API/service/frontend confirmation tests
 
 ### `CLUSTER_SUMMARY_FAILED`
@@ -322,9 +322,9 @@ Active codes are declared below or indexed to a capability catalog.
 - Input preservation: Preserve cluster assignments where safe.
 - Correlation reference: safe job identifier
 - Security considerations: Do not expose raw LLM body.
-- Backend source: not-applicable: LLM implementation owns mapping
-- API contract: not-applicable: FastAPI mapping tested by owning task
-- Frontend mapping: not-applicable: frontend normalizer updated by owning task
+- Backend source: `backend/clusters/service.py`, `backend/providers/service.py`, `backend/api/app.py`
+- API contract: `backend/api/app.py` Cluster-Set Problem Details routes
+- Frontend mapping: `frontend/src/App.tsx` `ERROR_MESSAGES_BY_CODE`
 - Required tests: invalid LLM output tests
 
 ### `CLUSTER_SET_CANCEL_NOT_AVAILABLE`
@@ -343,9 +343,9 @@ Active codes are declared below or indexed to a capability catalog.
 - Input preservation: Preserve tree state.
 - Correlation reference: safe job identifier
 - Security considerations: Do not expose worker internals.
-- Backend source: not-applicable: cluster-set implementation owns mapping
-- API contract: not-applicable: FastAPI mapping tested by owning task
-- Frontend mapping: not-applicable: frontend normalizer updated by owning task
+- Backend source: `backend/clusters/service.py`, `backend/api/app.py`
+- API contract: `backend/api/app.py` Cluster-Set Problem Details routes
+- Frontend mapping: `frontend/src/App.tsx` `ERROR_MESSAGES_BY_CODE`
 - Required tests: cluster-set cancellation tests
 
 ### `CLUSTER_SET_NOT_FOUND`
@@ -364,10 +364,52 @@ Active codes are declared below or indexed to a capability catalog.
 - Input preservation: Preserve safe filters where possible.
 - Correlation reference: safe request identifier
 - Security considerations: Do not reveal cross-project existence.
-- Backend source: not-applicable: cluster-set implementation owns mapping
-- API contract: not-applicable: FastAPI mapping tested by owning task
-- Frontend mapping: not-applicable: frontend normalizer updated by owning task
+- Backend source: `backend/clusters/service.py`, `backend/api/app.py`
+- API contract: `backend/api/app.py` Cluster-Set Problem Details routes
+- Frontend mapping: `frontend/src/App.tsx` `ERROR_MESSAGES_BY_CODE`
 - Required tests: not-found and project-scope tests
+
+### `CLUSTER_SET_NOT_COMPLETE`
+
+- Status: active
+- Category: conflict
+- Trigger: Explorer clusters are requested before the Cluster-Set has completed.
+- HTTP status: 409
+- Problem type: `urn:skm:error:CLUSTER_SET_NOT_COMPLETE`
+- User-facing title: Das Cluster-Set ist noch nicht fertig.
+- User-facing explanation: Das Cluster-Set kann erst nach Abschluss geladen werden.
+- Suggested action: Status aktualisieren und Abschluss abwarten.
+- Suggested action code: wait
+- Retryable: yes
+- UI placement: Cluster-Set-Übersicht oder Explorer
+- Input preservation: Preserve selected Cluster-Set and filters.
+- Correlation reference: safe request identifier
+- Security considerations: Do not expose partial cluster rows as loadable results.
+- Backend source: `backend/clusters/service.py`, `backend/api/app.py`
+- API contract: `backend/api/app.py` Cluster-Set Problem Details routes
+- Frontend mapping: `frontend/src/App.tsx` `ERROR_MESSAGES_BY_CODE`
+- Required tests: cluster-set completion gate tests
+
+### `CLUSTER_RUN_BOUND_API_REPLACED`
+
+- Status: active
+- Category: conflict
+- Trigger: Deprecated run-bound cluster generation or loading route is called.
+- HTTP status: 410
+- Problem type: `urn:skm:error:CLUSTER_RUN_BOUND_API_REPLACED`
+- User-facing title: Run-bound Clustering wurde ersetzt.
+- User-facing explanation: Cluster werden jetzt ausschließlich über Cluster-Sets erzeugt und geladen.
+- Suggested action: Ein Cluster-Set erstellen.
+- Suggested action code: create-cluster-set
+- Retryable: no
+- UI placement: not-applicable: legacy route is no longer rendered in the UI
+- Input preservation: Preserve caller state where applicable.
+- Correlation reference: safe request identifier
+- Security considerations: Prevent derived clusters from bypassing Cluster-Set lifecycle, lineage and safe errors.
+- Backend source: `backend/api/app.py`
+- API contract: `backend/api/app.py` deprecated cluster routes
+- Frontend mapping: not-applicable: legacy route is no longer rendered in the UI
+- Required tests: legacy route replacement tests
 
 ### `CLUSTER_SOURCE_NOT_FOUND`
 
@@ -385,10 +427,54 @@ Active codes are declared below or indexed to a capability catalog.
 - Input preservation: Preserve explorer filters.
 - Correlation reference: safe request identifier
 - Security considerations: Do not expose cross-project source existence.
-- Backend source: not-applicable: explorer implementation owns mapping
-- API contract: not-applicable: FastAPI mapping tested by owning task
-- Frontend mapping: not-applicable: frontend normalizer updated by owning task
+- Backend source: `backend/clusters/service.py`, `backend/api/app.py`
+- API contract: `backend/api/app.py` source-dialog Problem Details mapping;
+  `docs/api/problem-details-contract.yaml`
+- Frontend mapping: `frontend/src/App.tsx` `ERROR_MESSAGES_BY_CODE`
 - Required tests: source-dialog not-found tests
+
+### `CLUSTER_SOURCE_PAGE_INVALID`
+
+- Status: active
+- Category: validation
+- Trigger: Cluster source dialog pagination parameters are invalid or outside the bounded contract.
+- HTTP status: 422
+- Problem type: `urn:skm:error:CLUSTER_SOURCE_PAGE_INVALID`
+- User-facing title: Die Quellen-Seite ist ungültig.
+- User-facing explanation: Die Quellen konnten mit diesen Seitenparametern nicht geladen werden.
+- Suggested action: Dialog neu öffnen oder Seitenparameter korrigieren.
+- Suggested action code: correct-input
+- Retryable: yes
+- UI placement: Quellen-Dialog
+- Input preservation: Preserve Explorer filters and loaded source rows where safe.
+- Correlation reference: safe request identifier
+- Security considerations: Keep source-dialog raw text responses page-bounded.
+- Backend source: `backend/clusters/service.py`, `backend/api/app.py`
+- API contract: `backend/api/app.py` source-dialog Problem Details mapping;
+  `docs/api/problem-details-contract.yaml`
+- Frontend mapping: `frontend/src/App.tsx` `ERROR_MESSAGES_BY_CODE`
+- Required tests: source-dialog pagination validation tests
+
+### `CLUSTER_MANUAL_UPDATE_INVALID`
+
+- Status: active
+- Category: validation
+- Trigger: A manual cluster title, category or status update contains invalid values.
+- HTTP status: 422
+- Problem type: `urn:skm:error:CLUSTER_MANUAL_UPDATE_INVALID`
+- User-facing title: Cluster-Änderung ist ungültig.
+- User-facing explanation: Die manuellen Clusterwerte konnten nicht gespeichert werden.
+- Suggested action: Eingaben prüfen und erneut speichern.
+- Suggested action code: correct-input
+- Retryable: yes
+- UI placement: Explorer table row/global feedback
+- Input preservation: Preserve table, filters and entered manual values where safe.
+- Correlation reference: safe request identifier
+- Security considerations: Do not expose cross-project cluster existence or raw database details.
+- Backend source: `backend/clusters/service.py`
+- API contract: `backend/api/app.py` cluster manual update Problem Details mapping
+- Frontend mapping: `frontend/src/App.tsx` `ERROR_MESSAGES_BY_CODE`
+- Required tests: cluster manual-update API and frontend negative tests
 
 ### `CLUSTER_REFINEMENT_EMPTY_SOURCE`
 
@@ -406,9 +492,10 @@ Active codes are declared below or indexed to a capability catalog.
 - Input preservation: Preserve parameters.
 - Correlation reference: safe request identifier
 - Security considerations: Do not create empty child sets.
-- Backend source: not-applicable: refinement implementation owns mapping
-- API contract: not-applicable: FastAPI mapping tested by owning task
-- Frontend mapping: not-applicable: frontend normalizer updated by owning task
+- Backend source: `backend/clusters/service.py`, `backend/api/app.py`
+- API contract: `backend/api/app.py` cluster-set refinement Problem Details mapping;
+  `docs/api/problem-details-contract.yaml`
+- Frontend mapping: `frontend/src/App.tsx` `ERROR_MESSAGES_BY_CODE`
 - Required tests: refinement validation tests
 
 ### `CLUSTER_SEARCH_NO_RESULTS`
@@ -448,10 +535,55 @@ Active codes are declared below or indexed to a capability catalog.
 - Input preservation: Preserve search/filter state.
 - Correlation reference: safe request identifier
 - Security considerations: Do not create empty misleading files.
-- Backend source: not-applicable: explorer export implementation owns mapping
-- API contract: not-applicable: FastAPI mapping tested by owning task
-- Frontend mapping: not-applicable: frontend normalizer updated by owning task
+- Backend source: `backend/exports/service.py`, `backend/api/app.py`
+- API contract: `backend/api/app.py` Explorer export Problem Details mapping;
+  `docs/api/problem-details-contract.yaml`
+- Frontend mapping: `frontend/src/App.tsx` `ERROR_MESSAGES_BY_CODE`
 - Required tests: export empty-state tests
+
+### `EXPLORER_EXPORT_FORMAT_INVALID`
+
+- Status: active
+- Category: validation
+- Trigger: Explorer export is requested with a format other than CSV or JSON.
+- HTTP status: 422
+- Problem type: `urn:skm:error:EXPLORER_EXPORT_FORMAT_INVALID`
+- User-facing title: Das Exportformat ist ungültig.
+- User-facing explanation: Der Explorer kann nur als CSV oder JSON exportiert werden.
+- Suggested action: CSV oder JSON wählen.
+- Suggested action code: choose-format
+- Retryable: yes
+- UI placement: Explorer Export-Abschnitt
+- Input preservation: Preserve search/filter state and selected format control.
+- Correlation reference: safe request identifier
+- Security considerations: Do not fall back to an implicit or misleading file format.
+- Backend source: `backend/exports/service.py`, `backend/api/app.py`
+- API contract: `backend/api/app.py` Explorer export Problem Details mapping;
+  `docs/api/problem-details-contract.yaml`
+- Frontend mapping: `frontend/src/App.tsx` `ERROR_MESSAGES_BY_CODE`
+- Required tests: export format validation tests
+
+### `EXPLORER_EXPORT_SELECTION_TOO_LARGE`
+
+- Status: active
+- Category: validation
+- Trigger: Explorer export selection exceeds the maximum supported cluster count.
+- HTTP status: 422
+- Problem type: `urn:skm:error:EXPLORER_EXPORT_SELECTION_TOO_LARGE`
+- User-facing title: Die Exportauswahl ist zu groß.
+- User-facing explanation: Die aktuelle Explorer-Auswahl enthält zu viele Cluster.
+- Suggested action: Filter oder Auswahl verkleinern.
+- Suggested action code: reduce-scope
+- Retryable: yes
+- UI placement: Explorer Export-Abschnitt
+- Input preservation: Preserve search/filter state.
+- Correlation reference: safe request identifier
+- Security considerations: Keep export generation memory and response size bounded.
+- Backend source: `backend/exports/service.py`, `backend/api/app.py`
+- API contract: `backend/api/app.py` Explorer export Problem Details mapping;
+  `docs/api/problem-details-contract.yaml`
+- Frontend mapping: `frontend/src/App.tsx` `ERROR_MESSAGES_BY_CODE`
+- Required tests: export selection-size validation tests
 
 ### `EXPLORER_EXPORT_FAILED`
 
@@ -469,9 +601,10 @@ Active codes are declared below or indexed to a capability catalog.
 - Input preservation: Preserve search/filter state.
 - Correlation reference: safe request identifier
 - Security considerations: Do not include raw source texts unless explicitly requested.
-- Backend source: not-applicable: explorer export implementation owns mapping
-- API contract: not-applicable: FastAPI mapping tested by owning task
-- Frontend mapping: not-applicable: frontend normalizer updated by owning task
+- Backend source: `backend/exports/service.py`, `backend/api/app.py`
+- API contract: `backend/api/app.py` Explorer export Problem Details mapping;
+  `docs/api/problem-details-contract.yaml`
+- Frontend mapping: `frontend/src/App.tsx` `ERROR_MESSAGES_BY_CODE`
 - Required tests: export failure tests
 
 ### `DISPLAY_NAME_SAVE_FAILED`
@@ -511,9 +644,10 @@ Active codes are declared below or indexed to a capability catalog.
 - Input preservation: Preserve outlier parameters.
 - Correlation reference: safe request identifier
 - Security considerations: Do not write empty child set.
-- Backend source: not-applicable: outlier implementation owns mapping
-- API contract: not-applicable: FastAPI mapping tested by owning task
-- Frontend mapping: not-applicable: frontend normalizer updated by owning task
+- Backend source: `backend/clusters/service.py`, `backend/api/app.py`
+- API contract: `backend/api/app.py` outlier/refinement Problem Details mapping;
+  `docs/api/problem-details-contract.yaml`
+- Frontend mapping: `frontend/src/App.tsx` `ERROR_MESSAGES_BY_CODE`
 - Required tests: outlier validation tests
 
 ### `CLUSTER_OUTLIER_RECALCULATION_FAILED`
@@ -532,9 +666,10 @@ Active codes are declared below or indexed to a capability catalog.
 - Input preservation: Preserve outlier parameters.
 - Correlation reference: safe job identifier
 - Security considerations: Do not expose clustering internals or raw text.
-- Backend source: not-applicable: outlier implementation owns mapping
-- API contract: not-applicable: FastAPI mapping tested by owning task
-- Frontend mapping: not-applicable: frontend normalizer updated by owning task
+- Backend source: `backend/clusters/service.py`, `backend/api/app.py`
+- API contract: `backend/api/app.py` outlier/refinement Problem Details mapping;
+  `docs/api/problem-details-contract.yaml`
+- Frontend mapping: `frontend/src/App.tsx` `ERROR_MESSAGES_BY_CODE`
 - Required tests: outlier failure tests
 
 ### `CLUSTER_SET_LINEAGE_UNAVAILABLE`
@@ -553,9 +688,9 @@ Active codes are declared below or indexed to a capability catalog.
 - Input preservation: Preserve loaded set and table state.
 - Correlation reference: safe request identifier
 - Security considerations: Do not expose hidden parent from another project.
-- Backend source: not-applicable: lineage implementation owns mapping
-- API contract: not-applicable: FastAPI mapping tested by owning task
-- Frontend mapping: not-applicable: frontend normalizer updated by owning task
+- Backend source: `backend/clusters/service.py`, `backend/api/app.py`
+- API contract: `backend/api/app.py` Cluster-Set Problem Details routes
+- Frontend mapping: `frontend/src/App.tsx` `ERROR_MESSAGES_BY_CODE`
 - Required tests: lineage failure tests
 
 ## Entry template

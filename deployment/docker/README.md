@@ -81,7 +81,8 @@ Before applying migrations to a local development database that contains work yo
 need to keep, take a local backup of the `postgres-data` volume or export the data
 you need. Migration `0014_indexing_runs_without_profiles.sql` is intentionally
 destructive for obsolete local derived analysis data: it removes analysis profiles
-and resets profile-derived runs, embeddings, clusters, candidates and exports while
+and resets profile-derived runs, embeddings, clusters, obsolete candidate-derived
+data and exports while
 preserving projects, imports, dataset versions and provider configuration. Do not
 run these local migration procedures against production data, production
 credentials, production networks or any production-controlled resource.

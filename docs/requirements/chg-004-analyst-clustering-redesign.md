@@ -252,91 +252,91 @@ Analyseprofile erhalten bleiben.
 
 ## Acceptance criteria
 
-- [ ] AC-1: Projekt-Navigation und neue Verträge enthalten keine
+- [x] AC-1: Projekt-Navigation und neue Verträge enthalten keine
   Analyseprofile mehr; relevante alte Artefakte sind entfernt oder explizit
   migriert.
-- [ ] AC-2: Ein Nutzer kann eine Dataset-Version auswählen, ein Embedding-Modell
+- [x] AC-2: Ein Nutzer kann eine Dataset-Version auswählen, ein Embedding-Modell
   wählen und eine Indizierung starten, die je Support-Paar Embeddings für
   Kundenanfrage und Supportantwort erzeugt.
-- [ ] AC-3: Mehrere Indizierungen desselben Datensatzes mit unterschiedlichen
+- [x] AC-3: Mehrere Indizierungen desselben Datensatzes mit unterschiedlichen
   Embedding-Modellen werden gespeichert, geladen und unterscheidbar angezeigt.
-- [ ] AC-4: Ein Nutzer kann eine abgeschlossene Indizierung auswählen,
+- [x] AC-4: Ein Nutzer kann eine abgeschlossene Indizierung auswählen,
   Cluster-Vektorbasis, Cluster-Algorithmus/-Parameter, optionales LLM-Modell und
   LLM-Beispielanzahl konfigurieren und ein Cluster-Set erzeugen.
-- [ ] AC-5: Mehrere Cluster-Sets pro Indizierung können gespeichert, geladen und
+- [x] AC-5: Mehrere Cluster-Sets pro Indizierung können gespeichert, geladen und
   anhand von Algorithmus, Parametern, LLM-Modell, Erstellzeit und Status
   unterschieden werden.
-- [ ] AC-6: Ein geladenes Cluster-Set kann über „Cluster verfeinern“ mit
+- [x] AC-6: Ein geladenes Cluster-Set kann über „Cluster verfeinern“ mit
   geänderten Parametern als neues Child-Cluster-Set erzeugt werden; das neue
   Ergebnis erhält eine neue Cluster-Set-ID und überschreibt das alte Set nicht.
-- [ ] AC-7: Der Explorer zeigt Cluster tabellarisch mit Titel, Kategorie,
+- [x] AC-7: Der Explorer zeigt Cluster tabellarisch mit Titel, Kategorie,
   zusammengefasster Frage, zusammengefasster Antwort, Kundenanfragen,
   Supportantworten und Aktionen.
-- [ ] AC-8: Wenn ein LLM eingerichtet und gewählt ist, werden Titel, Kategorie,
+- [x] AC-8: Wenn ein LLM eingerichtet und gewählt ist, werden Titel, Kategorie,
   zusammengefasste Frage und Antwort aus zufällig gezogenen Beispielpaaren
   generiert, persistiert und mit Modell-, Prompt-, Sample- und Seed-Provenienz
   gespeichert; ohne LLM bleibt das Cluster-Set mit sichtbar nicht generierten
   Zusammenfassungen nutzbar.
-- [ ] AC-9: Der Quellen-Dialog eines Clusters zeigt die zugeordneten echten
+- [x] AC-9: Der Quellen-Dialog eines Clusters zeigt die zugeordneten echten
   Kundenanfragen und Supportantworten mit Traceability-Feldern.
-- [ ] AC-10: Cluster können nach Kategorie gruppiert, von weiterer Betrachtung
+- [x] AC-10: Cluster können nach Kategorie gruppiert, von weiterer Betrachtung
   ausgeschlossen, separat angezeigt und wieder eingeschlossen werden.
-- [ ] AC-11: Der Nutzer kann aus einer eingeschränkten Quellmenge eine feinere
+- [x] AC-11: Der Nutzer kann aus einer eingeschränkten Quellmenge eine feinere
   Clusterung starten; das neue Cluster-Set verweist auf sein Eltern-Set.
-- [ ] AC-12: Einstellungen enthalten getrennte Tabs für Embedding-Provider und
+- [x] AC-12: Einstellungen enthalten getrennte Tabs für Embedding-Provider und
   LLM-Provider; OpenAI-Keys werden nicht im Klartext angezeigt.
-- [ ] AC-13: OpenAI-Nutzung für Embeddings oder LLM-Zusammenfassungen verlangt eine
+- [x] AC-13: OpenAI-Nutzung für Embeddings oder LLM-Zusammenfassungen verlangt eine
   explizite Bestätigung direkt vor dem Senden von Originaltexten.
-- [ ] AC-14: Der Tab „Kandidaten“, die Candidate-Erstellung aus Clustern und das
+- [x] AC-14: Der Tab „Kandidaten“, die Candidate-Erstellung aus Clustern und das
   eigenständige Kandidatenkonzept sind aus dem neuen Analyseworkflow entfernt; das
   Cluster-Set ist das finale Analyseartefakt.
-- [ ] AC-15: Fehler bei Indizierung, Clustering, LLM-Zusammenfassung,
+- [x] AC-15: Fehler bei Indizierung, Clustering, LLM-Zusammenfassung,
   Cluster-Set-Laden und Quellen-Dialog zeigen sichere, konkrete, wiederholbare
   Nutzerhinweise ohne Secrets, Roh-Providerantworten oder unnötige Rohtexte.
 - [x] AC-16: Der klickbare Mockup-/Design-Entwurf ist durch den Decision Owner
   bestätigt, bevor Produktionsimplementierung beginnt.
-- [ ] AC-17: Fokussierte Tests, UI-Tests, Migrations-/Schema-Tests,
+- [x] AC-17: Fokussierte Tests, UI-Tests, Migrations-/Schema-Tests,
   Security-/Dependency-Gates und `./.ai/tools/verify.sh` laufen nach Umsetzung
   erfolgreich; unabhängiger Review hat keine offenen P0/P1-Findings.
-- [ ] AC-18: Die Projektübersicht erlaubt Projektanlage, Umbenennen, Öffnen und
+- [x] AC-18: Die Projektübersicht erlaubt Projektanlage, Umbenennen, Öffnen und
   Löschen; geöffnete Projekte erscheinen links als Projekt-Unterpunkte; es gibt
   keinen separaten Projektstatus „Entwurf“.
-- [ ] AC-19: Imports haben editierbare Anzeigenamen und können gelöscht werden,
+- [x] AC-19: Imports haben editierbare Anzeigenamen und können gelöscht werden,
   ohne bestehende Indizierungen oder Cluster-Sets zu löschen; abhängige
   Indizierungen zeigen den gelöschten Datensatz; Namensänderungen benötigen
   keinen separaten Speichern-Button.
-- [ ] AC-20: Indizierungen können gelöscht werden, ohne bestehende Cluster-Sets zu
+- [x] AC-20: Indizierungen können gelöscht werden, ohne bestehende Cluster-Sets zu
   löschen; abhängige Cluster-Sets zeigen die gelöschte Indizierung und bleiben
   exportierbar.
-- [ ] AC-21: Cluster-Sets haben editierbare Namen, können gelöscht werden und zeigen
+- [x] AC-21: Cluster-Sets haben editierbare Namen, können gelöscht werden und zeigen
   für alle fertigen gespeicherten Sets die Aktionen „Im Explorer laden“ und
   „Cluster verfeinern“, solange der Zustand dies erlaubt; Namensänderungen benötigen keinen separaten
   Speichern-Button.
-- [ ] AC-22: LLM-Beispiele werden über Zahlenfeld plus „Alle Beispiele“ konfiguriert;
+- [x] AC-22: LLM-Beispiele werden über Zahlenfeld plus „Alle Beispiele“ konfiguriert;
   Standard ist 10, nur positive ganze Zahlen sind gültig, und Werte oberhalb der
   Clustergröße werden pro Cluster auf die verfügbaren Beispiele begrenzt.
-- [ ] AC-23: Explorer-Suche ist als Textsuche definiert; Verfeinerung erstellt ein
+- [x] AC-23: Explorer-Suche ist als Textsuche definiert; Verfeinerung erstellt ein
   neues Child-Cluster-Set aus eingeschlossenen Quellen und kann dabei eine andere
   Vektorbasis als das Eltern-Set nutzen; Suche und Filter verändern keine
   gespeicherten Cluster-Ergebnisse.
-- [ ] AC-24: Outlier-Management und Frage/Antwort-Mismatch-Hinweise sind im Explorer
+- [x] AC-24: Outlier-Management und Frage/Antwort-Mismatch-Hinweise sind im Explorer
   als von Suche/Filter getrennte Berechnung sichtbar und als spätere
   Backend-Parameter/Testseams spezifiziert.
-- [ ] AC-25: Click-Dummy-Feedback verschiebt keine Layoutinhalte, ist schließbar und
+- [x] AC-25: Click-Dummy-Feedback verschiebt keine Layoutinhalte, ist schließbar und
   verschwindet automatisch.
-- [ ] AC-26: Cluster-Sets sind in der Übersicht als aufklappbarer Parent-/Child-
+- [x] AC-26: Cluster-Sets sind in der Übersicht als aufklappbarer Parent-/Child-
   Analysebaum sichtbar; der Explorer zeigt den Analysepfad des geladenen Sets.
-- [ ] AC-27: Jede strukturelle Cluster-Bearbeitung erzeugt ein neues Child-
+- [x] AC-27: Jede strukturelle Cluster-Bearbeitung erzeugt ein neues Child-
   Cluster-Set mit unveränderlichem Parent-Verweis und Quellen-Snapshot; reine
   Metadatenbearbeitungen sind als Historienereignisse nachvollziehbar.
-- [ ] AC-28: Das Löschen eines Parent-Cluster-Sets zerstört die Nachvollziehbarkeit
+- [x] AC-28: Das Löschen eines Parent-Cluster-Sets zerstört die Nachvollziehbarkeit
   vorhandener Child-Sets nicht; die UI zeigt einen gelöschten Historienknoten.
-- [ ] AC-29: Laufende Indizierungs- und Cluster-Set-Jobs zeigen Status-Chip mit
+- [x] AC-29: Laufende Indizierungs- und Cluster-Set-Jobs zeigen Status-Chip mit
   Prozentangabe, Progressbar, Phase und Abbrechen-Aktion; Lade-/Weiterverwendungs-
   Aktionen sind bis zum Status „fertig“ deaktiviert; neue Indizierungsjobs werden
   in der Indizierungsübersicht fokussiert, neue Cluster-Set-Jobs im Analysebaum
   expandiert, fokussiert und angesprungen.
-- [ ] AC-30: Es gibt keinen Projekt-Tab „Export“; der Explorer enthält einen
+- [x] AC-30: Es gibt keinen Projekt-Tab „Export“; der Explorer enthält einen
   eigenen Export-Abschnitt und exportiert den aktuellen Such-/Filterstand als CSV
   oder JSON.
 
@@ -350,5 +350,7 @@ Umsetzungsdetail.
 - Shared understanding confirmed: yes
 - Confirmed by: anfordernder Product Owner
 - Confirmation date: 2026-08-04
-- Ready for implementation: no
-- Remaining blockers: kanonische Spezifikationen und Implementierungstasks finalisieren
+- Ready for implementation: yes
+- Implementation status: verified by CHG-004 T2-T6 focused tests, full gate
+  verification and independent review.
+- Remaining blockers: none.

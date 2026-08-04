@@ -23,6 +23,8 @@ def test_migration_files_are_ordered() -> None:
         "0012_import_snake_case_fields.sql",
         "0013_remove_prompt_identifier_run_mode.sql",
         "0014_indexing_runs_without_profiles.sql",
+        "0015_cluster_sets_llm_summaries.sql",
+        "0016_explorer_exports.sql",
     ]
 
 
@@ -58,3 +60,17 @@ def test_analysis_profiles_have_destructive_forward_migration() -> None:
     assert "ADD COLUMN IF NOT EXISTS error_code text" in sql
     assert "ADD COLUMN IF NOT EXISTS display_name text" in sql
     assert "UPDATE export_logs" in sql
+
+
+def test_explorer_export_migration_replaces_candidate_export_types() -> None:
+    migration = resources.files("backend.db.migrations").joinpath(
+        "0016_explorer_exports.sql"
+    )
+    sql = migration.read_text(encoding="utf-8")
+
+    assert "ADD COLUMN IF NOT EXISTS cluster_set_id uuid" in sql
+    assert "DROP TABLE IF EXISTS candidate_source_assignments" in sql
+    assert "DROP TABLE IF EXISTS candidates" in sql
+    assert "export_type IN ('explorer_csv', 'explorer_json')" in sql
+    assert "candidate_csv" in sql
+    assert "source_assignment_csv" in sql

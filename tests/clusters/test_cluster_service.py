@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import cast
 from uuid import UUID
 
 import numpy as np
@@ -17,6 +18,10 @@ from backend.clusters.service import (
     MAX_CLUSTER_WORKING_SET_BYTES,
     NATIVE_FETCH_BYTES_PER_VALUE,
     NATIVE_VECTOR_FETCH_BATCH_SIZE,
+    ClusterSetInput,
+    _apply_outlier_threshold,
+    _summary_sample_strategy,
+    _validate_summary_call_budget,
     validate_algorithm_settings,
     validate_cluster_input_budget,
 )
@@ -28,6 +33,10 @@ DATASET_ID = UUID("cccccccc-cccc-cccc-cccc-cccccccccccc")
 PAIR_A = UUID("dddddddd-dddd-dddd-dddd-ddddddddddda")
 PAIR_B = UUID("dddddddd-dddd-dddd-dddd-dddddddddddb")
 PAIR_C = UUID("dddddddd-dddd-dddd-dddd-dddddddddddc")
+CLUSTER_A = UUID("eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeea")
+CLUSTER_B = UUID("eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeeb")
+CLUSTER_C = UUID("eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeec")
+PARENT_CLUSTER_SET_ID = UUID("99999999-9999-9999-9999-999999999999")
 NOW = datetime(2026, 7, 22, tzinfo=UTC)
 
 
@@ -93,6 +102,138 @@ class FakeNativeVectorCursor:
         assert size == NATIVE_VECTOR_FETCH_BATCH_SIZE
         assert self._result is not None
         return self._result.fetchmany(size)
+
+
+class FakeClusterSetVectorCursor:
+    def __init__(self, rows: list[dict[str, object]]) -> None:
+        self._rows = rows
+        self._result: FakeResult | None = None
+
+    def __enter__(self) -> FakeClusterSetVectorCursor:
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        return None
+
+    def execute(
+        self, query: str, params: tuple[object, ...] | None = None
+    ) -> FakeClusterSetVectorCursor:
+        normalized = " ".join(query.split())
+        assert normalized.startswith("SELECT mp.id AS message_pair_id")
+        assert "em.text_variant = 'message'" in normalized
+        assert "ea.text_variant = 'answer'" in normalized
+        assert params == (RUN_ID, RUN_ID, PROJECT_ID, DATASET_ID, 11)
+        self._result = FakeResult(self._rows)
+        return self
+
+    def fetchmany(self, size: int) -> list[dict[str, object]]:
+        assert size == NATIVE_VECTOR_FETCH_BATCH_SIZE
+        assert self._result is not None
+        return self._result.fetchmany(size)
+
+
+class ClusterSetVectorConnection:
+    def __init__(self, rows: list[dict[str, object]]) -> None:
+        self._rows = rows
+
+    def cursor(self, *, name: str, binary: bool) -> FakeClusterSetVectorCursor:
+        assert name == f"cluster_set_vectors_{RUN_ID.hex}"
+        assert binary is True
+        return FakeClusterSetVectorCursor(self._rows)
+
+
+class SourcePairResolutionConnection:
+    def __init__(
+        self,
+        parent_pair_ids: set[UUID],
+        *,
+        cluster_pair_ids: dict[UUID, set[UUID]] | None = None,
+    ) -> None:
+        self._parent_pair_ids = parent_pair_ids
+        self._cluster_pair_ids = cluster_pair_ids or {}
+
+    def execute(
+        self, query: str, params: tuple[object, ...] | None = None
+    ) -> FakeResult:
+        assert params is not None
+        normalized = " ".join(query.split())
+        if normalized.startswith(
+            "SELECT DISTINCT c.id AS cluster_id, cm.message_pair_id"
+        ):
+            requested = set(cast(list[UUID], params[3]))
+            return FakeResult(
+                [
+                    {"cluster_id": cluster_id, "message_pair_id": pair_id}
+                    for cluster_id in sorted(
+                        requested & self._cluster_pair_ids.keys(),
+                        key=str,
+                    )
+                    for pair_id in sorted(self._cluster_pair_ids[cluster_id], key=str)
+                ]
+            )
+        if normalized.startswith("SELECT DISTINCT cm.message_pair_id"):
+            requested = set(cast(list[UUID], params[3]))
+            return FakeResult(
+                [
+                    {"message_pair_id": pair_id}
+                    for pair_id in sorted(requested & self._parent_pair_ids, key=str)
+                ]
+            )
+        if normalized.startswith("SELECT id FROM message_pairs"):
+            return FakeResult(
+                [{"id": pair_id} for pair_id in cast(list[UUID], params[2])]
+            )
+        raise AssertionError(f"unexpected query: {normalized}")
+
+
+class ParentStatusConnection:
+    def __init__(
+        self,
+        *,
+        parent_status: str,
+        parent_indexing_run_id: UUID = RUN_ID,
+    ) -> None:
+        self._parent_status = parent_status
+        self._parent_indexing_run_id = parent_indexing_run_id
+
+    def __enter__(self) -> ParentStatusConnection:
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        return None
+
+    def transaction(self) -> FakeTransaction:
+        return FakeTransaction()
+
+    def execute(
+        self, query: str, params: tuple[object, ...] | None = None
+    ) -> FakeResult:
+        normalized = " ".join(query.split())
+        if normalized.startswith("SELECT r.id, r.project_id"):
+            return FakeResult(
+                [
+                    {
+                        "id": RUN_ID,
+                        "project_id": PROJECT_ID,
+                        "dataset_version_id": DATASET_ID,
+                        "status": "completed",
+                        "indexing_deleted_at": None,
+                        "dataset_display_name": "Fixture dataset",
+                        "dataset_deleted_at": None,
+                    }
+                ]
+            )
+        if normalized.startswith("SELECT id, indexing_run_id, status"):
+            return FakeResult(
+                [
+                    {
+                        "id": UUID("99999999-9999-9999-9999-999999999999"),
+                        "indexing_run_id": self._parent_indexing_run_id,
+                        "status": self._parent_status,
+                    }
+                ]
+            )
+        raise AssertionError(f"unexpected query: {normalized}")
 
 
 class ClusterConnection:
@@ -238,6 +379,55 @@ class ClusterConnection:
         raise AssertionError(f"unexpected query: {normalized}")
 
 
+def source_row(pair_id: UUID, *, ordinal: int) -> dict[str, object]:
+    return {
+        "cluster_id": CLUSTER_A,
+        "message_pair_id": pair_id,
+        "ticket_id": f"T-{ordinal}",
+        "message_group_id": f"G-{ordinal}",
+        "message": f"Question {ordinal}",
+        "answer": f"Answer {ordinal}",
+        "membership_score": 0.9 - ordinal / 100,
+        "is_outlier": False,
+        "assignment_type": "automatic",
+    }
+
+
+class SourcePagingConnection:
+    def __enter__(self) -> SourcePagingConnection:
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        return None
+
+    def execute(
+        self, query: str, params: tuple[object, ...] | None = None
+    ) -> FakeResult:
+        normalized = " ".join(query.split())
+        if normalized.startswith("SELECT c.id, c.cluster_set_id"):
+            assert params == (CLUSTER_A, PROJECT_ID)
+            return FakeResult(
+                [
+                    {
+                        "id": CLUSTER_A,
+                        "cluster_set_id": PARENT_CLUSTER_SET_ID,
+                        "cluster_set_status": "completed",
+                    }
+                ]
+            )
+        if normalized.startswith("SELECT cm.cluster_id"):
+            assert "LIMIT %s OFFSET %s" in normalized
+            assert params == (PROJECT_ID, PROJECT_ID, CLUSTER_A, 3, 2)
+            return FakeResult(
+                [
+                    source_row(PAIR_A, ordinal=1),
+                    source_row(PAIR_B, ordinal=2),
+                    source_row(PAIR_C, ordinal=3),
+                ]
+            )
+        raise AssertionError(f"unexpected query: {normalized}")
+
+
 def unwrap_json(value: object) -> object:
     return getattr(value, "obj", value)
 
@@ -297,6 +487,324 @@ def test_missing_embedding_fails_before_cluster_writes(
     assert fake_connection.memberships == []
 
 
+def test_list_sources_returns_bounded_page(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        cluster_service_module,
+        "open_database_connection",
+        lambda _: SourcePagingConnection(),
+    )
+
+    page = ClusterService().list_sources(PROJECT_ID, CLUSTER_A, limit=2, offset=2)
+
+    assert [source.message_pair_id for source in page.sources] == [PAIR_A, PAIR_B]
+    assert page.limit == 2
+    assert page.offset == 2
+    assert page.next_offset == 4
+    assert page.has_more is True
+
+
+def test_list_sources_rejects_unbounded_page_before_database_access() -> None:
+    service = ClusterService()
+
+    with pytest.raises(ClusterError) as error:
+        service.list_sources(PROJECT_ID, CLUSTER_A, limit=51)
+
+    assert error.value.code == "CLUSTER_SOURCE_PAGE_INVALID"
+    assert error.value.status_code == 422
+
+
+def test_cluster_set_combined_basis_uses_weighted_question_answer_vectors() -> None:
+    service = ClusterService()
+    connection = ClusterSetVectorConnection(
+        [
+            {
+                "message_pair_id": PAIR_A,
+                "message_embedding": Vector([1.0, 0.0]),
+                "message_dimensions": 2,
+                "answer_embedding": Vector([0.0, 1.0]),
+                "answer_dimensions": 2,
+            },
+            {
+                "message_pair_id": PAIR_B,
+                "message_embedding": Vector([2.0, 0.0]),
+                "message_dimensions": 2,
+                "answer_embedding": Vector([0.0, 2.0]),
+                "answer_dimensions": 2,
+            },
+        ]
+    )
+
+    pair_ids, vectors, mismatch_scores = service._load_cluster_set_embedding_matrix(
+        connection,
+        project_id=PROJECT_ID,
+        indexing_run_id=RUN_ID,
+        dataset_version_id=DATASET_ID,
+        vector_basis="combined",
+        message_weight=0.25,
+        answer_weight=0.75,
+        source_pair_ids=None,
+        record_limit=10,
+        expected_record_count=2,
+        expected_dimensions=4,
+        message_expected_dimensions=2,
+        answer_expected_dimensions=2,
+    )
+
+    expected = np.array([0.25, 0.0, 0.0, 0.75], dtype=np.float32)
+    assert pair_ids == [PAIR_A, PAIR_B]
+    np.testing.assert_allclose(vectors[0], expected, rtol=1e-6)
+    np.testing.assert_allclose(vectors[1], expected, rtol=1e-6)
+    assert mismatch_scores[PAIR_A] == 1.0
+    assert mismatch_scores[PAIR_B] == 1.0
+
+
+def test_refinement_source_pair_ids_must_belong_to_parent_set() -> None:
+    service = ClusterService()
+
+    with pytest.raises(ClusterError, match="outside the parent Cluster-Set"):
+        service._resolve_source_pair_ids(
+            SourcePairResolutionConnection({PAIR_A}),
+            project_id=PROJECT_ID,
+            dataset_version_id=DATASET_ID,
+            parent_cluster_set_id=UUID("99999999-9999-9999-9999-999999999999"),
+            source_cluster_ids=[],
+            source_pair_ids=[PAIR_A, PAIR_B],
+        )
+
+
+def test_refinement_source_pair_ids_from_parent_are_accepted() -> None:
+    service = ClusterService()
+
+    selected = service._resolve_source_pair_ids(
+        SourcePairResolutionConnection({PAIR_A, PAIR_B}),
+        project_id=PROJECT_ID,
+        dataset_version_id=DATASET_ID,
+        parent_cluster_set_id=PARENT_CLUSTER_SET_ID,
+        source_cluster_ids=[],
+        source_pair_ids=[PAIR_A, PAIR_B],
+    )
+
+    assert selected == sorted([PAIR_A, PAIR_B], key=str)
+
+
+def test_refinement_source_cluster_ids_must_all_belong_to_parent_set() -> None:
+    service = ClusterService()
+
+    with pytest.raises(ClusterError) as error:
+        service._resolve_source_pair_ids(
+            SourcePairResolutionConnection(
+                {PAIR_A},
+                cluster_pair_ids={CLUSTER_A: {PAIR_A}},
+            ),
+            project_id=PROJECT_ID,
+            dataset_version_id=DATASET_ID,
+            parent_cluster_set_id=PARENT_CLUSTER_SET_ID,
+            source_cluster_ids=[CLUSTER_A, CLUSTER_C],
+            source_pair_ids=[],
+        )
+
+    assert error.value.code == "CLUSTER_REFINEMENT_EMPTY_SOURCE"
+    assert error.value.field_errors == {
+        "source_cluster_ids": "source clusters must belong to the parent Cluster-Set"
+    }
+
+
+def test_refinement_source_cluster_ids_from_parent_are_accepted() -> None:
+    service = ClusterService()
+
+    selected = service._resolve_source_pair_ids(
+        SourcePairResolutionConnection(
+            {PAIR_A, PAIR_B},
+            cluster_pair_ids={CLUSTER_A: {PAIR_A}, CLUSTER_B: {PAIR_B}},
+        ),
+        project_id=PROJECT_ID,
+        dataset_version_id=DATASET_ID,
+        parent_cluster_set_id=PARENT_CLUSTER_SET_ID,
+        source_cluster_ids=[CLUSTER_A, CLUSTER_B],
+        source_pair_ids=[],
+    )
+
+    assert selected == sorted([PAIR_A, PAIR_B], key=str)
+
+
+def test_cluster_set_refinement_requires_completed_parent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        cluster_service_module,
+        "open_database_connection",
+        lambda _: ParentStatusConnection(parent_status="running"),
+    )
+    service = ClusterService()
+
+    with pytest.raises(ClusterError) as error:
+        service.start_cluster_set(
+            PROJECT_ID,
+            ClusterSetInput(
+                indexing_run_id=RUN_ID,
+                parent_cluster_set_id=PARENT_CLUSTER_SET_ID,
+                derivation_type="refinement",
+            ),
+            actor_user_id=ACTOR_ID,
+        )
+
+    assert error.value.code == "CLUSTER_SET_NOT_COMPLETE"
+
+
+def test_cluster_set_parent_requires_non_root_derivation_type(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        cluster_service_module,
+        "open_database_connection",
+        lambda _: ParentStatusConnection(parent_status="completed"),
+    )
+    service = ClusterService()
+
+    with pytest.raises(ClusterError) as error:
+        service.start_cluster_set(
+            PROJECT_ID,
+            ClusterSetInput(
+                indexing_run_id=RUN_ID,
+                parent_cluster_set_id=PARENT_CLUSTER_SET_ID,
+            ),
+            actor_user_id=ACTOR_ID,
+        )
+
+    assert error.value.code == "CLUSTER_REFINEMENT_EMPTY_SOURCE"
+    assert error.value.field_errors == {
+        "derivation_type": "parent Cluster-Set requires a refinement derivation type"
+    }
+
+
+def test_cluster_set_refinement_requires_source_selection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        cluster_service_module,
+        "open_database_connection",
+        lambda _: ParentStatusConnection(parent_status="completed"),
+    )
+    service = ClusterService()
+
+    with pytest.raises(ClusterError) as error:
+        service.start_cluster_set(
+            PROJECT_ID,
+            ClusterSetInput(
+                indexing_run_id=RUN_ID,
+                parent_cluster_set_id=PARENT_CLUSTER_SET_ID,
+                derivation_type="refinement",
+            ),
+            actor_user_id=ACTOR_ID,
+        )
+
+    assert error.value.code == "CLUSTER_REFINEMENT_EMPTY_SOURCE"
+    assert error.value.field_errors == {
+        "source_cluster_ids": "refinement requires at least one source selection",
+        "source_pair_ids": "refinement requires at least one source selection",
+    }
+
+
+def test_cluster_set_parent_must_use_selected_indexing_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    other_run_id = UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbc")
+    monkeypatch.setattr(
+        cluster_service_module,
+        "open_database_connection",
+        lambda _: ParentStatusConnection(
+            parent_status="completed",
+            parent_indexing_run_id=other_run_id,
+        ),
+    )
+    service = ClusterService()
+
+    with pytest.raises(ClusterError) as error:
+        service.start_cluster_set(
+            PROJECT_ID,
+            ClusterSetInput(
+                indexing_run_id=RUN_ID,
+                parent_cluster_set_id=PARENT_CLUSTER_SET_ID,
+                derivation_type="refinement",
+                source_pair_ids=[PAIR_A],
+            ),
+            actor_user_id=ACTOR_ID,
+        )
+
+    assert error.value.code == "CLUSTER_REFINEMENT_EMPTY_SOURCE"
+    assert error.value.field_errors == {
+        "parent_cluster_set_id": "parent Cluster-Set must use the selected indexing run"
+    }
+
+
+def test_cluster_set_summary_sample_count_is_bounded() -> None:
+    with pytest.raises(ClusterError, match="summary sample count is invalid"):
+        _summary_sample_strategy(
+            ClusterSetInput(
+                indexing_run_id=RUN_ID,
+                llm_provider="ollama",
+                llm_model="llama3.1",
+                llm_sample_count=0,
+            )
+        )
+
+
+def test_cluster_set_summary_sample_count_defaults_to_ten() -> None:
+    strategy = _summary_sample_strategy(
+        ClusterSetInput(
+            indexing_run_id=RUN_ID,
+            llm_provider="ollama",
+            llm_model="llama3.1",
+            llm_sample_count=None,
+        )
+    )
+
+    assert strategy["requested"] == 10
+
+
+def test_summary_call_budget_rejects_too_many_llm_calls() -> None:
+    with pytest.raises(ClusterError, match="Cluster summary call budget exceeded"):
+        _validate_summary_call_budget(501)
+
+
+def test_algorithm_settings_preserve_outlier_threshold() -> None:
+    config = validate_algorithm_settings(
+        {
+            "algorithm": "hdbscan",
+            "min_cluster_size": 2,
+            "outlier_threshold": 0.42,
+        }
+    )
+
+    assert config.parameters["outlier_threshold"] == 0.42
+
+
+def test_outlier_threshold_reclassifies_low_confidence_members() -> None:
+    labels = _apply_outlier_threshold([0, 0, 1], [0.9, 0.2, 0.7], 0.5)
+
+    assert labels == [0, -1, 1]
+
+
+def test_outlier_threshold_rejects_empty_result() -> None:
+    with pytest.raises(ClusterError, match="outlier threshold removes all records"):
+        _apply_outlier_threshold([0, 1], [0.2, 0.3], 0.5)
+
+
+def test_cluster_summary_response_requires_schema_json() -> None:
+    service = ClusterService()
+
+    parsed = service._parse_cluster_summary_response(
+        '{"title":"Reset","category":"Account","question":"How?","answer":"Use link","rationale":null}'
+    )
+    assert parsed["title"] == "Reset"
+    assert parsed["question"] == "How?"
+
+    with pytest.raises(ClusterError, match="Cluster summary response is invalid"):
+        service._parse_cluster_summary_response("not json")
+
+
 @pytest.mark.parametrize(
     "settings",
     [
@@ -304,6 +812,7 @@ def test_missing_embedding_fails_before_cluster_writes(
         {"algorithm": "hdbscan", "min_cluster_size": 1},
         {"algorithm": "hdbscan", "min_cluster_size": 100_001},
         {"algorithm": "hdbscan", "min_samples": 100_001},
+        {"algorithm": "hdbscan", "outlier_threshold": 1.1},
         {"algorithm": "hdbscan", "n_clusters": 2},
         {
             "algorithm": "agglomerative",

@@ -51,6 +51,8 @@ class ProviderConfigurationConnection:
         self, query: str, params: tuple[object, ...] | None = None
     ) -> FakeResult:
         normalized = " ".join(query.split())
+        if normalized.startswith("SELECT provider, endpoint_url"):
+            return FakeResult()
         if normalized.startswith("INSERT INTO provider_configurations"):
             assert params is not None
             assert isinstance(params[2], str)
@@ -60,6 +62,7 @@ class ProviderConfigurationConnection:
                     "provider": params[0],
                     "endpoint_url": params[1],
                     "manual_models": ["gpt-4.1-mini"],
+                    "llm_models": ["gpt-4.1-mini"],
                     "api_key_secret": self.stored_secret,
                     "updated_at": NOW,
                 }

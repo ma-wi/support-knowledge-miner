@@ -140,21 +140,21 @@ display success.
 
 ## Acceptance criteria
 
-- [ ] AC-1: Fresh and migrated databases represent provider purpose separately for
+- [x] AC-1: Fresh and migrated databases represent provider purpose separately for
   embedding and LLM use.
-- [ ] AC-2: The provider API accepts, lists, checks and updates Embedding-Provider
+- [x] AC-2: The provider API accepts, lists, checks and updates Embedding-Provider
   and LLM-Provider configurations separately.
-- [ ] AC-3: OpenAI secrets are stored/replaced/removed without plaintext exposure in
+- [x] AC-3: OpenAI secrets are stored/replaced/removed without plaintext exposure in
   read APIs or UI.
-- [ ] AC-4: Ollama/vLLM endpoints reject non-local hosts, URL credentials and
+- [x] AC-4: Ollama/vLLM endpoints reject non-local hosts, URL credentials and
   redirects before use.
-- [ ] AC-5: The frontend can configure and check embedding providers separately
+- [x] AC-5: The frontend can configure and check embedding providers separately
   from LLM providers.
-- [ ] AC-6: The frontend can request a named Ollama model download and add it to the
+- [x] AC-6: The frontend can request a named Ollama model download and add it to the
   selected purpose allow-list after success.
-- [ ] AC-7: Indizierungen can select only configured embedding models.
-- [ ] AC-8: Cluster-Sets can select only configured LLM models for summaries.
-- [ ] AC-9: Every Ollama embedding request uses `keep_alive: "5m"` without changing
+- [x] AC-7: Indizierungen can select only configured embedding models.
+- [x] AC-8: Cluster-Sets can select only configured LLM models for summaries.
+- [x] AC-9: Every Ollama embedding request uses `keep_alive: "5m"` without changing
   OpenAI/vLLM payloads.
-- [ ] AC-10: Provider tests cover discovery, rejected endpoints, pull behavior, env
+- [x] AC-10: Provider tests cover discovery, rejected endpoints, pull behavior, env
   seeding, API contract and frontend behavior for both provider purposes.

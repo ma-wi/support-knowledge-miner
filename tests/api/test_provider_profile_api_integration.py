@@ -48,6 +48,13 @@ class FakeProviderService:
     def list_configurations(self) -> list[ProviderConfiguration]:
         return list(self.configurations.values())
 
+    def list_llm_configurations(self) -> list[ProviderConfiguration]:
+        return [
+            configuration
+            for configuration in self.configurations.values()
+            if configuration.provider in {"openai", "ollama"}
+        ]
+
     def seed_ollama_provider_from_env(self) -> None:
         return None
 
@@ -60,10 +67,24 @@ class FakeProviderService:
         assert actor_user_id == OWNER_ID
         self.received_api_key = payload.api_key
         api_key_set = payload.provider == "openai" and not payload.remove_api_key
+        existing = self.configurations.get(payload.provider)
         configuration = ProviderConfiguration(
             provider=payload.provider,
             endpoint_url=payload.endpoint_url,
-            manual_models=payload.manual_models or [],
+            manual_models=(
+                payload.manual_models
+                if payload.manual_models is not None
+                else existing.manual_models
+                if existing is not None
+                else []
+            ),
+            llm_models=(
+                payload.llm_models
+                if payload.llm_models is not None
+                else existing.llm_models
+                if existing is not None
+                else []
+            ),
             api_key_set=api_key_set,
             updated_at=NOW,
         )
@@ -94,6 +115,7 @@ class FakeProviderService:
             provider="ollama",
             endpoint_url=existing.endpoint_url,
             manual_models=models,
+            llm_models=existing.llm_models,
             api_key_set=False,
             updated_at=NOW,
         )
@@ -122,7 +144,9 @@ def auth_headers(token: str = "valid-token") -> dict[str, str]:
 
 def test_provider_routes_require_authentication(client: TestClient) -> None:
     assert client.get("/api/providers").status_code == 401
+    assert client.get("/api/llm-providers").status_code == 401
     assert client.put("/api/providers/openai", json={}).status_code == 401
+    assert client.put("/api/llm-providers/openai", json={}).status_code == 401
 
 
 def test_openai_provider_key_is_write_only_in_api_responses(
@@ -134,6 +158,7 @@ def test_openai_provider_key_is_write_only_in_api_responses(
         json={
             "api_key": "sk-test-secret",
             "manual_models": ["text-embedding-3-small", "gpt-4.1-mini"],
+            "llm_models": ["gpt-4.1-mini"],
         },
     )
 
@@ -141,6 +166,7 @@ def test_openai_provider_key_is_write_only_in_api_responses(
     payload = response.json()
     assert payload["api_key_set"] is True
     assert payload["manual_models"] == ["text-embedding-3-small", "gpt-4.1-mini"]
+    assert payload["llm_models"] == ["gpt-4.1-mini"]
     assert "sk-test-secret" not in str(payload)
     assert fake_provider_service.received_api_key == "sk-test-secret"
 
@@ -149,13 +175,49 @@ def test_openai_provider_key_is_write_only_in_api_responses(
     assert listed.json()[0]["api_key_set"] is True
     assert "sk-test-secret" not in str(listed.json())
 
+    llm_listed = client.get("/api/llm-providers", headers=auth_headers())
+    assert llm_listed.status_code == 200
+    assert llm_listed.json()[0]["llm_models"] == ["gpt-4.1-mini"]
+
     removed = client.put(
         "/api/providers/openai",
         headers=auth_headers(),
-        json={"remove_api_key": True, "manual_models": ["gpt-4.1-mini"]},
+        json={
+            "remove_api_key": True,
+            "manual_models": ["text-embedding-3-small"],
+            "llm_models": ["gpt-4.1-mini"],
+        },
     )
     assert removed.status_code == 200
     assert removed.json()["api_key_set"] is False
+
+
+def test_llm_provider_route_preserves_embedding_models(
+    client: TestClient,
+) -> None:
+    configured = client.put(
+        "/api/providers/ollama",
+        headers=auth_headers(),
+        json={
+            "endpoint_url": "http://localhost:11434",
+            "manual_models": ["nomic-embed-text"],
+        },
+    )
+    assert configured.status_code == 200
+
+    llm_configured = client.put(
+        "/api/llm-providers/ollama",
+        headers=auth_headers(),
+        json={
+            "endpoint_url": "http://localhost:11434",
+            "llm_models": ["llama3.1"],
+        },
+    )
+
+    assert llm_configured.status_code == 200
+    payload = llm_configured.json()
+    assert payload["manual_models"] == ["nomic-embed-text"]
+    assert payload["llm_models"] == ["llama3.1"]
 
 
 def test_vllm_provider_check_and_removed_project_profile_contract(

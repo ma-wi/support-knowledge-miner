@@ -1,6 +1,6 @@
 # Support Knowledge Miner
 
-Support Knowledge Miner is a local-first MVP for extracting, curating, and exporting reusable support knowledge from historical paired support records. It is intended for an analyst/curator who imports CSV or JSON message-answer pairs, configures local or cloud model profiles, reviews clusters and candidates, and exports traceable CSV outputs.
+Support Knowledge Miner is a local-first MVP for extracting, curating, and exporting reusable support knowledge from historical paired support records. It is intended for an analyst/curator who imports CSV or JSON message-answer pairs, configures local or cloud model providers, creates indexing runs and Cluster-Sets, reviews themes in the Explorer, and exports the filtered Explorer view.
 
 The MVP is explicitly local-only. Do not connect it to production systems, production data, production credentials, or production networks.
 
@@ -12,20 +12,21 @@ The MVP is explicitly local-only. Do not connect it to production systems, produ
 - Create, open, rename, and delete independent projects.
 - Import CSV or JSON records with `ticket_id`, `message_group_id`, `message`, and `answer` fields.
 - Persist dataset versions, import logs, skipped-record reasons, and audit actor identity.
-- Configure global OpenAI, Ollama, and vLLM providers; OpenAI API keys are write-only after save.
-- Create project analysis profiles with editable project-local `analysis-N`
-  suggestions, provider-filtered configured models, and typed
-  HDBSCAN/Agglomerative parameters.
-- Start bounded analysis runs that split long `message` texts into provider-safe
-  chunks, persist one pooled selected-provider embedding per message, and expose
-  observable status, confirmed-batch progress, metadata, and safe diagnostics. The
-  visible Runs view refreshes immediately and then every two seconds without
-  overlapping requests.
-- Generate HDBSCAN or bounded Agglomerative clusters from persisted vectors with
-  outlier, membership, parameter, model, and source traceability.
-- Curate clusters and candidates while preserving automatic, manual, and effective values separately.
-- Export candidate CSV and source-assignment CSV files with persisted export metadata and original-text warnings.
-- Use the React sidebar shell to reach sign-in, settings, project, import, profile, run, cluster, candidate, and export workflows.
+- Configure global OpenAI, Ollama, and vLLM embedding providers plus OpenAI or
+  Ollama LLM providers; OpenAI API keys are write-only after save.
+- Start bounded indexing runs that split long `message` and `answer` texts into
+  provider-safe chunks, persist selected-provider embeddings per text variant, and
+  expose observable status, progress, metadata, cancellation and safe diagnostics.
+- Generate saved Cluster-Sets with HDBSCAN or bounded Agglomerative clustering
+  from persisted vectors, including vector basis, lineage, outlier, membership,
+  parameter, model, optional LLM summary and source traceability.
+- Review Cluster-Sets in a table-first Explorer with search/filter, category
+  grouping, source dialog, exclude/include controls, mismatch hints and refinement
+  from included rows.
+- Export the current filtered Explorer table state as CSV or JSON with persisted
+  export metadata; raw source-dialog texts are not implicitly exported.
+- Use the React sidebar shell to reach sign-in, settings, project, import,
+  indexing, Cluster-Set, Explorer and project-delete workflows.
 
 The durable product behavior is specified in `docs/specifications/support-knowledge-miner-mvp1.md`.
 
@@ -189,7 +190,8 @@ For local model serving, use the optional Ollama or vLLM Compose profiles docume
 Ollama and vLLM configuration is restricted to reviewed local hosts:
 `localhost`, `127.0.0.1`, `::1`, `ollama`, `vllm-gpu`, and `vllm-cpu`.
 Provider calls use bounded batches and responses without redirects or fallback.
-OpenAI analysis runs additionally require `cloud_use_confirmed: true`.
+OpenAI indexing and LLM-backed Cluster-Set actions additionally require
+`cloud_use_confirmed: true`.
 Ollama embedding calls keep the selected model warm for five minutes between
 normal analysis batches; OpenAI and vLLM payloads are unchanged.
 Long messages are split at Unicode-safe boundaries into chunks of at most
@@ -200,8 +202,9 @@ into one chunk retain the provider vector unchanged. Run metadata records the so
 counts without storing source text in diagnostics. Provider failures expose a safe,
 actionable reason such as a context-window violation without copying provider
 response bodies or message text.
-The local backend runs at most two analysis jobs concurrently, queues up to eight
-more, and rejects overload safely. Clustering rejects an estimated working set over
+The local backend runs at most two background indexing or Cluster-Set jobs
+concurrently, queues up to eight more, and rejects overload safely. Clustering
+rejects an estimated working set over
 512 MiB before loading vectors or writing clusters. Pgvector values are decoded
 natively in bounded server-cursor batches into one preallocated contiguous matrix;
 the estimate includes the native matrix, estimator matrices, bounded fetch batch,
@@ -212,8 +215,8 @@ cross-component distances.
 Frontend actions preserve server-sanitized API details and otherwise show
 action-specific safe fallbacks. Errors are explicitly labeled and announced as
 alerts; success, informational, and warning feedback remain distinct. Cluster
-loading is available only for completed runs, and an empty result explains that
-clustering must be generated first.
+Explorer loading is available only for completed Cluster-Sets, and an empty result
+explains that clustering must be generated first.
 
 ## Verification
 
@@ -226,12 +229,8 @@ Run the full required gate:
 Focused gates are also available:
 
 ```bash
-./.ai/tools/format.sh --check
-./.ai/tools/lint.sh
-./.ai/tools/test.sh
-./.ai/tools/check-dependencies.sh
-./.ai/tools/security.sh
-./.ai/tools/build.sh
+./.ai/tools/format.sh --check && ./.ai/tools/lint.sh && ./.ai/tools/test.sh
+./.ai/tools/check-dependencies.sh && ./.ai/tools/security.sh && ./.ai/tools/build.sh
 python .ai/tools/check-docs.py
 ```
 

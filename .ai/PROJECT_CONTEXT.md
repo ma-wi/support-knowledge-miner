@@ -5,8 +5,8 @@ Keep this document compact. It is a map for agents, not a duplicate of the sourc
 ## Purpose
 
 - Product or service: Local-first Support Knowledge Miner for extracting and curating FAQ/support knowledge from historical paired support messages.
-- Primary users: Analyst/Kurator, a fachlich-technischer user who imports data, configures embedding providers, starts dataset indexing, reviews clusters, curates candidates, and exports results.
-- Main outcome: Independent projects persist imported CSV/JSON support pairs, indexing runs, embeddings, clusters, curation state, candidates, exports, and source traceability.
+- Primary users: Analyst/Kurator, a fachlich-technischer user who imports data, configures embedding providers, starts dataset indexing, reviews/refines Cluster-Sets, inspects sources, and exports Explorer results.
+- Main outcome: Independent projects persist imported CSV/JSON support pairs, indexing runs, embeddings, saved Cluster-Sets, cluster summaries, curation state, Explorer exports, and source traceability.
 - Explicit non-goals: No production access, no operational FAQ agent, no customer communication, no live ticket/shop/ERP integrations, and no server deployment in MVP 1.
 
 ## Technology stack
@@ -18,20 +18,23 @@ Keep this document compact. It is a map for agents, not a duplicate of the sourc
 - Runtime and supported versions: CI-defined Ubuntu environment using `.python-version` and `.node-version`.
 - Deployment environment: local Docker Compose only.
 - Data stores: PostgreSQL with pgvector; local Docker volumes for database and local model caches.
-- External services: Optional OpenAI provider by explicit profile selection; optional local Ollama and vLLM-compatible endpoints.
+- External services: Optional OpenAI by explicit per-action confirmation; optional local Ollama and vLLM-compatible endpoints. Embedding and LLM model allow-lists are configured separately; OpenAI/Ollama can be used for bounded Cluster-Set summaries when configured.
 
 ## Architecture map
 
 - Entry points: `backend/main.py`, `backend/api/app.py`, `frontend/src/App.tsx`, `deployment/docker/compose.yml`.
-- Core modules: `auth`, `users`, `audit`, `projects`, `imports`, `providers`, `analysis`, `clusters`, `candidates`, `exports`, `db`.
+- Core modules: `auth`, `users`, `audit`, `projects`, `imports`, `providers`, `analysis`, `clusters`, `exports`, `db`.
 - Data flow: authenticated user opens a project, imports paired records, chooses
   a configured embedding provider/model for dataset indexing, persists bounded
-  provider embeddings for `message` and `answer` text, runs HDBSCAN or bounded
-  Agglomerative clustering in the clustering step, curates results, and exports CSV.
-- Trust boundaries: browser to authenticated API, local backend to local PostgreSQL, optional explicit per-indexing OpenAI/Ollama/vLLM provider calls, local filesystem/Compose volumes.
+  provider embeddings for `message` and `answer` text, creates saved Cluster-Sets
+  from completed Indizierungen with selectable vector basis and parameters, can
+  optionally generate bounded LLM summaries, curates Cluster-Set rows in the
+  Explorer, inspects source dialogs, refines child Cluster-Sets, and exports the
+  current Explorer table state as CSV/JSON.
+- Trust boundaries: browser to authenticated API, local backend to local PostgreSQL, optional explicit per-indexing OpenAI/Ollama/vLLM embedding provider calls, optional per-Cluster-Set OpenAI/Ollama LLM calls, local filesystem/Compose volumes.
 - Control plane: `.ai/tools/orchestrate.py`; policy:
   `.ai/policies/ORCHESTRATION.md`
-- Public interfaces: FastAPI `/api/*` routes, React MVP shell, Docker Compose local runtime, `.ai/tools/*` quality gates.
+- Public interfaces: FastAPI `/api/*` routes, React MVP shell, Docker Compose local runtime, `.ai/tools/*` quality gates. Persisted Cluster-Set routes own clustering; obsolete run-bound cluster routes return 410 replacement Problem Details.
 - Generated-code locations: Python build output in `dist/` and `build/`, frontend production output in `frontend/dist/`; these are ignored by agents.
 - Critical paths: email-only authentication with server-validated tab-scoped
   session restoration and explicit revocation, project-scoped queries,
@@ -42,7 +45,10 @@ Keep this document compact. It is a map for agents, not a duplicate of the sourc
   chunks with byte-weighted normalized pooling, embedding validation,
   confirmed-batch run progress, five-minute Ollama batch keep-alive, visible-view
   non-overlapping two-second run polling, bounded clustering, curation preservation,
-  and export text warnings.
+  cluster-set job progress/cancellation, OpenAI confirmation for LLM summaries,
+  LLM prompt/response bounds, redacted provider diagnostics, project-scoped
+  source dialogs and Explorer exports that do not implicitly include raw source
+  dialog text.
 
 See `docs/architecture/overview.md` for the durable architecture description.
 
@@ -51,9 +57,11 @@ See `docs/architecture/overview.md` for the durable architecture description.
 - Source directories: `backend/`, `frontend/src/`, `deployment/docker/`.
 - Test directories: `tests/` for backend/service/API/migration tests; `frontend/src/*.test.tsx` for frontend smoke/component tests.
 - Naming conventions: backend domain packages mirror product capabilities; SQL migrations use zero-padded numeric prefixes.
-- Error-handling conventions: API routes return clear failure messages without
-  exposing secrets; frontend action errors preserve only sanitized
-  `ApiRequestError` details or use action-specific safe fallbacks. Typed feedback
+- Error-handling conventions: new indexing and cluster-set actions use stable
+  Problem Details codes without exposing secrets, raw support text, provider
+  bodies or stack traces; frontend action errors preserve only sanitized
+  `ApiRequestError` details or use action-specific safe fallbacks. Cluster
+  `suggestedAction` fields use stable catalogued recovery codes. Typed feedback
   distinguishes error, warning, information, and success with matching live-region
   semantics.
 - User-facing error policy: `.ai/policies/USER_FACING_ERROR_HANDLING.md`
@@ -95,9 +103,9 @@ See `docs/architecture/overview.md` for the durable architecture description.
   graph/intermediate structures, results/mappings, and per-record overhead;
   Agglomerative rejects disconnected neighbor graphs before estimator execution.
 - Operational constraints: No production deployment; local volumes own persistence.
-- Known technical debt relevant to current work: Candidate generation and export-adjacent analysis remain
-  MVP-quality workflows; clustering quality still depends on the configured
-  embedding model and clustering parameters.
+- Known technical debt relevant to current work: Clustering quality still depends
+  on the configured embedding model and clustering parameters; semantic Explorer
+  search remains future scope.
 
 ## High-value references
 

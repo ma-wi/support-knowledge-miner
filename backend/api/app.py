@@ -14,9 +14,13 @@ from pathlib import Path
 from uuid import UUID
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
+from fastapi.exception_handlers import (
+    request_validation_exception_handler as default_request_validation_exception_handler,
+)
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictInt
 from starlette.concurrency import run_in_threadpool
 from starlette.requests import ClientDisconnect
 
@@ -30,22 +34,27 @@ from backend.analysis import (
 )
 from backend.auth import AuthService, CurrentUser
 from backend.auth.service import AuthenticationError
-from backend.candidates import (
-    Candidate,
-    CandidateError,
-    CandidateManualUpdate,
-    CandidateService,
-    CandidateSource,
-)
 from backend.clusters import (
     Cluster,
     ClusterError,
     ClusterManualUpdate,
+    ClusterSet,
+    ClusterSetEvent,
+    ClusterSetInput,
+    ClusterSetQueueFull,
     ClusterService,
     ClusterSource,
+    ClusterSourcePage,
 )
+from backend.clusters.service import DEFAULT_CLUSTER_SOURCE_PAGE_SIZE
 from backend.config import DatabaseSettings
-from backend.exports import ExportError, ExportLog, ExportResult, ExportService
+from backend.exports import (
+    ExplorerExportInput,
+    ExportError,
+    ExportLog,
+    ExportResult,
+    ExportService,
+)
 from backend.imports import (
     ImportError,
     ImportLog,
@@ -217,6 +226,14 @@ class ImportResultResponse(BaseModel):
 class ProviderSettingsRequest(BaseModel):
     endpoint_url: str | None = None
     manual_models: list[str] = Field(default_factory=list)
+    llm_models: list[str] | None = None
+    api_key: str | None = None
+    remove_api_key: bool = False
+
+
+class LlmProviderSettingsRequest(BaseModel):
+    endpoint_url: str | None = None
+    llm_models: list[str] = Field(default_factory=list)
     api_key: str | None = None
     remove_api_key: bool = False
 
@@ -225,6 +242,7 @@ class ProviderConfigurationResponse(BaseModel):
     provider: str
     endpoint_url: str | None
     manual_models: list[str]
+    llm_models: list[str]
     api_key_set: bool
     updated_at: datetime
 
@@ -291,6 +309,83 @@ class EmbeddingRecordResponse(BaseModel):
     created_at: datetime
 
 
+class ClusterSetRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    indexing_run_id: UUID
+    display_name: str | None = Field(default=None, min_length=1)
+    parent_cluster_set_id: UUID | None = None
+    derivation_type: str = "root"
+    vector_basis: str = "message"
+    message_weight: float = 0.5
+    answer_weight: float = 0.5
+    algorithm_settings: dict[str, object] = Field(
+        default_factory=lambda: {"algorithm": "hdbscan", "min_cluster_size": 2}
+    )
+    source_cluster_ids: list[UUID] = Field(default_factory=list)
+    source_pair_ids: list[UUID] = Field(default_factory=list)
+    outlier_threshold: float | None = None
+    llm_provider: str | None = None
+    llm_model: str | None = None
+    llm_sample_count: StrictInt | None = 10
+    llm_sample_all: bool = False
+    llm_cloud_use_confirmed: bool = False
+
+
+class ClusterSetRenameRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    display_name: str = Field(min_length=1)
+
+
+class ClusterSetResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    project_id: UUID
+    indexing_run_id: UUID
+    dataset_version_id: UUID
+    dataset_display_name: str | None
+    indexing_deleted_at: datetime | None
+    parent_cluster_set_id: UUID | None
+    display_name: str
+    status: str
+    progress: int
+    phase: str
+    derivation_type: str
+    vector_basis: str
+    message_weight: float
+    answer_weight: float
+    algorithm: str
+    parameters: dict[str, object]
+    source_snapshot: dict[str, object]
+    llm_provider: str | None
+    llm_model: str | None
+    llm_parameters: dict[str, object]
+    llm_sample_strategy: dict[str, object]
+    error_code: str | None
+    error_message: str | None
+    diagnostics: dict[str, object]
+    started_at: datetime | None
+    completed_at: datetime | None
+    cancel_requested_at: datetime | None
+    deleted_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+    cluster_count: int
+
+
+class ClusterSetEventResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    project_id: UUID
+    cluster_set_id: UUID
+    event_type: str
+    metadata: dict[str, object]
+    created_at: datetime
+
+
 class ClusterResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -298,6 +393,7 @@ class ClusterResponse(BaseModel):
     project_id: UUID
     analysis_run_id: UUID
     dataset_version_id: UUID
+    cluster_set_id: UUID | None = None
     auto_title: str
     manual_title: str | None
     effective_title: str
@@ -314,6 +410,8 @@ class ClusterResponse(BaseModel):
     metadata: dict[str, object]
     created_at: datetime
     updated_at: datetime
+    auto_summary_question: str | None = None
+    auto_summary_answer: str | None = None
 
 
 class ClusterUpdateRequest(BaseModel):
@@ -336,89 +434,24 @@ class ClusterSourceResponse(BaseModel):
     assignment_type: str
 
 
-class CandidateResponse(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: UUID
-    project_id: UUID
-    dataset_version_id: UUID
-    analysis_run_id: UUID | None
-    source_cluster_id: UUID | None
-    candidate_type: str
-    auto_status: str
-    manual_status: str | None
-    effective_status: str
-    language: str
-    auto_category_path: str | None
-    manual_category_path: str | None
-    effective_category_path: str | None
-    auto_title: str
-    manual_title: str | None
-    effective_title: str
-    auto_canonical_question: str
-    manual_canonical_question: str | None
-    effective_canonical_question: str
-    auto_canonical_answer: str
-    manual_canonical_answer: str | None
-    effective_canonical_answer: str
-    auto_alternative_questions: list[str]
-    manual_alternative_questions: list[str] | None
-    effective_alternative_questions: list[str]
-    auto_parameters: dict[str, object]
-    manual_parameters: dict[str, object] | None
-    effective_parameters: dict[str, object]
-    auto_external_data_dependencies: list[str]
-    manual_external_data_dependencies: list[str] | None
-    effective_external_data_dependencies: list[str]
-    quality_score: float
-    faq_suitability_score: float
-    dynamicity_score: float
-    contradiction_score: float
-    source_pair_count: int
-    source_cluster_ids: list[UUID]
-    notes: str | None
-    metadata: dict[str, object]
-    created_at: datetime
-    updated_at: datetime
+class ClusterSourcePageResponse(BaseModel):
+    sources: list[ClusterSourceResponse]
+    limit: int
+    offset: int
+    next_offset: int | None
+    has_more: bool
 
 
-class CandidateUpdateRequest(BaseModel):
-    candidate_type: str | None = None
-    manual_status: str | None = None
-    manual_category_path: str | None = None
-    manual_title: str | None = None
-    manual_canonical_question: str | None = None
-    manual_canonical_answer: str | None = None
-    manual_alternative_questions: list[str] | None = None
-    manual_parameters: dict[str, object] | None = None
-    manual_external_data_dependencies: list[str] | None = None
-    notes: str | None = None
+class ExplorerExportRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
 
-
-class CandidateSourceResponse(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    candidate_id: UUID
-    cluster_id: UUID | None
-    message_pair_id: UUID
-    ticket_id: str
-    message_group_id: str
-    message: str
-    answer: str
-    message_segment_id: str | None
-    source_language: str
-    normalized_customer_message: str | None
-    normalized_support_answer: str | None
-    assignment_type: str
-    membership_score: float
-    is_multi_intent: bool
-    intent_label: str | None
-    dataset_version_id: UUID
-    analysis_run_id: UUID | None
-
-
-class ExportRequest(BaseModel):
-    include_original_text: bool = False
+    cluster_set_id: UUID
+    export_format: str = "csv"
+    search_query: str | None = None
+    category: str | None = None
+    include_excluded: bool = False
+    include_outliers: bool = True
+    cluster_ids: list[UUID] = Field(default_factory=list)
 
 
 class ExportLogResponse(BaseModel):
@@ -432,6 +465,7 @@ class ExportLogResponse(BaseModel):
     selection: dict[str, object]
     dataset_version_id: UUID | None
     analysis_run_id: UUID | None
+    cluster_set_id: UUID | None
     output_filename: str
     output_path: str | None
     row_count: int
@@ -440,7 +474,8 @@ class ExportLogResponse(BaseModel):
 
 class ExportResultResponse(BaseModel):
     export: ExportLogResponse
-    csv_content: str
+    content: str
+    content_type: str
     warning: str | None
 
 
@@ -613,6 +648,7 @@ def _provider_response(
         provider=configuration.provider,
         endpoint_url=configuration.endpoint_url,
         manual_models=configuration.manual_models,
+        llm_models=configuration.llm_models,
         api_key_set=configuration.api_key_set,
         updated_at=configuration.updated_at,
     )
@@ -639,16 +675,26 @@ def _cluster_response(cluster: Cluster) -> ClusterResponse:
     return ClusterResponse.model_validate(cluster)
 
 
+def _cluster_set_response(cluster_set: ClusterSet) -> ClusterSetResponse:
+    return ClusterSetResponse.model_validate(cluster_set)
+
+
+def _cluster_set_event_response(event: ClusterSetEvent) -> ClusterSetEventResponse:
+    return ClusterSetEventResponse.model_validate(event)
+
+
 def _cluster_source_response(source: ClusterSource) -> ClusterSourceResponse:
     return ClusterSourceResponse.model_validate(source)
 
 
-def _candidate_response(candidate: Candidate) -> CandidateResponse:
-    return CandidateResponse.model_validate(candidate)
-
-
-def _candidate_source_response(source: CandidateSource) -> CandidateSourceResponse:
-    return CandidateSourceResponse.model_validate(source)
+def _cluster_source_page_response(page: ClusterSourcePage) -> ClusterSourcePageResponse:
+    return ClusterSourcePageResponse(
+        sources=[_cluster_source_response(source) for source in page.sources],
+        limit=page.limit,
+        offset=page.offset,
+        next_offset=page.next_offset,
+        has_more=page.has_more,
+    )
 
 
 def _export_log_response(log: ExportLog) -> ExportLogResponse:
@@ -658,7 +704,8 @@ def _export_log_response(log: ExportLog) -> ExportLogResponse:
 def _export_result_response(result: ExportResult) -> ExportResultResponse:
     return ExportResultResponse(
         export=_export_log_response(result.log),
-        csv_content=result.csv_content,
+        content=result.content,
+        content_type=result.content_type,
         warning=result.warning,
     )
 
@@ -671,9 +718,7 @@ def _analysis_problem_contract(code: str) -> dict[str, str]:
                 "Ein unerwarteter Fehler ist aufgetreten; die Eingaben bleiben "
                 "soweit sicher erhalten."
             ),
-            "suggested_action": (
-                "Bitte erneut versuchen oder den aktuellen Stand neu laden."
-            ),
+            "suggested_action": "retry",
         },
         "INDEXING_MODEL_UNAVAILABLE": {
             "title": "Die Indizierung wurde nicht gestartet.",
@@ -733,6 +778,270 @@ def _analysis_problem_response(error: AnalysisError) -> JSONResponse:
     )
 
 
+def _cluster_problem_contract(code: str) -> dict[str, str]:
+    return {
+        "UNEXPECTED_ERROR": {
+            "title": "Die Aktion konnte nicht abgeschlossen werden.",
+            "detail": (
+                "Ein unerwarteter Fehler ist aufgetreten; die Eingaben bleiben "
+                "soweit sicher erhalten."
+            ),
+            "suggested_action": "retry",
+        },
+        "INDEXING_NOT_COMPLETE": {
+            "title": "Das Cluster-Set wurde nicht gestartet.",
+            "detail": "Diese Indizierung ist noch nicht abgeschlossen.",
+            "suggested_action": "choose-completed-indexing",
+        },
+        "CLUSTER_VECTOR_BASIS_UNAVAILABLE": {
+            "title": "Die Vektor-Basis ist nicht verfügbar.",
+            "detail": (
+                "Für diese Vektor-Basis fehlen Embeddings oder die Gewichtung ist ungültig."
+            ),
+            "suggested_action": "choose-vector-basis",
+        },
+        "CLUSTER_SUMMARY_SAMPLE_COUNT_INVALID": {
+            "title": "Die Beispielanzahl ist ungültig.",
+            "detail": (
+                "Die Beispielanzahl für Zusammenfassungen muss mindestens 1 sein."
+            ),
+            "suggested_action": "correct-input",
+        },
+        "CLUSTER_BUDGET_EXCEEDED": {
+            "title": "Das Summary-Budget ist überschritten.",
+            "detail": (
+                "Die Zusammenfassung überschreitet das erlaubte Text- oder Aufruflimit."
+            ),
+            "suggested_action": "reduce-scope",
+        },
+        "LLM_CLOUD_CONFIRMATION_REQUIRED": {
+            "title": "Cloud-Nutzung muss bestätigt werden.",
+            "detail": "Diese Zusammenfassung würde Originaltexte an OpenAI senden.",
+            "suggested_action": "confirm-cloud-use",
+        },
+        "LLM_PROVIDER_UNAVAILABLE": {
+            "title": "Der LLM-Provider ist nicht verfügbar.",
+            "detail": "Der konfigurierte LLM-Provider oder das Modell ist nicht verfügbar.",
+            "suggested_action": "check-provider",
+        },
+        "CLUSTER_SUMMARY_FAILED": {
+            "title": "Die Zusammenfassung konnte nicht erstellt werden.",
+            "detail": (
+                "Die Clusterbildung ist abgeschlossen, aber die Zusammenfassung ist fehlgeschlagen."
+            ),
+            "suggested_action": "retry-summary",
+        },
+        "CLUSTER_SET_CANCEL_NOT_AVAILABLE": {
+            "title": "Das Cluster-Set kann nicht abgebrochen werden.",
+            "detail": "Der Job ist bereits abgeschlossen, fehlgeschlagen oder abgebrochen.",
+            "suggested_action": "reload",
+        },
+        "CLUSTER_SET_NOT_FOUND": {
+            "title": "Cluster-Set nicht gefunden.",
+            "detail": "Das Cluster-Set wurde nicht gefunden oder ist nicht mehr verfügbar.",
+            "suggested_action": "reload",
+        },
+        "CLUSTER_SET_NOT_COMPLETE": {
+            "title": "Das Cluster-Set ist noch nicht fertig.",
+            "detail": "Dieses Cluster-Set kann erst nach Abschluss geladen werden.",
+            "suggested_action": "wait",
+        },
+        "CLUSTER_SOURCE_NOT_FOUND": {
+            "title": "Die Quellen konnten nicht geladen werden.",
+            "detail": (
+                "Der Cluster wurde nicht gefunden oder gehört nicht zum geladenen Set."
+            ),
+            "suggested_action": "reload",
+        },
+        "CLUSTER_SOURCE_PAGE_INVALID": {
+            "title": "Die Quellen-Seite ist ungültig.",
+            "detail": (
+                "Die Quellen konnten mit diesen Seitenparametern nicht geladen werden."
+            ),
+            "suggested_action": "correct-input",
+        },
+        "CLUSTER_MANUAL_UPDATE_INVALID": {
+            "title": "Die Cluster-Änderung ist ungültig.",
+            "detail": "Die manuelle Cluster-Änderung konnte nicht gespeichert werden.",
+            "suggested_action": "correct-input",
+        },
+        "CLUSTER_RUN_BOUND_API_REPLACED": {
+            "title": "Run-bound Clustering wurde ersetzt.",
+            "detail": "Cluster werden jetzt ausschließlich über Cluster-Sets erzeugt und geladen.",
+            "suggested_action": "create-cluster-set",
+        },
+        "CLUSTER_REFINEMENT_EMPTY_SOURCE": {
+            "title": "Die Quelle ist leer.",
+            "detail": "Die gewählte Quelle enthält keine nutzbaren Zeilen.",
+            "suggested_action": "select-sources",
+        },
+        "CLUSTER_OUTLIER_EMPTY_RESULT": {
+            "title": "Die Ausreißer-Einstellung ist zu streng.",
+            "detail": "Die Ausreißer-Einstellung würde keine Zeilen übrig lassen.",
+            "suggested_action": "adjust-threshold",
+        },
+        "CLUSTER_OUTLIER_RECALCULATION_FAILED": {
+            "title": "Ausreißer konnten nicht neu berechnet werden.",
+            "detail": "Die Ausreißer-Neuberechnung konnte nicht abgeschlossen werden.",
+            "suggested_action": "retry",
+        },
+        "CLUSTER_SET_LINEAGE_UNAVAILABLE": {
+            "title": "Die Analyse-Historie ist unvollständig.",
+            "detail": "Die Cluster-Set-Historie konnte nicht vollständig geladen werden.",
+            "suggested_action": "retry",
+        },
+    }.get(
+        code,
+        {
+            "title": "Die Aktion konnte nicht abgeschlossen werden.",
+            "detail": (
+                "Ein unerwarteter Fehler ist aufgetreten; die Eingaben bleiben "
+                "soweit sicher erhalten."
+            ),
+            "suggested_action": "retry",
+        },
+    )
+
+
+def _cluster_problem_response(error: ClusterError) -> JSONResponse:
+    status_code = error.status_code
+    contract = _cluster_problem_contract(error.code)
+    return JSONResponse(
+        status_code=status_code,
+        content={
+            "type": f"urn:skm:error:{error.code}",
+            "title": contract["title"],
+            "status": status_code,
+            "detail": contract["detail"],
+            "code": error.code,
+            "correlationId": None,
+            "retryable": error.retryable,
+            "suggestedAction": contract["suggested_action"],
+            "fieldErrors": [
+                {"field": field, "message": message}
+                for field, message in error.field_errors.items()
+            ],
+        },
+    )
+
+
+def _export_problem_contract(code: str) -> dict[str, str]:
+    return {
+        "EXPLORER_EXPORT_EMPTY": {
+            "title": "Es gibt nichts zu exportieren.",
+            "detail": "Im aktuellen Filterstand gibt es keine exportierbaren Zeilen.",
+            "suggested_action": "adjust-filter",
+        },
+        "EXPLORER_EXPORT_FORMAT_INVALID": {
+            "title": "Das Exportformat ist ungültig.",
+            "detail": "Der Explorer kann nur als CSV oder JSON exportiert werden.",
+            "suggested_action": "choose-format",
+        },
+        "EXPLORER_EXPORT_SELECTION_TOO_LARGE": {
+            "title": "Die Exportauswahl ist zu groß.",
+            "detail": "Die aktuelle Explorer-Auswahl enthält zu viele Cluster.",
+            "suggested_action": "reduce-scope",
+        },
+        "EXPLORER_EXPORT_FAILED": {
+            "title": "Der Export konnte nicht erstellt werden.",
+            "detail": (
+                "Die gefilterte Explorer-Ansicht konnte nicht als Datei erzeugt werden."
+            ),
+            "suggested_action": "retry",
+        },
+        "CLUSTER_SET_NOT_FOUND": {
+            "title": "Cluster-Set nicht gefunden.",
+            "detail": "Das Cluster-Set wurde nicht gefunden oder ist nicht mehr verfügbar.",
+            "suggested_action": "reload",
+        },
+        "CLUSTER_SET_NOT_COMPLETE": {
+            "title": "Das Cluster-Set ist noch nicht fertig.",
+            "detail": "Dieses Cluster-Set kann erst nach Abschluss exportiert werden.",
+            "suggested_action": "wait",
+        },
+    }.get(
+        code,
+        {
+            "title": "Der Export konnte nicht erstellt werden.",
+            "detail": (
+                "Die gefilterte Explorer-Ansicht konnte nicht als Datei erzeugt werden."
+            ),
+            "suggested_action": "retry",
+        },
+    )
+
+
+def _export_problem_response(error: ExportError) -> JSONResponse:
+    status_code = error.status_code
+    contract = _export_problem_contract(error.code)
+    return JSONResponse(
+        status_code=status_code,
+        content={
+            "type": f"urn:skm:error:{error.code}",
+            "title": contract["title"],
+            "status": status_code,
+            "detail": contract["detail"],
+            "code": error.code,
+            "correlationId": None,
+            "retryable": error.retryable,
+            "suggestedAction": contract["suggested_action"],
+            "fieldErrors": [
+                {"field": field, "message": message}
+                for field, message in error.field_errors.items()
+            ],
+        },
+    )
+
+
+def _is_cluster_set_create_request(request: Request) -> bool:
+    path_parts = [part for part in request.url.path.split("/") if part]
+    return (
+        request.method == "POST"
+        and len(path_parts) == 4
+        and path_parts[0] == "api"
+        and path_parts[1] == "projects"
+        and path_parts[3] == "cluster-sets"
+    )
+
+
+def _is_cluster_source_request(request: Request) -> bool:
+    path_parts = [part for part in request.url.path.split("/") if part]
+    return (
+        request.method == "GET"
+        and len(path_parts) == 6
+        and path_parts[0] == "api"
+        and path_parts[1] == "projects"
+        and path_parts[3] == "clusters"
+        and path_parts[5] == "sources"
+    )
+
+
+def _validation_error_has_body_field(
+    error: RequestValidationError, field_name: str
+) -> bool:
+    for item in error.errors():
+        location = item.get("loc")
+        if isinstance(location, (tuple, list)) and tuple(location) == (
+            "body",
+            field_name,
+        ):
+            return True
+    return False
+
+
+def _validation_error_has_query_field(
+    error: RequestValidationError, field_name: str
+) -> bool:
+    for item in error.errors():
+        location = item.get("loc")
+        if isinstance(location, (tuple, list)) and tuple(location) == (
+            "query",
+            field_name,
+        ):
+            return True
+    return False
+
+
 def create_app(
     settings: DatabaseSettings | None = None,
     *,
@@ -744,7 +1053,6 @@ def create_app(
     provider_service: ProviderService | None = None,
     analysis_service: AnalysisService | None = None,
     cluster_service: ClusterService | None = None,
-    candidate_service: CandidateService | None = None,
     export_service: ExportService | None = None,
     migration_runner: Callable[[], object] | None = None,
 ) -> FastAPI:
@@ -758,8 +1066,10 @@ def create_app(
         settings,
         provider_service=provider_service,  # type: ignore[arg-type]
     )
-    cluster_service = cluster_service or ClusterService(settings)
-    candidate_service = candidate_service or CandidateService(settings)
+    cluster_service = cluster_service or ClusterService(
+        settings,
+        provider_service=provider_service,  # type: ignore[arg-type]
+    )
     export_service = export_service or ExportService(settings)
 
     @asynccontextmanager
@@ -771,6 +1081,46 @@ def create_app(
         yield
 
     app = FastAPI(title="Support Knowledge Miner API", lifespan=lifespan)
+
+    @app.exception_handler(RequestValidationError)
+    async def request_validation_error_handler(
+        request: Request, exc: RequestValidationError
+    ) -> Response:
+        if _is_cluster_set_create_request(request) and _validation_error_has_body_field(
+            exc, "llm_sample_count"
+        ):
+            return _cluster_problem_response(
+                ClusterError(
+                    "LLM summary sample count must be a positive integer",
+                    code="CLUSTER_SUMMARY_SAMPLE_COUNT_INVALID",
+                    status_code=422,
+                    retryable=True,
+                    suggested_action="correct-input",
+                    field_errors={
+                        "llm_sample_count": (
+                            "LLM summary sample count must be a positive integer"
+                        )
+                    },
+                )
+            )
+        if _is_cluster_source_request(request) and (
+            _validation_error_has_query_field(exc, "limit")
+            or _validation_error_has_query_field(exc, "offset")
+        ):
+            return _cluster_problem_response(
+                ClusterError(
+                    "cluster source page parameters are invalid",
+                    code="CLUSTER_SOURCE_PAGE_INVALID",
+                    status_code=422,
+                    retryable=True,
+                    suggested_action="correct-input",
+                    field_errors={
+                        "limit": "limit must be a positive integer",
+                        "offset": "offset must be zero or a positive integer",
+                    },
+                )
+            )
+        return await default_request_validation_exception_handler(request, exc)
 
     def current_user(
         credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
@@ -1024,6 +1374,15 @@ def create_app(
             for configuration in provider_service.list_configurations()
         ]
 
+    @app.get("/api/llm-providers", response_model=list[ProviderConfigurationResponse])
+    def list_llm_providers(
+        _: CurrentUser = Depends(current_user),
+    ) -> list[ProviderConfigurationResponse]:
+        return [
+            _provider_response(configuration)
+            for configuration in provider_service.list_llm_configurations()
+        ]
+
     @app.put(
         "/api/providers/{provider}",
         response_model=ProviderConfigurationResponse,
@@ -1039,6 +1398,34 @@ def create_app(
                     provider=provider,
                     endpoint_url=payload.endpoint_url,
                     manual_models=payload.manual_models,
+                    llm_models=payload.llm_models,
+                    api_key=payload.api_key,
+                    remove_api_key=payload.remove_api_key,
+                ),
+                actor_user_id=actor.id,
+            )
+        except ProviderError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+            ) from exc
+        return _provider_response(configuration)
+
+    @app.put(
+        "/api/llm-providers/{provider}",
+        response_model=ProviderConfigurationResponse,
+    )
+    def upsert_llm_provider(
+        provider: str,
+        payload: LlmProviderSettingsRequest,
+        actor: CurrentUser = Depends(current_user),
+    ) -> ProviderConfigurationResponse:
+        try:
+            configuration = provider_service.upsert_configuration(
+                ProviderSettingsInput(
+                    provider=provider,
+                    endpoint_url=payload.endpoint_url,
+                    manual_models=None,
+                    llm_models=payload.llm_models,
                     api_key=payload.api_key,
                     remove_api_key=payload.remove_api_key,
                 ),
@@ -1207,6 +1594,171 @@ def create_app(
         return response
 
     @app.post(
+        "/api/projects/{project_id}/cluster-sets",
+        response_model=ClusterSetResponse,
+        status_code=status.HTTP_201_CREATED,
+    )
+    def create_cluster_set(
+        project_id: UUID,
+        payload: ClusterSetRequest,
+        actor: CurrentUser = Depends(current_user),
+    ) -> ClusterSetResponse | JSONResponse:
+        try:
+            cluster_set = cluster_service.start_cluster_set(
+                project_id,
+                ClusterSetInput(
+                    indexing_run_id=payload.indexing_run_id,
+                    display_name=payload.display_name,
+                    parent_cluster_set_id=payload.parent_cluster_set_id,
+                    derivation_type=payload.derivation_type,
+                    vector_basis=payload.vector_basis,
+                    message_weight=payload.message_weight,
+                    answer_weight=payload.answer_weight,
+                    algorithm_settings=payload.algorithm_settings,
+                    source_cluster_ids=payload.source_cluster_ids,
+                    source_pair_ids=payload.source_pair_ids,
+                    outlier_threshold=payload.outlier_threshold,
+                    llm_provider=payload.llm_provider,
+                    llm_model=payload.llm_model,
+                    llm_sample_count=payload.llm_sample_count,
+                    llm_sample_all=payload.llm_sample_all,
+                    llm_cloud_use_confirmed=payload.llm_cloud_use_confirmed,
+                ),
+                actor_user_id=actor.id,
+            )
+            cluster_service.enqueue_cluster_set(cluster_set.id)
+        except ClusterSetQueueFull as exc:
+            return _cluster_problem_response(exc)
+        except ClusterError as exc:
+            return _cluster_problem_response(exc)
+        return _cluster_set_response(cluster_set)
+
+    @app.get(
+        "/api/projects/{project_id}/cluster-sets",
+        response_model=list[ClusterSetResponse],
+    )
+    def list_cluster_sets(
+        project_id: UUID,
+        _: CurrentUser = Depends(current_user),
+    ) -> list[ClusterSetResponse]:
+        return [
+            _cluster_set_response(cluster_set)
+            for cluster_set in cluster_service.list_cluster_sets(project_id)
+        ]
+
+    @app.get(
+        "/api/projects/{project_id}/cluster-sets/{cluster_set_id}",
+        response_model=ClusterSetResponse,
+    )
+    def get_cluster_set(
+        project_id: UUID,
+        cluster_set_id: UUID,
+        _: CurrentUser = Depends(current_user),
+    ) -> ClusterSetResponse | JSONResponse:
+        cluster_set = cluster_service.get_cluster_set(project_id, cluster_set_id)
+        if cluster_set is None:
+            return _cluster_problem_response(
+                ClusterError(
+                    "Cluster-Set not found",
+                    code="CLUSTER_SET_NOT_FOUND",
+                    status_code=404,
+                )
+            )
+        return _cluster_set_response(cluster_set)
+
+    @app.patch(
+        "/api/projects/{project_id}/cluster-sets/{cluster_set_id}",
+        response_model=ClusterSetResponse,
+    )
+    def rename_cluster_set(
+        project_id: UUID,
+        cluster_set_id: UUID,
+        payload: ClusterSetRenameRequest,
+        actor: CurrentUser = Depends(current_user),
+    ) -> ClusterSetResponse | JSONResponse:
+        try:
+            cluster_set = cluster_service.rename_cluster_set(
+                project_id,
+                cluster_set_id,
+                payload.display_name,
+                actor_user_id=actor.id,
+            )
+        except ClusterError as exc:
+            return _cluster_problem_response(exc)
+        return _cluster_set_response(cluster_set)
+
+    @app.post(
+        "/api/projects/{project_id}/cluster-sets/{cluster_set_id}/cancel",
+        response_model=ClusterSetResponse,
+    )
+    def cancel_cluster_set(
+        project_id: UUID,
+        cluster_set_id: UUID,
+        actor: CurrentUser = Depends(current_user),
+    ) -> ClusterSetResponse | JSONResponse:
+        try:
+            cluster_set = cluster_service.cancel_cluster_set(
+                project_id, cluster_set_id, actor_user_id=actor.id
+            )
+        except ClusterError as exc:
+            return _cluster_problem_response(exc)
+        return _cluster_set_response(cluster_set)
+
+    @app.delete(
+        "/api/projects/{project_id}/cluster-sets/{cluster_set_id}",
+        status_code=status.HTTP_204_NO_CONTENT,
+        response_model=None,
+    )
+    def delete_cluster_set(
+        project_id: UUID,
+        cluster_set_id: UUID,
+        response: Response,
+        actor: CurrentUser = Depends(current_user),
+    ) -> Response | JSONResponse:
+        try:
+            cluster_service.delete_cluster_set(
+                project_id, cluster_set_id, actor_user_id=actor.id
+            )
+        except ClusterError as exc:
+            return _cluster_problem_response(exc)
+        response.status_code = status.HTTP_204_NO_CONTENT
+        return response
+
+    @app.get(
+        "/api/projects/{project_id}/cluster-sets/{cluster_set_id}/clusters",
+        response_model=list[ClusterResponse],
+    )
+    def list_cluster_set_clusters(
+        project_id: UUID,
+        cluster_set_id: UUID,
+        _: CurrentUser = Depends(current_user),
+    ) -> list[ClusterResponse] | JSONResponse:
+        try:
+            return [
+                _cluster_response(cluster)
+                for cluster in cluster_service.list_clusters_for_set(
+                    project_id, cluster_set_id
+                )
+            ]
+        except ClusterError as exc:
+            return _cluster_problem_response(exc)
+
+    @app.get(
+        "/api/projects/{project_id}/cluster-sets/{cluster_set_id}/events",
+        response_model=list[ClusterSetEventResponse],
+    )
+    def list_cluster_set_events(
+        project_id: UUID,
+        cluster_set_id: UUID,
+        _: CurrentUser = Depends(current_user),
+    ) -> list[ClusterSetEventResponse] | JSONResponse:
+        try:
+            events = cluster_service.list_cluster_set_events(project_id, cluster_set_id)
+        except ClusterError as exc:
+            return _cluster_problem_response(exc)
+        return [_cluster_set_event_response(event) for event in events]
+
+    @app.post(
         "/api/projects/{project_id}/analysis-runs/{run_id}/clusters/generate",
         response_model=list[ClusterResponse],
     )
@@ -1214,16 +1766,16 @@ def create_app(
         project_id: UUID,
         run_id: UUID,
         actor: CurrentUser = Depends(current_user),
-    ) -> list[ClusterResponse]:
-        try:
-            clusters = cluster_service.generate_for_run(
-                project_id, run_id, actor_user_id=actor.id
+    ) -> JSONResponse:
+        del project_id, run_id, actor
+        return _cluster_problem_response(
+            ClusterError(
+                "run-bound clustering has been replaced by Cluster-Sets",
+                code="CLUSTER_RUN_BOUND_API_REPLACED",
+                status_code=status.HTTP_410_GONE,
+                suggested_action="create-cluster-set",
             )
-        except ClusterError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
-            ) from exc
-        return [_cluster_response(cluster) for cluster in clusters]
+        )
 
     @app.get(
         "/api/projects/{project_id}/analysis-runs/{run_id}/clusters",
@@ -1232,12 +1784,17 @@ def create_app(
     def list_clusters(
         project_id: UUID,
         run_id: UUID,
-        _: CurrentUser = Depends(current_user),
-    ) -> list[ClusterResponse]:
-        return [
-            _cluster_response(cluster)
-            for cluster in cluster_service.list_clusters(project_id, run_id)
-        ]
+        actor: CurrentUser = Depends(current_user),
+    ) -> JSONResponse:
+        del project_id, run_id, actor
+        return _cluster_problem_response(
+            ClusterError(
+                "run-bound cluster loading has been replaced by Cluster-Sets",
+                code="CLUSTER_RUN_BOUND_API_REPLACED",
+                status_code=status.HTTP_410_GONE,
+                suggested_action="create-cluster-set",
+            )
+        )
 
     @app.patch(
         "/api/projects/{project_id}/clusters/{cluster_id}",
@@ -1248,7 +1805,7 @@ def create_app(
         cluster_id: UUID,
         payload: ClusterUpdateRequest,
         actor: CurrentUser = Depends(current_user),
-    ) -> ClusterResponse:
+    ) -> ClusterResponse | JSONResponse:
         try:
             cluster = cluster_service.update_cluster(
                 project_id,
@@ -1257,156 +1814,63 @@ def create_app(
                     manual_title=payload.manual_title,
                     manual_category=payload.manual_category,
                     manual_status=payload.manual_status,
+                    fields_to_update=frozenset(payload.model_fields_set),
                 ),
                 actor_user_id=actor.id,
             )
         except ClusterError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
-            ) from exc
+            return _cluster_problem_response(exc)
         return _cluster_response(cluster)
 
     @app.get(
         "/api/projects/{project_id}/clusters/{cluster_id}/sources",
-        response_model=list[ClusterSourceResponse],
+        response_model=ClusterSourcePageResponse,
     )
     def list_cluster_sources(
         project_id: UUID,
         cluster_id: UUID,
+        limit: int = DEFAULT_CLUSTER_SOURCE_PAGE_SIZE,
+        offset: int = 0,
         _: CurrentUser = Depends(current_user),
-    ) -> list[ClusterSourceResponse]:
-        return [
-            _cluster_source_response(source)
-            for source in cluster_service.list_sources(project_id, cluster_id)
-        ]
+    ) -> ClusterSourcePageResponse | JSONResponse:
+        try:
+            return _cluster_source_page_response(
+                cluster_service.list_sources(
+                    project_id,
+                    cluster_id,
+                    limit=limit,
+                    offset=offset,
+                )
+            )
+        except ClusterError as exc:
+            return _cluster_problem_response(exc)
 
     @app.post(
-        "/api/projects/{project_id}/clusters/{cluster_id}/candidates",
-        response_model=CandidateResponse,
+        "/api/projects/{project_id}/exports/explorer",
+        response_model=ExportResultResponse,
         status_code=status.HTTP_201_CREATED,
     )
-    def create_candidate_from_cluster(
+    def export_explorer(
         project_id: UUID,
-        cluster_id: UUID,
+        payload: ExplorerExportRequest,
         actor: CurrentUser = Depends(current_user),
-    ) -> CandidateResponse:
+    ) -> ExportResultResponse | JSONResponse:
         try:
-            candidate = candidate_service.create_from_cluster(
-                project_id, cluster_id, actor_user_id=actor.id
-            )
-        except CandidateError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
-            ) from exc
-        return _candidate_response(candidate)
-
-    @app.get(
-        "/api/projects/{project_id}/candidates",
-        response_model=list[CandidateResponse],
-    )
-    def list_candidates(
-        project_id: UUID,
-        _: CurrentUser = Depends(current_user),
-    ) -> list[CandidateResponse]:
-        return [
-            _candidate_response(candidate)
-            for candidate in candidate_service.list_candidates(project_id)
-        ]
-
-    @app.patch(
-        "/api/projects/{project_id}/candidates/{candidate_id}",
-        response_model=CandidateResponse,
-    )
-    def update_candidate(
-        project_id: UUID,
-        candidate_id: UUID,
-        payload: CandidateUpdateRequest,
-        actor: CurrentUser = Depends(current_user),
-    ) -> CandidateResponse:
-        fields_to_update = frozenset(payload.model_fields_set)
-        try:
-            candidate = candidate_service.update_candidate(
+            result = export_service.export_explorer(
                 project_id,
-                candidate_id,
-                CandidateManualUpdate(
-                    candidate_type=payload.candidate_type,
-                    manual_status=payload.manual_status,
-                    manual_category_path=payload.manual_category_path,
-                    manual_title=payload.manual_title,
-                    manual_canonical_question=payload.manual_canonical_question,
-                    manual_canonical_answer=payload.manual_canonical_answer,
-                    manual_alternative_questions=payload.manual_alternative_questions,
-                    manual_parameters=payload.manual_parameters,
-                    manual_external_data_dependencies=(
-                        payload.manual_external_data_dependencies
-                    ),
-                    notes=payload.notes,
-                    fields_to_update=fields_to_update,
+                ExplorerExportInput(
+                    cluster_set_id=payload.cluster_set_id,
+                    export_format=payload.export_format,
+                    search_query=payload.search_query,
+                    category=payload.category,
+                    include_excluded=payload.include_excluded,
+                    include_outliers=payload.include_outliers,
+                    cluster_ids=payload.cluster_ids,
                 ),
                 actor_user_id=actor.id,
             )
-        except CandidateError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
-            ) from exc
-        return _candidate_response(candidate)
-
-    @app.get(
-        "/api/projects/{project_id}/candidates/{candidate_id}/sources",
-        response_model=list[CandidateSourceResponse],
-    )
-    def list_candidate_sources(
-        project_id: UUID,
-        candidate_id: UUID,
-        _: CurrentUser = Depends(current_user),
-    ) -> list[CandidateSourceResponse]:
-        return [
-            _candidate_source_response(source)
-            for source in candidate_service.list_sources(project_id, candidate_id)
-        ]
-
-    @app.post(
-        "/api/projects/{project_id}/exports/candidates",
-        response_model=ExportResultResponse,
-        status_code=status.HTTP_201_CREATED,
-    )
-    def export_candidates(
-        project_id: UUID,
-        payload: ExportRequest,
-        actor: CurrentUser = Depends(current_user),
-    ) -> ExportResultResponse:
-        try:
-            result = export_service.export_candidates(
-                project_id,
-                include_original_text=payload.include_original_text,
-                actor_user_id=actor.id,
-            )
         except ExportError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
-            ) from exc
-        return _export_result_response(result)
-
-    @app.post(
-        "/api/projects/{project_id}/exports/source-assignments",
-        response_model=ExportResultResponse,
-        status_code=status.HTTP_201_CREATED,
-    )
-    def export_source_assignments(
-        project_id: UUID,
-        payload: ExportRequest,
-        actor: CurrentUser = Depends(current_user),
-    ) -> ExportResultResponse:
-        try:
-            result = export_service.export_source_assignments(
-                project_id,
-                include_original_text=payload.include_original_text,
-                actor_user_id=actor.id,
-            )
-        except ExportError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
-            ) from exc
+            return _export_problem_response(exc)
         return _export_result_response(result)
 
     @app.get(

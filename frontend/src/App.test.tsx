@@ -58,6 +58,7 @@ const openAiProvider = {
   provider: "openai",
   endpoint_url: null,
   manual_models: ["gpt-4.1-mini"],
+  llm_models: ["gpt-4.1-mini"],
   api_key_set: true,
   updated_at: "2026-07-22T00:00:00Z",
 };
@@ -65,6 +66,7 @@ const vllmProvider = {
   provider: "vllm",
   endpoint_url: "http://localhost:8000",
   manual_models: ["local-embed"],
+  llm_models: [],
   api_key_set: false,
   updated_at: "2026-07-22T00:00:00Z",
 };
@@ -72,6 +74,7 @@ const ollamaProvider = {
   provider: "ollama",
   endpoint_url: "http://localhost:11434",
   manual_models: ["nomic-embed-text"],
+  llm_models: ["llama3.1"],
   api_key_set: false,
   updated_at: "2026-07-22T00:00:00Z",
 };
@@ -111,6 +114,7 @@ const cluster = {
   project_id: "project-alpha",
   analysis_run_id: "run-completed",
   dataset_version_id: "dataset-1",
+  cluster_set_id: "cluster-set-1",
   auto_title: "Cluster H",
   manual_title: null,
   effective_title: "Cluster H",
@@ -124,9 +128,45 @@ const cluster = {
   is_outlier: false,
   algorithm: "hdbscan",
   member_count: 2,
-  metadata: { non_quadratic: true },
+  metadata: { non_quadratic: true, qa_mismatch: { maximum: 0.44 } },
+  auto_summary_question: "How do I reset it?",
+  auto_summary_answer: "Use the reset link.",
   created_at: "2026-07-22T00:00:00Z",
   updated_at: "2026-07-22T00:00:00Z",
+};
+const clusterSet = {
+  id: "cluster-set-1",
+  project_id: "project-alpha",
+  indexing_run_id: "run-completed",
+  dataset_version_id: "dataset-1",
+  dataset_display_name: "Fixture dataset",
+  indexing_deleted_at: null,
+  parent_cluster_set_id: null,
+  display_name: "Antworten fein",
+  status: "queued",
+  progress: 0,
+  phase: "queued",
+  derivation_type: "root",
+  vector_basis: "combined",
+  message_weight: 0.4,
+  answer_weight: 0.6,
+  algorithm: "hdbscan",
+  parameters: { min_cluster_size: 2, outlier_threshold: 0.72 },
+  source_snapshot: { type: "all_dataset_pairs", source_pair_count: 1 },
+  llm_provider: "ollama",
+  llm_model: "llama3.1",
+  llm_parameters: { enabled: true },
+  llm_sample_strategy: { strategy: "random", requested: 2, seed: 7 },
+  error_code: null,
+  error_message: null,
+  diagnostics: {},
+  started_at: null,
+  completed_at: null,
+  cancel_requested_at: null,
+  deleted_at: null,
+  created_at: "2026-07-22T00:00:00Z",
+  updated_at: "2026-07-22T00:00:00Z",
+  cluster_count: 0,
 };
 const updatedCluster = {
   ...cluster,
@@ -137,109 +177,20 @@ const updatedCluster = {
   manual_status: "reviewed",
   effective_status: "reviewed",
 };
-const candidate = {
-  id: "candidate-1",
+const explorerExportLog = {
+  id: "export-explorer-1",
   project_id: "project-alpha",
-  dataset_version_id: "dataset-1",
-  analysis_run_id: "run-completed",
-  source_cluster_id: "cluster-1",
-  candidate_type: "static_faq",
-  auto_status: "unreviewed",
-  manual_status: null,
-  effective_status: "unreviewed",
-  language: "de",
-  auto_category_path: "hdbscan",
-  manual_category_path: null,
-  effective_category_path: "hdbscan",
-  auto_title: "Cluster H",
-  manual_title: null,
-  effective_title: "Cluster H",
-  auto_canonical_question: "How do I reset it?",
-  manual_canonical_question: null,
-  effective_canonical_question: "How do I reset it?",
-  auto_canonical_answer: "Use the reset link.",
-  manual_canonical_answer: null,
-  effective_canonical_answer: "Use the reset link.",
-  auto_alternative_questions: ["Password reset failed"],
-  manual_alternative_questions: null,
-  effective_alternative_questions: ["Password reset failed"],
-  auto_parameters: {},
-  manual_parameters: null,
-  effective_parameters: {},
-  auto_external_data_dependencies: [],
-  manual_external_data_dependencies: null,
-  effective_external_data_dependencies: [],
-  quality_score: 0.91,
-  faq_suitability_score: 0.91,
-  dynamicity_score: 0,
-  contradiction_score: 0,
-  source_pair_count: 1,
-  source_cluster_ids: ["cluster-1"],
-  notes: null,
-  metadata: { generated_from: "cluster" },
-  created_at: "2026-07-22T00:00:00Z",
-  updated_at: "2026-07-22T00:00:00Z",
-};
-const updatedCandidate = {
-  ...candidate,
-  candidate_type: "parameterized_faq",
-  manual_status: "export_ready",
-  effective_status: "export_ready",
-  manual_category_path: "Account",
-  effective_category_path: "Account",
-  manual_title: "Reset FAQ",
-  effective_title: "Reset FAQ",
-  manual_canonical_question: "How can customers reset passwords?",
-  effective_canonical_question: "How can customers reset passwords?",
-  manual_canonical_answer: "Send a reset link.",
-  effective_canonical_answer: "Send a reset link.",
-  manual_alternative_questions: ["Password reset does not work"],
-  effective_alternative_questions: ["Password reset does not work"],
-  manual_parameters: { account_id: "required" },
-  effective_parameters: { account_id: "required" },
-  manual_external_data_dependencies: ["identity-service"],
-  effective_external_data_dependencies: ["identity-service"],
-  notes: "Reviewed candidate.",
-};
-const candidateExportLog = {
-  id: "export-candidates-1",
-  project_id: "project-alpha",
-  export_type: "candidate_csv",
-  include_original_text: true,
-  filters: {},
-  selection: {},
-  dataset_version_id: "dataset-1",
-  analysis_run_id: "run-completed",
-  output_filename: "candidate_csv-export-candidates-1.csv",
-  output_path: null,
-  row_count: 1,
-  created_at: "2026-07-23T00:00:00Z",
-};
-const sourceAssignmentExportLog = {
-  id: "export-sources-1",
-  project_id: "project-alpha",
-  export_type: "source_assignment_csv",
+  export_type: "explorer_csv",
   include_original_text: false,
   filters: {},
   selection: {},
   dataset_version_id: "dataset-1",
   analysis_run_id: "run-completed",
-  output_filename: "source_assignment_csv-export-sources-1.csv",
+  cluster_set_id: "cluster-set-1",
+  output_filename: "explorer_csv-cluster-set-1.csv",
   output_path: null,
   row_count: 1,
-  created_at: "2026-07-23T00:00:01Z",
-};
-const generatedMultiValueCandidate = {
-  ...candidate,
-  auto_alternative_questions: ["Password reset failed", "Reset mail missing"],
-  effective_alternative_questions: [
-    "Password reset failed",
-    "Reset mail missing",
-  ],
-  auto_parameters: { account_id: "optional" },
-  effective_parameters: { account_id: "optional" },
-  auto_external_data_dependencies: ["identity-service"],
-  effective_external_data_dependencies: ["identity-service"],
+  created_at: "2026-07-23T00:00:00Z",
 };
 
 afterEach(() => {
@@ -306,10 +257,7 @@ function mockProjectFetch(
     if (path.endsWith("/imports") && method === "GET") {
       return jsonResponse(path.includes("project-alpha") ? [importLog] : []);
     }
-    if (
-      (path.endsWith("/candidates") || path.endsWith("/exports")) &&
-      method === "GET"
-    ) {
+    if (path.endsWith("/exports") && method === "GET") {
       return jsonResponse([]);
     }
     throw new Error(`unexpected request ${method} ${path}`);
@@ -341,20 +289,15 @@ async function openSettingsTab(
   tabName: "Embedding-Provider" | "Nutzer",
 ) {
   await user.click(screen.getByRole("button", { name: "Einstellungen" }));
-  await user.click(await screen.findByRole("button", { name: tabName }));
+  await user.click(await screen.findByRole("tab", { name: tabName }));
 }
 
 async function openProjectTab(
   user: ReturnType<typeof userEvent.setup>,
   tabName:
-    | "Import"
-    | "Indizieren"
-    | "Cluster"
-    | "Kandidaten"
-    | "Export"
-    | "Projekt löschen",
+    "Import" | "Indizieren" | "Cluster-Sets" | "Explorer" | "Projekt löschen",
 ) {
-  await user.click(await screen.findByRole("button", { name: tabName }));
+  await user.click(await screen.findByRole("tab", { name: tabName }));
 }
 
 function getProjectRow(projectList: HTMLElement, projectName: string) {
@@ -366,7 +309,13 @@ function getProjectRow(projectList: HTMLElement, projectName: string) {
 
 async function expectErrorFeedback(text: string, rawText?: string) {
   await waitFor(() => {
-    const alert = screen.getByRole("alert");
+    const alert = screen
+      .getAllByRole("alert")
+      .find((candidate) => candidate.textContent?.includes(`Fehler: ${text}`));
+    expect(alert).toBeDefined();
+    if (alert === undefined) {
+      throw new Error("error feedback alert missing");
+    }
     expect(alert).toHaveClass("error");
     expect(alert).toHaveTextContent(`Fehler: ${text}`);
     if (rawText !== undefined) {
@@ -856,13 +805,15 @@ test("shows sidebar navigation and settings tabs after sign-in", async () => {
   expect(screen.getByRole("button", { name: "Abmelden" })).toBeInTheDocument();
 
   await openSettingsTab(user, "Embedding-Provider");
-  expect(
-    screen.getByRole("button", { name: "Embedding-Provider" }),
-  ).toHaveClass("selected");
-  await user.click(screen.getByRole("button", { name: "Nutzer" }));
-  expect(screen.getByRole("button", { name: "Nutzer" })).toHaveClass(
+  expect(screen.getByRole("tab", { name: "Embedding-Provider" })).toHaveClass(
     "selected",
   );
+  await user.click(screen.getByRole("tab", { name: "LLM-Provider" }));
+  expect(screen.getByRole("tab", { name: "LLM-Provider" })).toHaveClass(
+    "selected",
+  );
+  await user.click(screen.getByRole("tab", { name: "Nutzer" }));
+  expect(screen.getByRole("tab", { name: "Nutzer" })).toHaveClass("selected");
   expect(
     screen.queryByRole("region", { name: "Gemeinsame Zustände" }),
   ).not.toBeInTheDocument();
@@ -1131,14 +1082,13 @@ test("allows signed-in users to create open rename and delete projects with conf
   });
   expect(
     within(projectTabs)
-      .getAllByRole("button")
-      .map((button) => button.textContent),
+      .getAllByRole("tab")
+      .map((tab) => tab.textContent),
   ).toEqual([
     "Import",
     "Indizieren",
-    "Cluster",
-    "Kandidaten",
-    "Export",
+    "Cluster-Sets",
+    "Explorer",
     "Projekt löschen",
   ]);
 
@@ -1403,9 +1353,6 @@ test("configures providers and starts a project indexing run", async () => {
     ) {
       return jsonResponse([completedAnalysisRun]);
     }
-    if (path === "/api/projects/project-alpha/candidates" && method === "GET") {
-      return jsonResponse([]);
-    }
     if (path === "/api/projects/project-alpha/exports" && method === "GET") {
       return jsonResponse([]);
     }
@@ -1423,9 +1370,22 @@ test("configures providers and starts a project indexing run", async () => {
       return jsonResponse(analysisRun, { status: 201 });
     }
     if (
+      path === "/api/projects/project-alpha/cluster-sets" &&
+      method === "GET"
+    ) {
+      return jsonResponse([
+        {
+          ...clusterSet,
+          status: "completed",
+          progress: 100,
+          phase: "completed",
+        },
+      ]);
+    }
+    if (
       path ===
-        "/api/projects/project-alpha/analysis-runs/run-completed/clusters/generate" &&
-      method === "POST"
+        "/api/projects/project-alpha/cluster-sets/cluster-set-1/clusters" &&
+      method === "GET"
     ) {
       return jsonResponse([cluster]);
     }
@@ -1437,99 +1397,75 @@ test("configures providers and starts a project indexing run", async () => {
       return jsonResponse(updatedCluster);
     }
     if (
-      path === "/api/projects/project-alpha/clusters/cluster-1/sources" &&
+      path ===
+        "/api/projects/project-alpha/clusters/cluster-1/sources?limit=50&offset=0" &&
       method === "GET"
     ) {
-      return jsonResponse([
-        {
-          cluster_id: "cluster-1",
-          message_pair_id: "pair-1",
-          ticket_id: "T-1",
-          message_group_id: "G-1",
-          message: "How do I reset it?",
-          answer: "Use the reset link.",
-          membership_score: 0.91,
-          is_outlier: false,
-          assignment_type: "automatic",
-        },
-      ]);
+      return jsonResponse({
+        sources: [
+          {
+            cluster_id: "cluster-1",
+            message_pair_id: "pair-1",
+            ticket_id: "T-1",
+            message_group_id: "G-1",
+            message: "How do I reset it?",
+            answer: "Use the reset link.",
+            membership_score: 0.91,
+            is_outlier: false,
+            assignment_type: "automatic",
+          },
+        ],
+        limit: 50,
+        offset: 0,
+        next_offset: 1,
+        has_more: true,
+      });
     }
     if (
-      path === "/api/projects/project-alpha/clusters/cluster-1/candidates" &&
-      method === "POST"
-    ) {
-      return jsonResponse(candidate, { status: 201 });
-    }
-    if (
-      path === "/api/projects/project-alpha/candidates/candidate-1" &&
-      method === "PATCH"
-    ) {
-      const body = JSON.parse(String(init?.body));
-      expect(body.manual_title).toBe("Reset FAQ");
-      expect(body.manual_status).toBe("export_ready");
-      expect(body.manual_alternative_questions).toEqual([
-        "Password reset does not work",
-      ]);
-      expect(body.manual_parameters).toEqual({ account_id: "required" });
-      expect(body.manual_external_data_dependencies).toEqual([
-        "identity-service",
-      ]);
-      return jsonResponse(updatedCandidate);
-    }
-    if (
-      path === "/api/projects/project-alpha/candidates/candidate-1/sources" &&
+      path ===
+        "/api/projects/project-alpha/clusters/cluster-1/sources?limit=50&offset=1" &&
       method === "GET"
     ) {
-      return jsonResponse([
-        {
-          candidate_id: "candidate-1",
-          cluster_id: "cluster-1",
-          message_pair_id: "pair-1",
-          ticket_id: "T-1",
-          message_group_id: "G-1",
-          message: "How do I reset it?",
-          answer: "Use the reset link.",
-          message_segment_id: null,
-          source_language: "unknown",
-          normalized_customer_message: "how do i reset it?",
-          normalized_support_answer: "use the reset link.",
-          assignment_type: "automatic",
-          membership_score: 0.91,
-          is_multi_intent: false,
-          intent_label: null,
-          dataset_version_id: "dataset-1",
-          analysis_run_id: "run-completed",
-        },
-      ]);
+      return jsonResponse({
+        sources: [
+          {
+            cluster_id: "cluster-1",
+            message_pair_id: "pair-2",
+            ticket_id: "T-2",
+            message_group_id: "G-2",
+            message: "Can I change the email?",
+            answer: "Open account settings.",
+            membership_score: 0.82,
+            is_outlier: false,
+            assignment_type: "automatic",
+          },
+        ],
+        limit: 50,
+        offset: 1,
+        next_offset: null,
+        has_more: false,
+      });
     }
     if (
-      path === "/api/projects/project-alpha/exports/candidates" &&
+      path === "/api/projects/project-alpha/exports/explorer" &&
       method === "POST"
     ) {
       const body = JSON.parse(String(init?.body));
-      expect(body.include_original_text).toBe(false);
+      expect(body).toMatchObject({
+        cluster_set_id: "cluster-set-1",
+        export_format: "csv",
+        search_query: null,
+        category: null,
+        include_excluded: false,
+        include_outliers: true,
+        cluster_ids: ["cluster-1"],
+      });
       return jsonResponse(
         {
-          export: candidateExportLog,
-          csv_content:
-            "candidate_id,candidate_type,status\\ncandidate-1,parameterized_faq,export_ready\\n",
-          warning:
-            "Export enthält Originaltext und damit potentiell identifizierende Inhalte.",
-        },
-        { status: 201 },
-      );
-    }
-    if (
-      path === "/api/projects/project-alpha/exports/source-assignments" &&
-      method === "POST"
-    ) {
-      const body = JSON.parse(String(init?.body));
-      expect(body.include_original_text).toBe(false);
-      return jsonResponse(
-        {
-          export: sourceAssignmentExportLog,
-          csv_content:
-            "candidate_id,cluster_id,pair_id,customer_message,support_answer\\ncandidate-1,cluster-1,pair-1,,\\n",
+          export: explorerExportLog,
+          content:
+            "cluster_id,status,title,category,summary_question,summary_answer\ncluster-1,reviewed,Reset workflow,Account,How do I reset it?,Use the reset link.\n",
+          content_type: "text/csv",
           warning: null,
         },
         { status: 201 },
@@ -1614,20 +1550,39 @@ test("configures providers and starts a project indexing run", async () => {
   ).toBeGreaterThan(0);
   expect(within(runsRegion).getByText(/Diagnose: {}/)).toBeInTheDocument();
 
-  await openProjectTab(user, "Cluster");
-  const clusterActions = await screen.findByRole("region", {
-    name: "Cluster Aktionen",
+  await openProjectTab(user, "Cluster-Sets");
+  expect(
+    screen.queryByRole("region", { name: "Cluster Aktionen" }),
+  ).not.toBeInTheDocument();
+  const clusterSets = await screen.findByRole("region", {
+    name: "Cluster-Sets",
   });
-  const generateButtons = within(clusterActions).getAllByRole("button", {
-    name: "Cluster erzeugen",
-  });
-  const enabledGenerate = generateButtons.find(
-    (button) => !button.hasAttribute("disabled"),
+  expect(
+    within(clusterSets).getByRole("button", { name: "Im Explorer laden" }),
+  ).toBeEnabled();
+  expect(
+    within(clusterSets).getByRole("button", { name: "Cluster verfeinern" }),
+  ).toBeEnabled();
+  await user.click(
+    within(clusterSets).getByRole("button", { name: "Cluster verfeinern" }),
   );
-  if (enabledGenerate === undefined) {
-    throw new Error("enabled cluster generation button missing");
-  }
-  await user.click(enabledGenerate);
+  const directRefinementForm = await screen.findByRole("form", {
+    name: "Cluster-Set erstellen",
+  });
+  expect(
+    within(directRefinementForm).getByText("Verfeinerung vorausgefüllt"),
+  ).toBeInTheDocument();
+  expect(
+    within(directRefinementForm).getByText(/1 eingeschlossene Cluster/),
+  ).toBeInTheDocument();
+  await user.click(
+    within(directRefinementForm).getByRole("button", {
+      name: "Verfeinerung zurücksetzen",
+    }),
+  );
+  await user.click(
+    within(clusterSets).getByRole("button", { name: "Im Explorer laden" }),
+  );
 
   const clusterExplorer = await screen.findByRole("region", {
     name: "Cluster Explorer",
@@ -1635,263 +1590,140 @@ test("configures providers and starts a project indexing run", async () => {
   expect(
     await within(clusterExplorer).findByText("Cluster H"),
   ).toBeInTheDocument();
+  expect(within(clusterExplorer).getByText(/Auto: Cluster H/)).toBeVisible();
+  expect(within(clusterExplorer).getByText("How do I reset it?")).toBeVisible();
   expect(
-    within(clusterExplorer).getByText(/Auto: Cluster H \/ hdbscan/),
-  ).toBeInTheDocument();
-  expect(
-    within(clusterExplorer).getByText(/Manual: - \/ - \/ -/),
-  ).toBeInTheDocument();
-  expect(
-    within(clusterExplorer).getByText(/Effective: Cluster H \/ hdbscan/),
-  ).toBeInTheDocument();
+    within(clusterExplorer).getByText("Use the reset link."),
+  ).toBeVisible();
+  expect(within(clusterExplorer).getByText(/Q\/A-Mismatch 0.44/)).toBeVisible();
 
-  const clusterCard = within(clusterExplorer)
+  const searchInput = within(clusterExplorer).getByPlaceholderText(
+    "Titel, Kategorie, Summary oder Status",
+  );
+  await user.type(searchInput, "nicht vorhanden");
+  expect(
+    within(clusterExplorer).getByText(
+      "Keine Cluster entsprechen der aktuellen Textsuche oder dem Filter.",
+    ),
+  ).toBeInTheDocument();
+  await user.clear(searchInput);
+
+  const clusterRow = within(clusterExplorer)
     .getByText("Cluster H")
-    .closest("article");
-  if (clusterCard === null) {
-    throw new Error("cluster card missing");
+    .closest("tr");
+  if (clusterRow === null) {
+    throw new Error("cluster row missing");
   }
   await user.type(
-    within(clusterCard).getByLabelText("Manueller Titel"),
+    within(clusterRow).getByLabelText("Titel für Cluster H"),
     "Reset workflow",
   );
   await user.type(
-    within(clusterCard).getByLabelText("Manuelle Kategorie"),
+    within(clusterRow).getByLabelText("Kategorie für Cluster H"),
     "Account",
   );
   await user.selectOptions(
-    within(clusterCard).getByLabelText("Manueller Status"),
+    within(clusterRow).getByLabelText("Status für Cluster H"),
     "reviewed",
   );
   await user.click(
-    within(clusterCard).getByRole("button", { name: "Overrides speichern" }),
+    within(clusterRow).getByRole("button", { name: "Speichern" }),
   );
   expect(
     await within(clusterExplorer).findByText("Reset workflow"),
   ).toBeInTheDocument();
   expect(
-    within(clusterExplorer).getByText(
-      /Effective: Reset workflow \/ Account \/ reviewed/,
-    ),
-  ).toBeInTheDocument();
+    within(clusterExplorer).getAllByText("reviewed").length,
+  ).toBeGreaterThan(0);
 
-  await user.click(
-    within(clusterCard).getByRole("button", { name: "Quellen anzeigen" }),
-  );
-  const sources = await screen.findByRole("region", {
-    name: "Cluster Quellen",
-  });
-  expect(within(sources).getByText("T-1 / G-1")).toBeInTheDocument();
-  expect(
-    within(sources).getByText("Message: How do I reset it?"),
-  ).toBeInTheDocument();
-  expect(
-    within(sources).getByText("Answer: Use the reset link."),
-  ).toBeInTheDocument();
-
-  const updatedClusterCard = within(clusterExplorer)
+  const updatedClusterRow = within(clusterExplorer)
     .getByText("Reset workflow")
-    .closest("article");
-  if (updatedClusterCard === null) {
-    throw new Error("updated cluster card missing");
+    .closest("tr");
+  if (updatedClusterRow === null) {
+    throw new Error("updated cluster row missing");
   }
-  await user.click(
-    within(updatedClusterCard).getByRole("button", {
-      name: "Candidate erstellen",
-    }),
-  );
-  await openProjectTab(user, "Kandidaten");
-
-  const candidateEditor = await screen.findByRole("region", {
-    name: "Candidate Editor",
+  const sourceTrigger = within(updatedClusterRow).getByRole("button", {
+    name: "Quellen anzeigen",
   });
-  expect(
-    await within(candidateEditor).findByText("Cluster H"),
-  ).toBeInTheDocument();
-  expect(
-    within(candidateEditor).getByText(
-      /Auto: Cluster H \/ hdbscan \/ unreviewed/,
-    ),
-  ).toBeInTheDocument();
-  expect(
-    within(candidateEditor).getByText(/Manual: - \/ - \/ -/),
-  ).toBeInTheDocument();
-  expect(
-    within(candidateEditor).getByText(
-      /Effective: Cluster H \/ hdbscan \/ unreviewed/,
-    ),
-  ).toBeInTheDocument();
-  expect(
-    within(candidateEditor).getByText("Frage Effective: How do I reset it?"),
-  ).toBeInTheDocument();
-  expect(
-    within(candidateEditor).getByText("Antwort Effective: Use the reset link."),
-  ).toBeInTheDocument();
-
-  const candidateCard = within(candidateEditor)
-    .getByText("Cluster H")
-    .closest("article");
-  if (candidateCard === null) {
-    throw new Error("candidate card missing");
-  }
-  await user.selectOptions(
-    within(candidateCard).getByLabelText("Candidate Typ"),
-    "parameterized_faq",
-  );
-  await user.selectOptions(
-    within(candidateCard).getByLabelText("Manueller Status"),
-    "export_ready",
-  );
-  await user.type(
-    within(candidateCard).getByLabelText("Manuelle Kategorie"),
-    "Account",
-  );
-  await user.type(
-    within(candidateCard).getByLabelText("Manueller Titel"),
-    "Reset FAQ",
-  );
-  await user.type(
-    within(candidateCard).getByLabelText("Manuelle Frage"),
-    "How can customers reset passwords?",
-  );
-  await user.type(
-    within(candidateCard).getByLabelText("Manuelle Antwort"),
-    "Send a reset link.",
-  );
-  await user.type(
-    within(candidateCard).getByLabelText("Alternative Fragen, eine pro Zeile"),
-    "Password reset does not work",
-  );
-  fireEvent.change(within(candidateCard).getByLabelText("Parameter JSON"), {
-    target: { value: '{"account_id":"required"}' },
+  await user.click(sourceTrigger);
+  const sources = await screen.findByRole("dialog", {
+    name: "Reset workflow",
   });
-  await user.type(
-    within(candidateCard).getByLabelText(
-      "Externe Datenabhängigkeiten, eine pro Zeile",
-    ),
-    "identity-service",
-  );
-  await user.type(
-    within(candidateCard).getByLabelText("Notizen"),
-    "Reviewed candidate.",
-  );
+  const closeSources = within(sources).getByRole("button", {
+    name: "Schließen",
+  });
+  expect(closeSources).toHaveFocus();
+  fireEvent.keyDown(window, { key: "Tab" });
+  expect(closeSources).toHaveFocus();
+  expect(
+    within(sources).getByText("Ticket T-1 · Gruppe G-1"),
+  ).toBeInTheDocument();
+  expect(
+    within(sources).getByText("Kundenfrage: How do I reset it?"),
+  ).toBeInTheDocument();
+  expect(
+    within(sources).getByText("Supportantwort: Use the reset link."),
+  ).toBeInTheDocument();
   await user.click(
-    within(candidateCard).getByRole("button", {
-      name: "Candidate speichern",
+    within(sources).getByRole("button", { name: "Weitere Quellen laden" }),
+  );
+  expect(
+    await within(sources).findByText("Ticket T-2 · Gruppe G-2"),
+  ).toBeInTheDocument();
+  expect(
+    within(sources).getByText("Angezeigt: 2 Quellen."),
+  ).toBeInTheDocument();
+  fireEvent.keyDown(window, { key: "Escape" });
+  await waitFor(() => {
+    expect(
+      screen.queryByRole("dialog", { name: "Reset workflow" }),
+    ).not.toBeInTheDocument();
+  });
+  expect(sourceTrigger).toHaveFocus();
+
+  const explorerExport = await screen.findByRole("region", {
+    name: "Explorer Export",
+  });
+  await user.click(
+    within(explorerExport).getByRole("button", {
+      name: "Aktuelle Tabelle exportieren",
     }),
   );
   expect(
-    await within(candidateEditor).findByText("Reset FAQ"),
+    await screen.findByText(/Explorer-Export erstellt/),
   ).toBeInTheDocument();
-  expect(
-    within(candidateEditor).getByText(
-      /Effective: Reset FAQ \/ Account \/ export_ready/,
-    ),
-  ).toBeInTheDocument();
-  expect(
-    within(candidateEditor).getByText(
-      "Frage Effective: How can customers reset passwords?",
-    ),
-  ).toBeInTheDocument();
-  expect(
-    within(candidateEditor).getByText("Antwort Effective: Send a reset link."),
-  ).toBeInTheDocument();
-  expect(
-    within(candidateEditor).getByText(
-      'Parameter Effective: {"account_id":"required"}',
-    ),
-  ).toBeInTheDocument();
-
-  await user.click(
-    within(candidateEditor).getByRole("button", {
-      name: "Candidate Quellen anzeigen",
-    }),
-  );
-  const candidateSources = await screen.findByRole("region", {
-    name: "Candidate Quellen",
-  });
-  expect(within(candidateSources).getByText("T-1 / G-1")).toBeInTheDocument();
-  expect(
-    within(candidateSources).getByText("Message: How do I reset it?"),
-  ).toBeInTheDocument();
-  expect(
-    within(candidateSources).getByText("Answer: Use the reset link."),
-  ).toBeInTheDocument();
-
-  await openProjectTab(user, "Export");
-  const candidateExportForm = await screen.findByRole("form", {
-    name: "Candidate CSV exportieren",
-  });
-  await user.click(
-    within(candidateExportForm).getByRole("button", {
-      name: "Candidate CSV exportieren",
-    }),
-  );
-  expect(
-    await screen.findByText(/Export enthält Originaltext/),
-  ).toBeInTheDocument();
-  const warning = screen.getByRole("status");
-  expect(warning).toHaveClass("feedback", "warning");
-  expect(warning).toHaveTextContent("Warnung: Export enthält Originaltext");
-
-  const sourceExportForm = screen.getByRole("form", {
-    name: "Source Assignment CSV exportieren",
-  });
-  await user.click(
-    within(sourceExportForm).getByRole("button", {
-      name: "Source Assignment CSV exportieren",
-    }),
-  );
-  const exportHistory = await screen.findByRole("region", {
+  const exportHistory = within(explorerExport).getByRole("region", {
     name: "Exporthistorie",
   });
   expect(
-    within(exportHistory).getByText("candidate_csv-export-candidates-1.csv"),
+    within(exportHistory).getByText("explorer_csv-cluster-set-1.csv"),
   ).toBeInTheDocument();
   expect(
-    within(exportHistory).getByText(
-      "source_assignment_csv-export-sources-1.csv",
-    ),
+    within(exportHistory).getByText(/Cluster-Set: cluster-set-1/),
   ).toBeInTheDocument();
   expect(
-    within(exportHistory).getByText(/Originaltext: ja/),
+    within(explorerExport).getByLabelText("Letzter Explorer Export"),
+  ).toBeInTheDocument();
+
+  await user.click(
+    within(clusterExplorer).getByRole("button", {
+      name: "Eingeschlossene Cluster verfeinern",
+    }),
+  );
+  const refinementForm = await screen.findByRole("form", {
+    name: "Cluster-Set erstellen",
+  });
+  expect(
+    within(refinementForm).getByText("Verfeinerung vorausgefüllt"),
   ).toBeInTheDocument();
   expect(
-    within(exportHistory).getByText(/Originaltext: nein/),
+    within(refinementForm).getByText(/1 sichtbare eingeschlossene Cluster/),
   ).toBeInTheDocument();
 });
 
-test("disables meaningless cluster loads, explains empty results, and preserves safe API errors", async () => {
+test("hides run-bound clustering and gates Cluster-Set loading until completion", async () => {
   const user = userEvent.setup();
-  const safeBudgetDetail =
-    "clustering working set estimate 749211264 bytes for 1000 records with 900 dimensions exceeds the 536870912-byte (512 MiB) limit; reduce the dataset size or embedding dimensions, or select HDBSCAN";
-  mockFetch((input, init) => {
-    const path = String(input);
-    const method = init?.method ?? "GET";
-    if (path === "/api/auth/sign-in" && method === "POST") {
-      return jsonResponse({ access_token: "api-token", user: owner });
-    }
-    if (path === "/api/users" && method === "GET") {
-      return jsonResponse([owner]);
-    }
-    if (path === "/api/projects" && method === "GET") {
-      return jsonResponse([alphaProject]);
-    }
-    if (path === "/api/providers" && method === "GET") {
-      return jsonResponse([]);
-    }
-    if (path === "/api/projects/project-alpha" && method === "GET") {
-      return jsonResponse(alphaProject);
-    }
-    if (path === "/api/projects/project-alpha/imports" && method === "GET") {
-      return jsonResponse([]);
-    }
-    if (path === "/api/projects/project-alpha/candidates" && method === "GET") {
-      return jsonResponse([]);
-    }
-    if (path === "/api/projects/project-alpha/exports" && method === "GET") {
-      return jsonResponse([]);
-    }
+  mockProjectFetch((path, method) => {
     if (
       path === "/api/projects/project-alpha/indexing-runs" &&
       method === "GET"
@@ -1899,100 +1731,17 @@ test("disables meaningless cluster loads, explains empty results, and preserves 
       return jsonResponse([analysisRun, completedAnalysisRun]);
     }
     if (
-      path ===
-        "/api/projects/project-alpha/analysis-runs/run-completed/clusters" &&
+      path === "/api/projects/project-alpha/cluster-sets" &&
       method === "GET"
     ) {
-      return jsonResponse([]);
-    }
-    if (
-      path ===
-        "/api/projects/project-alpha/analysis-runs/run-completed/clusters/generate" &&
-      method === "POST"
-    ) {
-      return jsonResponse({ detail: safeBudgetDetail }, { status: 400 });
-    }
-    throw new Error(`unexpected request ${method} ${path}`);
-  });
-  render(<App />);
-
-  await signIn(user);
-  const projectList = await screen.findByRole("region", {
-    name: "Bestehende Projekte",
-  });
-  await user.click(getProjectRow(projectList, "Alpha"));
-  await openProjectTab(user, "Cluster");
-
-  const clusterActions = await screen.findByRole("region", {
-    name: "Cluster Aktionen",
-  });
-  const queuedCard = within(clusterActions)
-    .getByText("Indizierung: run-1")
-    .closest("article");
-  const completedCard = within(clusterActions)
-    .getByText("Indizierung: run-completed")
-    .closest("article");
-  if (queuedCard === null || completedCard === null) {
-    throw new Error("cluster action cards missing");
-  }
-  expect(
-    within(queuedCard).getByRole("button", { name: "Cluster laden" }),
-  ).toBeDisabled();
-  const loadCompleted = within(completedCard).getByRole("button", {
-    name: "Cluster laden",
-  });
-  expect(loadCompleted).toBeEnabled();
-
-  await user.click(loadCompleted);
-
-  const info = await screen.findByRole("status");
-  expect(info).toHaveClass("feedback", "info");
-  expect(info).toHaveTextContent(
-    "Hinweis: Für diese abgeschlossene Indizierung wurden noch keine Cluster erzeugt.",
-  );
-  expect(
-    screen.getByText(
-      "Für die ausgewählte abgeschlossene Indizierung wurden noch keine Cluster erzeugt. Bitte zuerst „Cluster erzeugen“ ausführen.",
-    ),
-  ).toBeInTheDocument();
-
-  await user.click(
-    within(completedCard).getByRole("button", {
-      name: "Cluster erzeugen",
-    }),
-  );
-
-  const error = await screen.findByRole("alert");
-  expect(error).toHaveClass("feedback", "error");
-  expect(error).toHaveTextContent(`Fehler: ${safeBudgetDetail}`);
-  expect(
-    within(completedCard).getByRole("button", {
-      name: "Cluster erzeugen",
-    }),
-  ).toBeEnabled();
-});
-
-test("shows and guards cluster generation while the request is pending", async () => {
-  const user = userEvent.setup();
-  let generateRequests = 0;
-  let resolveGeneration: (response: Response) => void = () => undefined;
-  const pendingGeneration = new Promise<Response>((resolve) => {
-    resolveGeneration = resolve;
-  });
-  mockProjectFetch((path, method) => {
-    if (
-      path === "/api/projects/project-alpha/indexing-runs" &&
-      method === "GET"
-    ) {
-      return jsonResponse([completedAnalysisRun]);
-    }
-    if (
-      path ===
-        "/api/projects/project-alpha/analysis-runs/run-completed/clusters/generate" &&
-      method === "POST"
-    ) {
-      generateRequests += 1;
-      return pendingGeneration;
+      return jsonResponse([
+        {
+          ...clusterSet,
+          status: "running",
+          progress: 40,
+          phase: "clustering",
+        },
+      ]);
     }
     return undefined;
   });
@@ -2003,66 +1752,322 @@ test("shows and guards cluster generation while the request is pending", async (
     name: "Bestehende Projekte",
   });
   await user.click(getProjectRow(projectList, "Alpha"));
-  await openProjectTab(user, "Cluster");
+  await openProjectTab(user, "Cluster-Sets");
 
-  const clusterActions = await screen.findByRole("region", {
-    name: "Cluster Aktionen",
-  });
-  const completedCard = within(clusterActions)
-    .getByText("Indizierung: run-completed")
-    .closest("article");
-  if (completedCard === null) {
-    throw new Error("completed cluster action card missing");
-  }
-
-  await user.click(
-    within(completedCard).getByRole("button", {
-      name: "Cluster erzeugen",
-    }),
-  );
-
-  const pendingButton = within(completedCard).getByRole("button", {
-    name: "Cluster werden erzeugt",
-  });
-  expect(pendingButton).toBeDisabled();
-  expect(within(completedCard).getByRole("status")).toHaveTextContent(
-    "Clustererzeugung läuft für Indizierung run-completed.",
-  );
   expect(
-    screen.getByText("Clustererzeugung für Indizierung run-completed läuft."),
+    screen.queryByRole("region", { name: "Cluster Aktionen" }),
+  ).not.toBeInTheDocument();
+  const clusterSets = await screen.findByRole("region", {
+    name: "Cluster-Sets",
+  });
+  expect(within(clusterSets).getByText(/running · 40%/)).toBeInTheDocument();
+  expect(
+    within(clusterSets).getByRole("button", { name: "Im Explorer laden" }),
+  ).toBeDisabled();
+  expect(
+    within(clusterSets).getByRole("button", { name: "Cluster verfeinern" }),
+  ).toBeDisabled();
+  await openProjectTab(user, "Explorer");
+  expect(
+    screen.getByText(/Noch kein abgeschlossenes Cluster-Set geladen/),
   ).toBeInTheDocument();
-  fireEvent.click(pendingButton);
-  expect(generateRequests).toBe(1);
-
-  await act(async () => {
-    resolveGeneration(jsonResponse([cluster]));
-    await pendingGeneration;
-  });
-
-  expect(
-    await screen.findByText("Cluster erzeugt und geladen."),
-  ).toBeInTheDocument();
-  expect(
-    within(completedCard).getByRole("button", {
-      name: "Cluster erzeugen",
-    }),
-  ).toBeEnabled();
-  const clusterExplorer = screen.getByRole("region", {
-    name: "Cluster Explorer",
-  });
-  expect(within(clusterExplorer).getByText("Cluster H")).toBeInTheDocument();
 });
 
-test("ignores delayed cluster generation after switching projects", async () => {
+test("lets analysts collapse and reopen Cluster-Set tree branches", async () => {
+  const user = userEvent.setup();
+  mockProjectFetch((path, method) => {
+    if (
+      path === "/api/projects/project-alpha/indexing-runs" &&
+      method === "GET"
+    ) {
+      return jsonResponse([completedAnalysisRun]);
+    }
+    if (
+      path === "/api/projects/project-alpha/cluster-sets" &&
+      method === "GET"
+    ) {
+      return jsonResponse([
+        {
+          ...clusterSet,
+          status: "completed",
+          progress: 100,
+          phase: "completed",
+          cluster_count: 2,
+        },
+        {
+          ...clusterSet,
+          id: "cluster-set-child-1",
+          parent_cluster_set_id: "cluster-set-1",
+          display_name: "Antworten fein — Retouren",
+          derivation_type: "refinement",
+          vector_basis: "answer",
+          cluster_count: 1,
+        },
+      ]);
+    }
+    return undefined;
+  });
+  render(<App />);
+
+  await signIn(user);
+  const projectList = await screen.findByRole("region", {
+    name: "Bestehende Projekte",
+  });
+  await user.click(getProjectRow(projectList, "Alpha"));
+  await openProjectTab(user, "Cluster-Sets");
+
+  const clusterSets = await screen.findByRole("region", {
+    name: "Cluster-Sets",
+  });
+  const toggle = within(clusterSets).getByRole("button", {
+    name: "Ast einklappen",
+  });
+  expect(toggle).toHaveAttribute("aria-expanded", "true");
+  expect(
+    within(clusterSets).getByText("Antworten fein — Retouren"),
+  ).toBeVisible();
+
+  await user.click(toggle);
+  expect(toggle).toHaveAttribute("aria-expanded", "false");
+  expect(
+    within(clusterSets).queryByText("Antworten fein — Retouren"),
+  ).not.toBeInTheDocument();
+
+  await user.click(
+    within(clusterSets).getByRole("button", { name: "Ast ausklappen" }),
+  );
+  expect(
+    within(clusterSets).getByText("Antworten fein — Retouren"),
+  ).toBeVisible();
+});
+
+test("shows and guards Cluster-Set creation while the request is pending", async () => {
+  const user = userEvent.setup();
+  let createRequests = 0;
+  let resolveCreation: (response: Response) => void = () => undefined;
+  const pendingCreation = new Promise<Response>((resolve) => {
+    resolveCreation = resolve;
+  });
+  mockProjectFetch((path, method) => {
+    if (
+      path === "/api/projects/project-alpha/indexing-runs" &&
+      method === "GET"
+    ) {
+      return jsonResponse([completedAnalysisRun]);
+    }
+    if (
+      path === "/api/projects/project-alpha/cluster-sets" &&
+      method === "GET"
+    ) {
+      return jsonResponse([]);
+    }
+    if (
+      path === "/api/projects/project-alpha/cluster-sets" &&
+      method === "POST"
+    ) {
+      createRequests += 1;
+      return pendingCreation;
+    }
+    return undefined;
+  });
+  render(<App />);
+
+  await signIn(user);
+  const projectList = await screen.findByRole("region", {
+    name: "Bestehende Projekte",
+  });
+  await user.click(getProjectRow(projectList, "Alpha"));
+  await openProjectTab(user, "Cluster-Sets");
+
+  const form = await screen.findByRole("form", {
+    name: "Cluster-Set erstellen",
+  });
+  await user.type(within(form).getByLabelText("Anzeigename"), "Pending Set");
+  await user.click(
+    within(form).getByRole("button", { name: "Cluster-Set erstellen" }),
+  );
+
+  const pendingButton = within(form).getByRole("button", {
+    name: "Cluster-Set wird erstellt",
+  });
+  expect(pendingButton).toBeDisabled();
+  fireEvent.click(pendingButton);
+  expect(createRequests).toBe(1);
+
+  await act(async () => {
+    resolveCreation(jsonResponse(clusterSet, { status: 201 }));
+    await pendingCreation;
+  });
+
+  expect(
+    await screen.findByText("Cluster-Set angelegt. Status wird aktualisiert."),
+  ).toBeInTheDocument();
+  expect(
+    within(form).getByRole("button", { name: "Cluster-Set erstellen" }),
+  ).toBeEnabled();
+});
+
+test("creates a Cluster-Set with vector basis and bounded LLM sampling", async () => {
+  const user = userEvent.setup();
+  let receivedBody: Record<string, unknown> | null = null;
+  mockProjectFetch((path, method, init) => {
+    if (path === "/api/providers" && method === "GET") {
+      return jsonResponse([
+        vllmProvider,
+        { ...ollamaProvider, llm_models: ["llama3.1"] },
+      ]);
+    }
+    if (
+      path === "/api/projects/project-alpha/indexing-runs" &&
+      method === "GET"
+    ) {
+      return jsonResponse([completedAnalysisRun]);
+    }
+    if (
+      path === "/api/projects/project-alpha/cluster-sets" &&
+      method === "GET"
+    ) {
+      return jsonResponse([]);
+    }
+    if (
+      path === "/api/projects/project-alpha/cluster-sets" &&
+      method === "POST"
+    ) {
+      receivedBody = JSON.parse(String(init?.body));
+      return jsonResponse(clusterSet, { status: 201 });
+    }
+    return undefined;
+  });
+  render(<App />);
+
+  await signIn(user);
+  const projectList = await screen.findByRole("region", {
+    name: "Bestehende Projekte",
+  });
+  await user.click(getProjectRow(projectList, "Alpha"));
+  await openProjectTab(user, "Cluster-Sets");
+
+  const form = await screen.findByRole("form", {
+    name: "Cluster-Set erstellen",
+  });
+  await user.type(within(form).getByLabelText("Anzeigename"), "Antworten fein");
+  await user.selectOptions(
+    within(form).getByLabelText("Vektor-Basis"),
+    "combined",
+  );
+  await user.clear(within(form).getByLabelText("Antwort-Gewicht"));
+  await user.type(within(form).getByLabelText("Antwort-Gewicht"), "0.6");
+  await user.clear(within(form).getByLabelText("Nachricht-Gewicht"));
+  await user.type(within(form).getByLabelText("Nachricht-Gewicht"), "0.4");
+  await user.type(
+    within(form).getByLabelText("Outlier-Schwelle optional"),
+    "0.72",
+  );
+  await user.selectOptions(
+    within(form).getByLabelText("LLM-Zusammenfassung"),
+    "ollama",
+  );
+  await user.clear(within(form).getByLabelText("Beispiele pro Cluster"));
+  await user.type(within(form).getByLabelText("Beispiele pro Cluster"), "2");
+  await user.click(
+    within(form).getByRole("button", { name: "Cluster-Set erstellen" }),
+  );
+
+  await screen.findByText("Antworten fein");
+  expect(receivedBody).toMatchObject({
+    indexing_run_id: "run-completed",
+    display_name: "Antworten fein",
+    vector_basis: "combined",
+    message_weight: 0.4,
+    answer_weight: 0.6,
+    outlier_threshold: 0.72,
+    llm_provider: "ollama",
+    llm_model: "llama3.1",
+    llm_sample_count: 2,
+  });
+  const clusterSetsRegion = screen.getByRole("region", {
+    name: "Cluster-Sets",
+  });
+  expect(
+    within(clusterSetsRegion).getByText(/queued · 0%/),
+  ).toBeInTheDocument();
+  expect(
+    within(clusterSetsRegion).getByText(/ollama\/llama3.1/),
+  ).toBeInTheDocument();
+  expect(
+    within(clusterSetsRegion).getByText(/Outlier-Schwelle: 0.72/),
+  ).toBeInTheDocument();
+});
+
+test("rejects non-integer Cluster-Set LLM sample counts before submitting", async () => {
+  const user = userEvent.setup();
+  let postCount = 0;
+  mockProjectFetch((path, method) => {
+    if (path === "/api/providers" && method === "GET") {
+      return jsonResponse([
+        vllmProvider,
+        { ...ollamaProvider, llm_models: ["llama3.1"] },
+      ]);
+    }
+    if (
+      path === "/api/projects/project-alpha/indexing-runs" &&
+      method === "GET"
+    ) {
+      return jsonResponse([completedAnalysisRun]);
+    }
+    if (
+      path === "/api/projects/project-alpha/cluster-sets" &&
+      method === "GET"
+    ) {
+      return jsonResponse([]);
+    }
+    if (
+      path === "/api/projects/project-alpha/cluster-sets" &&
+      method === "POST"
+    ) {
+      postCount += 1;
+      return jsonResponse(clusterSet, { status: 201 });
+    }
+    return undefined;
+  });
+  render(<App />);
+
+  await signIn(user);
+  const projectList = await screen.findByRole("region", {
+    name: "Bestehende Projekte",
+  });
+  await user.click(getProjectRow(projectList, "Alpha"));
+  await openProjectTab(user, "Cluster-Sets");
+
+  const form = await screen.findByRole("form", {
+    name: "Cluster-Set erstellen",
+  });
+  await user.selectOptions(
+    within(form).getByLabelText("LLM-Zusammenfassung"),
+    "ollama",
+  );
+  await user.clear(within(form).getByLabelText("Beispiele pro Cluster"));
+  await user.type(within(form).getByLabelText("Beispiele pro Cluster"), "1.5");
+  await user.click(
+    within(form).getByRole("button", { name: "Cluster-Set erstellen" }),
+  );
+
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "Die Beispielanzahl für Zusammenfassungen ist ungültig.",
+  );
+  expect(postCount).toBe(0);
+});
+
+test("ignores delayed Cluster-Set creation after switching projects", async () => {
   const user = userEvent.setup();
   const betaRun = {
     ...completedAnalysisRun,
     id: "run-beta",
     project_id: "project-beta",
   };
-  let resolveGeneration: (response: Response) => void = () => undefined;
-  const pendingGeneration = new Promise<Response>((resolve) => {
-    resolveGeneration = resolve;
+  let resolveCreation: (response: Response) => void = () => undefined;
+  const pendingCreation = new Promise<Response>((resolve) => {
+    resolveCreation = resolve;
   });
   mockProjectFetch((path, method) => {
     if (
@@ -2078,11 +2083,16 @@ test("ignores delayed cluster generation after switching projects", async () => 
       return jsonResponse([betaRun]);
     }
     if (
-      path ===
-        "/api/projects/project-alpha/analysis-runs/run-completed/clusters/generate" &&
+      path === "/api/projects/project-alpha/cluster-sets" &&
       method === "POST"
     ) {
-      return pendingGeneration;
+      return pendingCreation;
+    }
+    if (
+      /^\/api\/projects\/project-(alpha|beta)\/cluster-sets$/.test(path) &&
+      method === "GET"
+    ) {
+      return jsonResponse([]);
     }
     return undefined;
   });
@@ -2093,14 +2103,13 @@ test("ignores delayed cluster generation after switching projects", async () => 
     name: "Bestehende Projekte",
   });
   await user.click(getProjectRow(projectList, "Alpha"));
-  await openProjectTab(user, "Cluster");
-  const clusterActions = await screen.findByRole("region", {
-    name: "Cluster Aktionen",
+  await openProjectTab(user, "Cluster-Sets");
+  const form = await screen.findByRole("form", {
+    name: "Cluster-Set erstellen",
   });
+  await user.type(within(form).getByLabelText("Anzeigename"), "Alpha Set");
   await user.click(
-    within(clusterActions).getByRole("button", {
-      name: "Cluster erzeugen",
-    }),
+    within(form).getByRole("button", { name: "Cluster-Set erstellen" }),
   );
 
   const navigation = screen.getByRole("navigation", {
@@ -2113,20 +2122,20 @@ test("ignores delayed cluster generation after switching projects", async () => 
   expect(screen.getByText("Projekt geöffnet.")).toBeInTheDocument();
 
   await act(async () => {
-    resolveGeneration(jsonResponse([cluster]));
-    await pendingGeneration;
+    resolveCreation(jsonResponse(clusterSet, { status: 201 }));
+    await pendingCreation;
   });
 
   expect(screen.getByText("Projekt geöffnet.")).toBeInTheDocument();
   expect(
-    screen.queryByText("Cluster erzeugt und geladen."),
+    screen.queryByText("Cluster-Set angelegt. Status wird aktualisiert."),
   ).not.toBeInTheDocument();
-  await openProjectTab(user, "Cluster");
-  const betaClusterExplorer = await screen.findByRole("region", {
-    name: "Cluster Explorer",
+  await openProjectTab(user, "Cluster-Sets");
+  const betaClusterSets = await screen.findByRole("region", {
+    name: "Cluster-Sets",
   });
   expect(
-    within(betaClusterExplorer).queryByText("Cluster H"),
+    within(betaClusterSets).queryByText("Cluster H"),
   ).not.toBeInTheDocument();
 });
 
@@ -2201,7 +2210,7 @@ test("restarts the feedback timeout when the same project error occurs again", a
   expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 });
 
-test("renders safe error feedback for user, provider, import, indexing, candidate, and export actions", async () => {
+test("renders safe error feedback for user, provider, import, indexing, explorer, and export actions", async () => {
   const user = userEvent.setup();
   let indexingRejections = 0;
   mockFetch((input, init) => {
@@ -2270,28 +2279,64 @@ test("renders safe error feedback for user, provider, import, indexing, candidat
         { status: 409 },
       );
     }
-    if (path === "/api/projects/project-alpha/candidates" && method === "GET") {
-      return jsonResponse([candidate]);
-    }
     if (
-      path === "/api/projects/project-alpha/candidates/candidate-1" &&
-      method === "PATCH"
+      path === "/api/projects/project-alpha/cluster-sets" &&
+      method === "GET"
     ) {
-      return jsonResponse(
-        { detail: "candidate update conflicts with current state" },
-        { status: 409 },
-      );
+      return jsonResponse([
+        {
+          ...clusterSet,
+          status: "completed",
+          progress: 100,
+          phase: "completed",
+        },
+      ]);
     }
     if (path === "/api/projects/project-alpha/exports" && method === "GET") {
       return jsonResponse([]);
     }
     if (
-      path === "/api/projects/project-alpha/exports/candidates" &&
+      path ===
+        "/api/projects/project-alpha/cluster-sets/cluster-set-1/clusters" &&
+      method === "GET"
+    ) {
+      return jsonResponse([cluster]);
+    }
+    if (
+      path === "/api/projects/project-alpha/clusters/cluster-1" &&
+      method === "PATCH"
+    ) {
+      return jsonResponse(
+        {
+          detail: "raw cluster update diagnostic",
+          code: "CLUSTER_MANUAL_UPDATE_INVALID",
+        },
+        { status: 422 },
+      );
+    }
+    if (
+      path ===
+        "/api/projects/project-alpha/clusters/cluster-1/sources?limit=50&offset=0" &&
+      method === "GET"
+    ) {
+      return jsonResponse(
+        {
+          detail: "raw source lookup diagnostic",
+          code: "CLUSTER_SOURCE_NOT_FOUND",
+        },
+        { status: 404 },
+      );
+    }
+    if (
+      path === "/api/projects/project-alpha/exports/explorer" &&
       method === "POST"
     ) {
       return jsonResponse(
-        { detail: "candidate export cannot be created" },
-        { status: 400 },
+        {
+          detail: "raw explorer export diagnostic",
+          code: "EXPLORER_EXPORT_FAILED",
+        },
+        { status: 500 },
       );
     }
     throw new Error(`unexpected request ${method} ${path}`);
@@ -2372,155 +2417,84 @@ test("renders safe error feedback for user, provider, import, indexing, candidat
     "indexing run cannot be started",
   );
 
-  await openProjectTab(user, "Kandidaten");
-  const candidateEditor = await screen.findByRole("region", {
-    name: "Candidate Editor",
+  await openProjectTab(user, "Cluster-Sets");
+  const clusterSets = await screen.findByRole("region", {
+    name: "Cluster-Sets",
   });
   await user.click(
-    within(candidateEditor).getByRole("button", {
-      name: "Candidate speichern",
-    }),
+    within(clusterSets).getByRole("button", { name: "Im Explorer laden" }),
   );
-  await expectErrorFeedback(
-    "candidate update conflicts with current state",
-    "raw exception",
-  );
-
-  await openProjectTab(user, "Export");
-  const exportForm = await screen.findByRole("form", {
-    name: "Candidate CSV exportieren",
+  const clusterExplorer = await screen.findByRole("region", {
+    name: "Cluster Explorer",
   });
-  await user.click(
-    within(exportForm).getByRole("button", {
-      name: "Candidate CSV exportieren",
-    }),
-  );
-  await expectErrorFeedback(
-    "candidate export cannot be created",
-    "raw exception",
-  );
-});
-
-test("does not save untouched generated candidate multi-value fields as empty manual overrides", async () => {
-  const user = userEvent.setup();
-  const patchBodies: unknown[] = [];
-  mockFetch((input, init) => {
-    const path = String(input);
-    const method = init?.method ?? "GET";
-    if (path === "/api/auth/sign-in" && method === "POST") {
-      return jsonResponse({ access_token: "api-token", user: owner });
-    }
-    if (path === "/api/users" && method === "GET") {
-      return jsonResponse([owner]);
-    }
-    if (path === "/api/projects" && method === "GET") {
-      return jsonResponse([alphaProject]);
-    }
-    if (path === "/api/providers" && method === "GET") {
-      return jsonResponse([]);
-    }
-    if (path === "/api/projects/project-alpha" && method === "GET") {
-      return jsonResponse(alphaProject);
-    }
-    if (path === "/api/projects/project-alpha/imports" && method === "GET") {
-      return jsonResponse([]);
-    }
-    if (
-      path === "/api/projects/project-alpha/indexing-runs" &&
-      method === "GET"
-    ) {
-      return jsonResponse([]);
-    }
-    if (path === "/api/projects/project-alpha/candidates" && method === "GET") {
-      return jsonResponse([generatedMultiValueCandidate]);
-    }
-    if (
-      path === "/api/projects/project-alpha/candidates/candidate-1" &&
-      method === "PATCH"
-    ) {
-      const body = JSON.parse(String(init?.body));
-      patchBodies.push(body);
-      return jsonResponse({
-        ...generatedMultiValueCandidate,
-        notes: body.notes,
-      });
-    }
-    throw new Error(`unexpected request ${method} ${path}`);
-  });
-  render(<App />);
-
-  await signIn(user);
-  const projectList = await screen.findByRole("region", {
-    name: "Bestehende Projekte",
-  });
-  await user.click(getProjectRow(projectList, "Alpha"));
-  await openProjectTab(user, "Kandidaten");
-
-  const candidateEditor = await screen.findByRole("region", {
-    name: "Candidate Editor",
-  });
-  expect(
-    within(candidateEditor).getByText(
-      /Alternative Fragen Auto: Password reset failed; Reset mail missing/,
-    ),
-  ).toBeInTheDocument();
-  expect(
-    within(candidateEditor).getByText(/Alternative Fragen Manual: -/),
-  ).toBeInTheDocument();
-  expect(
-    within(candidateEditor).getByText(
-      /Alternative Fragen Effective: Password reset failed; Reset mail missing/,
-    ),
-  ).toBeInTheDocument();
-  expect(
-    within(candidateEditor).getByText(
-      'Parameter Auto: {"account_id":"optional"}',
-    ),
-  ).toBeInTheDocument();
-  expect(
-    within(candidateEditor).getByText(/Parameter Manual: -/),
-  ).toBeInTheDocument();
-  expect(
-    within(candidateEditor).getByText(
-      'Parameter Effective: {"account_id":"optional"}',
-    ),
-  ).toBeInTheDocument();
-  expect(
-    within(candidateEditor).getByText(
-      /Externe Datenabhängigkeiten Auto: identity-service/,
-    ),
-  ).toBeInTheDocument();
-  expect(
-    within(candidateEditor).getByText(/Externe Datenabhängigkeiten Manual: -/),
-  ).toBeInTheDocument();
-  expect(
-    within(candidateEditor).getByText(
-      /Externe Datenabhängigkeiten Effective: identity-service/,
-    ),
-  ).toBeInTheDocument();
-  const candidateCard = within(candidateEditor)
-    .getByText("Cluster H")
-    .closest("article");
-  if (candidateCard === null) {
-    throw new Error("candidate card missing");
+  const clusterRow = (
+    await within(clusterExplorer).findByText("Cluster H")
+  ).closest("tr");
+  if (clusterRow === null) {
+    throw new Error("cluster row missing");
   }
-  await user.type(
-    within(candidateCard).getByLabelText("Notizen"),
-    "Reviewed without multi-value edits.",
-  );
   await user.click(
-    within(candidateCard).getByRole("button", {
-      name: "Candidate speichern",
-    }),
+    within(clusterRow).getByRole("button", { name: "Ausschließen" }),
+  );
+  await expectErrorFeedback(
+    "Die Cluster-Änderung ist ungültig und wurde nicht gespeichert.",
+    "raw cluster update diagnostic",
   );
 
-  expect(patchBodies).toHaveLength(1);
-  expect(patchBodies[0]).toMatchObject({
-    manual_alternative_questions: null,
-    manual_parameters: null,
-    manual_external_data_dependencies: null,
-    notes: "Reviewed without multi-value edits.",
+  await user.click(
+    within(clusterRow).getByRole("button", { name: "Quellen anzeigen" }),
+  );
+  await expectErrorFeedback(
+    "Die Quellen dieses Clusters konnten nicht geladen werden. Bitte Cluster-Set neu laden.",
+    "raw source lookup diagnostic",
+  );
+  const failedSourceDialog = await screen.findByRole("dialog", {
+    name: "Cluster H",
   });
+  const sourceAlert = within(failedSourceDialog).getByRole("alert");
+  expect(
+    within(sourceAlert).getByText(
+      "Die Quellen dieses Clusters konnten nicht geladen werden. Bitte Cluster-Set neu laden.",
+    ),
+  ).toBeInTheDocument();
+  expect(
+    within(failedSourceDialog).queryByText(
+      "Keine Quellen für diesen Cluster vorhanden.",
+    ),
+  ).not.toBeInTheDocument();
+  expect(
+    within(failedSourceDialog).getByRole("button", {
+      name: "Quellen erneut laden",
+    }),
+  ).toBeInTheDocument();
+  await user.click(
+    within(failedSourceDialog).getByRole("button", { name: "Schließen" }),
+  );
+
+  const explorerExport = await screen.findByRole("region", {
+    name: "Explorer Export",
+  });
+  await user.click(
+    within(explorerExport).getByRole("button", {
+      name: "Aktuelle Tabelle exportieren",
+    }),
+  );
+  await expectErrorFeedback(
+    "Der Export konnte nicht erstellt werden. Bitte erneut versuchen oder das Format wechseln.",
+    "raw explorer export diagnostic",
+  );
+  const exportAlert = within(explorerExport).getByRole("alert");
+  expect(
+    within(exportAlert).getByText(
+      "Der Export konnte nicht erstellt werden. Bitte erneut versuchen oder das Format wechseln.",
+    ),
+  ).toBeInTheDocument();
+  expect(
+    within(exportAlert).getByText(/Filter und Format bleiben erhalten/),
+  ).toBeInTheDocument();
+  expect(
+    within(explorerExport).queryByLabelText("Letzter Explorer Export"),
+  ).not.toBeInTheDocument();
 });
 
 test("keeps indexing requests project-local and sends only selected provider and model fields", async () => {
@@ -2580,12 +2554,6 @@ test("keeps indexing requests project-local and sends only selected provider and
     }
     if (
       /^\/api\/projects\/project-(alpha|beta)\/indexing-runs$/.test(path) &&
-      method === "GET"
-    ) {
-      return jsonResponse([]);
-    }
-    if (
-      /^\/api\/projects\/project-(alpha|beta)\/candidates$/.test(path) &&
       method === "GET"
     ) {
       return jsonResponse([]);
@@ -2734,9 +2702,6 @@ test("requires explicit OpenAI confirmation immediately before starting an index
       path === "/api/projects/project-alpha/indexing-runs" &&
       method === "GET"
     ) {
-      return jsonResponse([]);
-    }
-    if (path === "/api/projects/project-alpha/candidates" && method === "GET") {
       return jsonResponse([]);
     }
     if (path === "/api/projects/project-alpha/exports" && method === "GET") {

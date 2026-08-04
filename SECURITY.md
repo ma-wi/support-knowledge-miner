@@ -16,9 +16,6 @@ sensitive personal data.
 - Supported versions: Only the latest revision of the main branch.
 - Disclosure and coordination process: Coordinate disclosure privately with the maintainer. Public disclosure occurs only after a fix or mitigation is available.
 
-Replace the contact placeholder and complete the response expectations before
-configured-project CI is expected to pass.
-
 <!-- guided-setup:policy-profile:start -->
 ## Guided setup policy profile
 

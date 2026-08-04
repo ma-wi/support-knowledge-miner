@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import "./App.css";
 
@@ -70,6 +70,7 @@ type ApiProviderConfiguration = {
   provider: string;
   endpoint_url: string | null;
   manual_models: string[];
+  llm_models?: string[];
   api_key_set: boolean;
   updated_at: string;
 };
@@ -85,6 +86,7 @@ type ProviderConfiguration = {
   provider: string;
   endpointUrl: string | null;
   manualModels: string[];
+  llmModels: string[];
   apiKeySet: boolean;
   updatedAt: string;
 };
@@ -95,9 +97,9 @@ type AuthoritativeProjectContext = {
   generation: number;
   ready: boolean;
 };
-type ClusterGenerationRequest = {
+type ClusterSetGenerationRequest = {
   projectId: string;
-  runId: string;
+  indexingRunId: string;
   generation: number;
 };
 
@@ -147,11 +149,82 @@ type IndexingRun = {
   updatedAt: string;
 };
 
+type ApiClusterSet = {
+  id: string;
+  project_id: string;
+  indexing_run_id: string;
+  dataset_version_id: string;
+  dataset_display_name: string | null;
+  indexing_deleted_at: string | null;
+  parent_cluster_set_id: string | null;
+  display_name: string;
+  status: string;
+  progress: number;
+  phase: string;
+  derivation_type: string;
+  vector_basis: string;
+  message_weight: number;
+  answer_weight: number;
+  algorithm: string;
+  parameters: Record<string, unknown>;
+  source_snapshot: Record<string, unknown>;
+  llm_provider: string | null;
+  llm_model: string | null;
+  llm_parameters: Record<string, unknown>;
+  llm_sample_strategy: Record<string, unknown>;
+  error_code: string | null;
+  error_message: string | null;
+  diagnostics: Record<string, unknown>;
+  started_at: string | null;
+  completed_at: string | null;
+  cancel_requested_at: string | null;
+  deleted_at: string | null;
+  created_at: string;
+  updated_at: string;
+  cluster_count: number;
+};
+
+type ClusterSet = {
+  id: string;
+  projectId: string;
+  indexingRunId: string;
+  datasetVersionId: string;
+  datasetDisplayName: string | null;
+  indexingDeletedAt: string | null;
+  parentClusterSetId: string | null;
+  displayName: string;
+  status: string;
+  progress: number;
+  phase: string;
+  derivationType: string;
+  vectorBasis: string;
+  messageWeight: number;
+  answerWeight: number;
+  algorithm: string;
+  parameters: Record<string, unknown>;
+  sourceSnapshot: Record<string, unknown>;
+  llmProvider: string | null;
+  llmModel: string | null;
+  llmParameters: Record<string, unknown>;
+  llmSampleStrategy: Record<string, unknown>;
+  errorCode: string | null;
+  errorMessage: string | null;
+  diagnostics: Record<string, unknown>;
+  startedAt: string | null;
+  completedAt: string | null;
+  cancelRequestedAt: string | null;
+  deletedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  clusterCount: number;
+};
+
 type ApiCluster = {
   id: string;
   project_id: string;
   analysis_run_id: string;
   dataset_version_id: string;
+  cluster_set_id?: string | null;
   auto_title: string;
   manual_title: string | null;
   effective_title: string;
@@ -166,6 +239,8 @@ type ApiCluster = {
   algorithm: string;
   member_count: number;
   metadata: Record<string, unknown>;
+  auto_summary_question?: string | null;
+  auto_summary_answer?: string | null;
 };
 
 type Cluster = {
@@ -173,6 +248,7 @@ type Cluster = {
   projectId: string;
   analysisRunId: string;
   datasetVersionId: string;
+  clusterSetId: string | null;
   autoTitle: string;
   manualTitle: string | null;
   effectiveTitle: string;
@@ -187,6 +263,8 @@ type Cluster = {
   algorithm: string;
   memberCount: number;
   metadata: Record<string, unknown>;
+  autoSummaryQuestion: string | null;
+  autoSummaryAnswer: string | null;
 };
 
 type ApiClusterSource = {
@@ -201,6 +279,14 @@ type ApiClusterSource = {
   assignment_type: string;
 };
 
+type ApiClusterSourcePage = {
+  sources: ApiClusterSource[];
+  limit: number;
+  offset: number;
+  next_offset: number | null;
+  has_more: boolean;
+};
+
 type ClusterSource = {
   clusterId: string;
   messagePairId: string;
@@ -213,130 +299,6 @@ type ClusterSource = {
   assignmentType: string;
 };
 
-type ApiCandidate = {
-  id: string;
-  project_id: string;
-  dataset_version_id: string;
-  analysis_run_id: string | null;
-  source_cluster_id: string | null;
-  candidate_type: string;
-  auto_status: string;
-  manual_status: string | null;
-  effective_status: string;
-  language: string;
-  auto_category_path: string | null;
-  manual_category_path: string | null;
-  effective_category_path: string | null;
-  auto_title: string;
-  manual_title: string | null;
-  effective_title: string;
-  auto_canonical_question: string;
-  manual_canonical_question: string | null;
-  effective_canonical_question: string;
-  auto_canonical_answer: string;
-  manual_canonical_answer: string | null;
-  effective_canonical_answer: string;
-  auto_alternative_questions: string[];
-  manual_alternative_questions: string[] | null;
-  effective_alternative_questions: string[];
-  auto_parameters: Record<string, unknown>;
-  manual_parameters: Record<string, unknown> | null;
-  effective_parameters: Record<string, unknown>;
-  auto_external_data_dependencies: string[];
-  manual_external_data_dependencies: string[] | null;
-  effective_external_data_dependencies: string[];
-  quality_score: number;
-  faq_suitability_score: number;
-  dynamicity_score: number;
-  contradiction_score: number;
-  source_pair_count: number;
-  source_cluster_ids: string[];
-  notes: string | null;
-  metadata: Record<string, unknown>;
-};
-
-type Candidate = {
-  id: string;
-  projectId: string;
-  datasetVersionId: string;
-  analysisRunId: string | null;
-  sourceClusterId: string | null;
-  candidateType: string;
-  autoStatus: string;
-  manualStatus: string | null;
-  effectiveStatus: string;
-  language: string;
-  autoCategoryPath: string | null;
-  manualCategoryPath: string | null;
-  effectiveCategoryPath: string | null;
-  autoTitle: string;
-  manualTitle: string | null;
-  effectiveTitle: string;
-  autoCanonicalQuestion: string;
-  manualCanonicalQuestion: string | null;
-  effectiveCanonicalQuestion: string;
-  autoCanonicalAnswer: string;
-  manualCanonicalAnswer: string | null;
-  effectiveCanonicalAnswer: string;
-  autoAlternativeQuestions: string[];
-  manualAlternativeQuestions: string[] | null;
-  effectiveAlternativeQuestions: string[];
-  autoParameters: Record<string, unknown>;
-  manualParameters: Record<string, unknown> | null;
-  effectiveParameters: Record<string, unknown>;
-  autoExternalDataDependencies: string[];
-  manualExternalDataDependencies: string[] | null;
-  effectiveExternalDataDependencies: string[];
-  qualityScore: number;
-  faqSuitabilityScore: number;
-  dynamicityScore: number;
-  contradictionScore: number;
-  sourcePairCount: number;
-  sourceClusterIds: string[];
-  notes: string | null;
-  metadata: Record<string, unknown>;
-};
-
-type ApiCandidateSource = {
-  candidate_id: string;
-  cluster_id: string | null;
-  message_pair_id: string;
-  ticket_id: string;
-  message_group_id: string;
-  message: string;
-  answer: string;
-  message_segment_id: string | null;
-  source_language: string;
-  normalized_customer_message: string | null;
-  normalized_support_answer: string | null;
-  assignment_type: string;
-  membership_score: number;
-  is_multi_intent: boolean;
-  intent_label: string | null;
-  dataset_version_id: string;
-  analysis_run_id: string | null;
-};
-
-type CandidateSource = {
-  candidateId: string;
-  clusterId: string | null;
-  messagePairId: string;
-  ticketId: string;
-  messageGroupId: string;
-  message: string;
-  answer: string;
-  messageSegmentId: string | null;
-  sourceLanguage: string;
-  normalizedCustomerMessage: string | null;
-  normalizedSupportAnswer: string | null;
-  assignmentType: string;
-  membershipScore: number;
-  isMultiIntent: boolean;
-  intentLabel: string | null;
-  datasetVersionId: string;
-  analysisRunId: string | null;
-};
-
 type ApiExportLog = {
   id: string;
   project_id: string;
@@ -346,6 +308,7 @@ type ApiExportLog = {
   selection: Record<string, unknown>;
   dataset_version_id: string | null;
   analysis_run_id: string | null;
+  cluster_set_id: string | null;
   output_filename: string;
   output_path: string | null;
   row_count: number;
@@ -361,6 +324,7 @@ type ExportLog = {
   selection: Record<string, unknown>;
   datasetVersionId: string | null;
   analysisRunId: string | null;
+  clusterSetId: string | null;
   outputFilename: string;
   outputPath: string | null;
   rowCount: number;
@@ -380,14 +344,23 @@ type Feedback = {
 };
 
 type ActivePage = "projects" | "settings";
-type SettingsTab = "providers" | "users";
+type SettingsTab = "providers" | "llm-providers" | "users";
 type ProjectTab =
-  "import" | "indexing" | "clusters" | "candidates" | "exports" | "delete";
+  "import" | "indexing" | "cluster-sets" | "explorer" | "delete";
+type LlmProviderSelection = "" | "openai" | "ollama";
+type ExplorerExportFormat = "csv" | "json";
+type ClusterSetRefinementDraft = {
+  parentClusterSetId: string;
+  indexingRunId: string;
+  sourceClusterIds: string[];
+  description: string;
+};
 
 const API_BASE = import.meta.env.VITE_SKM_API_BASE_URL ?? "";
 const INTERNAL_LAST_NAME_PLACEHOLDER = "-";
 const SESSION_TOKEN_STORAGE_KEY = "skm.session-token";
 const RUN_POLL_INTERVAL_MS = 2000;
+const CLUSTER_SOURCE_PAGE_SIZE = 50;
 const FEEDBACK_LABELS: Record<FeedbackKind, string> = {
   success: "Erfolg",
   info: "Hinweis",
@@ -403,6 +376,50 @@ const ERROR_MESSAGES_BY_CODE: Record<string, string> = {
     "Diese Indizierung würde Originaltexte an OpenAI senden. Bitte Cloud-Nutzung bewusst bestätigen oder ein lokales Modell wählen.",
   INDEXING_CANCEL_NOT_AVAILABLE:
     "Diese Indizierung kann nicht mehr abgebrochen werden. Bitte Liste aktualisieren.",
+  INDEXING_NOT_COMPLETE:
+    "Diese Indizierung ist noch nicht abgeschlossen. Bitte Abschluss abwarten oder eine fertige Indizierung wählen.",
+  CLUSTER_VECTOR_BASIS_UNAVAILABLE:
+    "Für diese Vektor-Basis fehlen Embeddings oder die Gewichtung ist ungültig. Bitte eine andere Basis wählen.",
+  CLUSTER_SUMMARY_SAMPLE_COUNT_INVALID:
+    "Die Beispielanzahl für Zusammenfassungen ist ungültig. Bitte einen Wert ab 1 wählen.",
+  CLUSTER_BUDGET_EXCEEDED:
+    "Die Zusammenfassung überschreitet das erlaubte Text- oder Aufruflimit. Bitte weniger Beispiele wählen.",
+  LLM_CLOUD_CONFIRMATION_REQUIRED:
+    "Diese Zusammenfassung würde Originaltexte an OpenAI senden. Bitte Cloud-Nutzung bewusst bestätigen.",
+  LLM_PROVIDER_UNAVAILABLE:
+    "Der LLM-Provider ist nicht verfügbar. Bitte Provider-Einstellungen prüfen oder Summaries deaktivieren.",
+  CLUSTER_SUMMARY_FAILED:
+    "Die Clusterbildung ist abgeschlossen, aber die Zusammenfassung konnte nicht erstellt werden.",
+  CLUSTER_SET_CANCEL_NOT_AVAILABLE:
+    "Dieses Cluster-Set kann nicht mehr abgebrochen werden. Bitte Liste aktualisieren.",
+  CLUSTER_SET_NOT_FOUND:
+    "Das Cluster-Set wurde nicht gefunden oder ist nicht mehr verfügbar. Bitte Liste neu laden.",
+  CLUSTER_SET_NOT_COMPLETE:
+    "Dieses Cluster-Set kann erst nach Abschluss geladen werden. Bitte Status aktualisieren und warten.",
+  CLUSTER_SOURCE_NOT_FOUND:
+    "Die Quellen dieses Clusters konnten nicht geladen werden. Bitte Cluster-Set neu laden.",
+  CLUSTER_SOURCE_PAGE_INVALID:
+    "Die Quellen konnten wegen ungültiger Seitenparameter nicht geladen werden. Bitte erneut öffnen.",
+  CLUSTER_MANUAL_UPDATE_INVALID:
+    "Die Cluster-Änderung ist ungültig und wurde nicht gespeichert.",
+  CLUSTER_REFINEMENT_EMPTY_SOURCE:
+    "Die gewählte Quelle enthält keine nutzbaren Zeilen für eine Verfeinerung.",
+  CLUSTER_SEARCH_NO_RESULTS:
+    "Keine Cluster entsprechen der aktuellen Textsuche oder dem Filter.",
+  CLUSTER_OUTLIER_EMPTY_RESULT:
+    "Die Ausreißer-Einstellung würde keine Zeilen übrig lassen. Bitte Schwellwert anpassen.",
+  CLUSTER_OUTLIER_RECALCULATION_FAILED:
+    "Die Ausreißer-Neuberechnung konnte nicht abgeschlossen werden.",
+  CLUSTER_SET_LINEAGE_UNAVAILABLE:
+    "Die Analyse-Historie ist unvollständig. Bitte Liste neu laden.",
+  EXPLORER_EXPORT_EMPTY:
+    "Im aktuellen Filterstand gibt es keine exportierbaren Zeilen.",
+  EXPLORER_EXPORT_FORMAT_INVALID:
+    "Das Exportformat ist ungültig. Bitte CSV oder JSON wählen.",
+  EXPLORER_EXPORT_SELECTION_TOO_LARGE:
+    "Die aktuelle Explorer-Auswahl ist zu groß. Bitte Filter oder Auswahl verkleinern.",
+  EXPLORER_EXPORT_FAILED:
+    "Der Export konnte nicht erstellt werden. Bitte erneut versuchen oder das Format wechseln.",
 };
 
 function readStoredSessionToken(): string | null {
@@ -501,6 +518,7 @@ function toProviderConfiguration(
     provider: configuration.provider,
     endpointUrl: configuration.endpoint_url,
     manualModels: configuration.manual_models,
+    llmModels: configuration.llm_models ?? [],
     apiKeySet: configuration.api_key_set,
     updatedAt: configuration.updated_at,
   };
@@ -531,12 +549,50 @@ function toIndexingRun(run: ApiIndexingRun): IndexingRun {
   };
 }
 
+function toClusterSet(clusterSet: ApiClusterSet): ClusterSet {
+  return {
+    id: clusterSet.id,
+    projectId: clusterSet.project_id,
+    indexingRunId: clusterSet.indexing_run_id,
+    datasetVersionId: clusterSet.dataset_version_id,
+    datasetDisplayName: clusterSet.dataset_display_name,
+    indexingDeletedAt: clusterSet.indexing_deleted_at,
+    parentClusterSetId: clusterSet.parent_cluster_set_id,
+    displayName: clusterSet.display_name,
+    status: clusterSet.status,
+    progress: clusterSet.progress,
+    phase: clusterSet.phase,
+    derivationType: clusterSet.derivation_type,
+    vectorBasis: clusterSet.vector_basis,
+    messageWeight: clusterSet.message_weight,
+    answerWeight: clusterSet.answer_weight,
+    algorithm: clusterSet.algorithm,
+    parameters: clusterSet.parameters,
+    sourceSnapshot: clusterSet.source_snapshot,
+    llmProvider: clusterSet.llm_provider,
+    llmModel: clusterSet.llm_model,
+    llmParameters: clusterSet.llm_parameters,
+    llmSampleStrategy: clusterSet.llm_sample_strategy,
+    errorCode: clusterSet.error_code,
+    errorMessage: clusterSet.error_message,
+    diagnostics: clusterSet.diagnostics,
+    startedAt: clusterSet.started_at,
+    completedAt: clusterSet.completed_at,
+    cancelRequestedAt: clusterSet.cancel_requested_at,
+    deletedAt: clusterSet.deleted_at,
+    createdAt: clusterSet.created_at,
+    updatedAt: clusterSet.updated_at,
+    clusterCount: clusterSet.cluster_count,
+  };
+}
+
 function toCluster(cluster: ApiCluster): Cluster {
   return {
     id: cluster.id,
     projectId: cluster.project_id,
     analysisRunId: cluster.analysis_run_id,
     datasetVersionId: cluster.dataset_version_id,
+    clusterSetId: cluster.cluster_set_id ?? null,
     autoTitle: cluster.auto_title,
     manualTitle: cluster.manual_title,
     effectiveTitle: cluster.effective_title,
@@ -551,6 +607,8 @@ function toCluster(cluster: ApiCluster): Cluster {
     algorithm: cluster.algorithm,
     memberCount: cluster.member_count,
     metadata: cluster.metadata,
+    autoSummaryQuestion: cluster.auto_summary_question ?? null,
+    autoSummaryAnswer: cluster.auto_summary_answer ?? null,
   };
 }
 
@@ -568,73 +626,6 @@ function toClusterSource(source: ApiClusterSource): ClusterSource {
   };
 }
 
-function toCandidate(candidate: ApiCandidate): Candidate {
-  return {
-    id: candidate.id,
-    projectId: candidate.project_id,
-    datasetVersionId: candidate.dataset_version_id,
-    analysisRunId: candidate.analysis_run_id,
-    sourceClusterId: candidate.source_cluster_id,
-    candidateType: candidate.candidate_type,
-    autoStatus: candidate.auto_status,
-    manualStatus: candidate.manual_status,
-    effectiveStatus: candidate.effective_status,
-    language: candidate.language,
-    autoCategoryPath: candidate.auto_category_path,
-    manualCategoryPath: candidate.manual_category_path,
-    effectiveCategoryPath: candidate.effective_category_path,
-    autoTitle: candidate.auto_title,
-    manualTitle: candidate.manual_title,
-    effectiveTitle: candidate.effective_title,
-    autoCanonicalQuestion: candidate.auto_canonical_question,
-    manualCanonicalQuestion: candidate.manual_canonical_question,
-    effectiveCanonicalQuestion: candidate.effective_canonical_question,
-    autoCanonicalAnswer: candidate.auto_canonical_answer,
-    manualCanonicalAnswer: candidate.manual_canonical_answer,
-    effectiveCanonicalAnswer: candidate.effective_canonical_answer,
-    autoAlternativeQuestions: candidate.auto_alternative_questions,
-    manualAlternativeQuestions: candidate.manual_alternative_questions,
-    effectiveAlternativeQuestions: candidate.effective_alternative_questions,
-    autoParameters: candidate.auto_parameters,
-    manualParameters: candidate.manual_parameters,
-    effectiveParameters: candidate.effective_parameters,
-    autoExternalDataDependencies: candidate.auto_external_data_dependencies,
-    manualExternalDataDependencies: candidate.manual_external_data_dependencies,
-    effectiveExternalDataDependencies:
-      candidate.effective_external_data_dependencies,
-    qualityScore: candidate.quality_score,
-    faqSuitabilityScore: candidate.faq_suitability_score,
-    dynamicityScore: candidate.dynamicity_score,
-    contradictionScore: candidate.contradiction_score,
-    sourcePairCount: candidate.source_pair_count,
-    sourceClusterIds: candidate.source_cluster_ids,
-    notes: candidate.notes,
-    metadata: candidate.metadata,
-  };
-}
-
-function toCandidateSource(source: ApiCandidateSource): CandidateSource {
-  return {
-    candidateId: source.candidate_id,
-    clusterId: source.cluster_id,
-    messagePairId: source.message_pair_id,
-    ticketId: source.ticket_id,
-    messageGroupId: source.message_group_id,
-    message: source.message,
-    answer: source.answer,
-    messageSegmentId: source.message_segment_id,
-    sourceLanguage: source.source_language,
-    normalizedCustomerMessage: source.normalized_customer_message,
-    normalizedSupportAnswer: source.normalized_support_answer,
-    assignmentType: source.assignment_type,
-    membershipScore: source.membership_score,
-    isMultiIntent: source.is_multi_intent,
-    intentLabel: source.intent_label,
-    datasetVersionId: source.dataset_version_id,
-    analysisRunId: source.analysis_run_id,
-  };
-}
-
 function toExportLog(log: ApiExportLog): ExportLog {
   return {
     id: log.id,
@@ -645,6 +636,7 @@ function toExportLog(log: ApiExportLog): ExportLog {
     selection: log.selection,
     datasetVersionId: log.dataset_version_id,
     analysisRunId: log.analysis_run_id,
+    clusterSetId: log.cluster_set_id,
     outputFilename: log.output_filename,
     outputPath: log.output_path,
     rowCount: log.row_count,
@@ -659,11 +651,13 @@ function parseModels(value: FormDataEntryValue | null): string[] {
     .filter(Boolean);
 }
 
-function formatJsonObject(value: Record<string, unknown> | null): string {
-  if (value === null || Object.keys(value).length === 0) {
-    return "-";
+function parsePositiveInteger(value: FormDataEntryValue | null): number | null {
+  const cleaned = String(value ?? "").trim();
+  if (!/^[1-9]\d*$/.test(cleaned)) {
+    return null;
   }
-  return JSON.stringify(value);
+  const parsed = Number(cleaned);
+  return Number.isSafeInteger(parsed) ? parsed : null;
 }
 
 class ApiRequestError extends Error {
@@ -765,18 +759,42 @@ function App() {
   );
   const [providers, setProviders] = useState<ProviderConfiguration[]>([]);
   const [indexingRuns, setIndexingRuns] = useState<IndexingRun[]>([]);
+  const [clusterSets, setClusterSets] = useState<ClusterSet[]>([]);
+  const [collapsedClusterSetIds, setCollapsedClusterSetIds] = useState<
+    Set<string>
+  >(new Set());
   const [clusters, setClusters] = useState<Cluster[]>([]);
   const [clusterSources, setClusterSources] = useState<ClusterSource[]>([]);
-  const [candidates, setCandidates] = useState<Candidate[]>([]);
-  const [candidateSources, setCandidateSources] = useState<CandidateSource[]>(
-    [],
-  );
   const [exportLogs, setExportLogs] = useState<ExportLog[]>([]);
-  const [lastExportCsv, setLastExportCsv] = useState("");
+  const [lastExportContent, setLastExportContent] = useState("");
+  const [lastExportContentType, setLastExportContentType] = useState("");
   const [feedback, setFeedback] = useState<Feedback | null>(null);
-  const [clusterLoadRunId, setClusterLoadRunId] = useState<string | null>(null);
-  const [clusterGenerationRequest, setClusterGenerationRequest] =
-    useState<ClusterGenerationRequest | null>(null);
+  const [clusterSetLoadId, setClusterSetLoadId] = useState<string | null>(null);
+  const [sourceDialogCluster, setSourceDialogCluster] =
+    useState<Cluster | null>(null);
+  const [sourceDialogLoaded, setSourceDialogLoaded] = useState(false);
+  const [sourceDialogError, setSourceDialogError] = useState<string | null>(
+    null,
+  );
+  const [sourceDialogNextOffset, setSourceDialogNextOffset] = useState<
+    number | null
+  >(null);
+  const [sourceDialogLoadingMore, setSourceDialogLoadingMore] = useState(false);
+  const [clusterSearchQuery, setClusterSearchQuery] = useState("");
+  const [clusterCategoryFilter, setClusterCategoryFilter] = useState("");
+  const [clusterGroupByCategory, setClusterGroupByCategory] = useState(false);
+  const [showExcludedClusters, setShowExcludedClusters] = useState(false);
+  const [includeOutlierRows, setIncludeOutlierRows] = useState(true);
+  const [outlierThreshold, setOutlierThreshold] = useState("0.5");
+  const [explorerExportFormat, setExplorerExportFormat] =
+    useState<ExplorerExportFormat>("csv");
+  const [explorerExportError, setExplorerExportError] = useState<string | null>(
+    null,
+  );
+  const [clusterSetRefinementDraft, setClusterSetRefinementDraft] =
+    useState<ClusterSetRefinementDraft | null>(null);
+  const [clusterSetGenerationRequest, setClusterSetGenerationRequest] =
+    useState<ClusterSetGenerationRequest | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [activePage, setActivePage] = useState<ActivePage>("projects");
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("providers");
@@ -792,10 +810,18 @@ function App() {
     useState<ConfigurableProvider>("vllm");
   const [indexingModel, setIndexingModel] = useState("");
   const [cloudUseConfirmed, setCloudUseConfirmed] = useState(false);
+  const [clusterSetVectorBasis, setClusterSetVectorBasis] = useState("message");
+  const [clusterSetLlmProvider, setClusterSetLlmProvider] =
+    useState<LlmProviderSelection>("");
+  const [clusterSetLlmSampleAll, setClusterSetLlmSampleAll] = useState(false);
+  const [clusterSetCloudUseConfirmed, setClusterSetCloudUseConfirmed] =
+    useState(false);
   const projectOpenGeneration = useRef(0);
-  const clusterGenerationRequestRef = useRef<ClusterGenerationRequest | null>(
-    null,
-  );
+  const clusterSetGenerationRequestRef =
+    useRef<ClusterSetGenerationRequest | null>(null);
+  const sourceDialogRef = useRef<HTMLElement | null>(null);
+  const sourceDialogCloseRef = useRef<HTMLButtonElement | null>(null);
+  const sourceDialogTriggerRef = useRef<HTMLElement | null>(null);
   const signOutRef = useRef<() => void>(() => undefined);
   const authoritativeProjectContext = useRef<AuthoritativeProjectContext>({
     projectId: null,
@@ -805,6 +831,15 @@ function App() {
 
   function showFeedback(kind: FeedbackKind, text: string) {
     setFeedback({ kind, text });
+  }
+
+  function resetSourceDialogState() {
+    setClusterSources([]);
+    setSourceDialogCluster(null);
+    setSourceDialogLoaded(false);
+    setSourceDialogError(null);
+    setSourceDialogNextOffset(null);
+    setSourceDialogLoadingMore(false);
   }
 
   function invalidateProjectContext() {
@@ -877,35 +912,47 @@ function App() {
     return apiRuns.map(toIndexingRun);
   }
 
-  async function loadClusters(token: string, projectId: string, runId: string) {
+  async function fetchClusterSets(
+    token: string,
+    projectId: string,
+    signal?: AbortSignal,
+  ) {
+    const apiClusterSets = await apiRequest<ApiClusterSet[]>(
+      `/api/projects/${projectId}/cluster-sets`,
+      { token, signal },
+    );
+    return apiClusterSets.map(toClusterSet);
+  }
+
+  async function loadClusterSetClusters(
+    token: string,
+    projectId: string,
+    clusterSetId: string,
+  ) {
     try {
       const apiClusters = await apiRequest<ApiCluster[]>(
-        `/api/projects/${projectId}/analysis-runs/${runId}/clusters`,
+        `/api/projects/${projectId}/cluster-sets/${clusterSetId}/clusters`,
         { token },
       );
       setClusters(apiClusters.map(toCluster));
-      setClusterSources([]);
-      setClusterLoadRunId(runId);
+      resetSourceDialogState();
+      setClusterSetLoadId(clusterSetId);
+      setExplorerExportError(null);
+      setLastExportContent("");
+      setLastExportContentType("");
+      setProjectTab("explorer");
       showFeedback(
         apiClusters.length > 0 ? "success" : "info",
         apiClusters.length > 0
-          ? "Cluster geladen."
-          : "Für diese abgeschlossene Indizierung wurden noch keine Cluster erzeugt.",
+          ? "Cluster-Set geladen."
+          : "Dieses Cluster-Set enthält noch keine Cluster.",
       );
     } catch (error: unknown) {
       showFeedback(
         "error",
-        actionErrorMessage(error, "Cluster konnten nicht geladen werden."),
+        actionErrorMessage(error, "Cluster-Set konnte nicht geladen werden."),
       );
     }
-  }
-
-  async function fetchCandidates(token: string, projectId: string) {
-    const apiCandidates = await apiRequest<ApiCandidate[]>(
-      `/api/projects/${projectId}/candidates`,
-      { token },
-    );
-    return apiCandidates.map(toCandidate);
   }
 
   async function fetchExports(token: string, projectId: string) {
@@ -1023,13 +1070,14 @@ function App() {
       setImportLogEntries([]);
       setProviders([]);
       setIndexingRuns([]);
+      setClusterSets([]);
       setClusters([]);
-      setClusterLoadRunId(null);
-      setClusterSources([]);
-      setCandidates([]);
-      setCandidateSources([]);
+      setClusterSetLoadId(null);
+      resetSourceDialogState();
       setExportLogs([]);
-      setLastExportCsv("");
+      setExplorerExportError(null);
+      setLastExportContent("");
+      setLastExportContentType("");
       showFeedback(
         "error",
         actionErrorMessage(
@@ -1054,13 +1102,14 @@ function App() {
     setImportLogEntries([]);
     setProviders([]);
     setIndexingRuns([]);
+    setClusterSets([]);
     setClusters([]);
-    setClusterLoadRunId(null);
-    setClusterSources([]);
-    setCandidates([]);
-    setCandidateSources([]);
+    setClusterSetLoadId(null);
+    resetSourceDialogState();
     setExportLogs([]);
-    setLastExportCsv("");
+    setExplorerExportError(null);
+    setLastExportContent("");
+    setLastExportContentType("");
     setOpenAiDiscoveredModels([]);
     setOpenAiSelectedModels([]);
     setRecentProjectIds([]);
@@ -1101,6 +1150,7 @@ function App() {
     setActivePage("projects");
     setCurrentProject(null);
     setIndexingRuns([]);
+    setClusterSets([]);
     setProjectTab("import");
     setFeedback(null);
   }
@@ -1149,13 +1199,14 @@ function App() {
     setImportLogs([]);
     setImportLogEntries([]);
     setIndexingRuns([]);
+    setClusterSets([]);
     setClusters([]);
-    setClusterLoadRunId(null);
-    setClusterSources([]);
-    setCandidates([]);
-    setCandidateSources([]);
+    setClusterSetLoadId(null);
+    resetSourceDialogState();
     setExportLogs([]);
-    setLastExportCsv("");
+    setExplorerExportError(null);
+    setLastExportContent("");
+    setLastExportContentType("");
     setProjectTab("import");
     setActivePage("projects");
     try {
@@ -1174,17 +1225,17 @@ function App() {
       rememberProjectAccess(project.id);
       setActivePage("projects");
 
-      const [logs, nextCandidates, exports] = await Promise.allSettled([
+      const [logs, nextClusterSets, exports] = await Promise.allSettled([
         fetchImportLogs(session.token, projectId),
-        fetchCandidates(session.token, projectId),
+        fetchClusterSets(session.token, projectId),
         fetchExports(session.token, projectId),
       ]);
       if (projectOpenGeneration.current !== generation) {
         return;
       }
       setImportLogs(logs.status === "fulfilled" ? logs.value : []);
-      setCandidates(
-        nextCandidates.status === "fulfilled" ? nextCandidates.value : [],
+      setClusterSets(
+        nextClusterSets.status === "fulfilled" ? nextClusterSets.value : [],
       );
       setExportLogs(exports.status === "fulfilled" ? exports.value : []);
       authoritativeProjectContext.current = {
@@ -1259,13 +1310,14 @@ function App() {
         setImportLogs([]);
         setImportLogEntries([]);
         setIndexingRuns([]);
+        setClusterSets([]);
         setClusters([]);
-        setClusterLoadRunId(null);
-        setClusterSources([]);
-        setCandidates([]);
-        setCandidateSources([]);
+        setClusterSetLoadId(null);
+        resetSourceDialogState();
         setExportLogs([]);
-        setLastExportCsv("");
+        setExplorerExportError(null);
+        setLastExportContent("");
+        setLastExportContentType("");
       }
       showFeedback("success", "Projekt gelöscht.");
     } catch (error: unknown) {
@@ -1525,10 +1577,12 @@ function App() {
       payload.manual_models = openAiSelectedModels.length
         ? openAiSelectedModels
         : parseModels(form.get("manualModels"));
+      payload.llm_models = parseModels(form.get("llmModels"));
     } else if (provider === "ollama") {
       payload.manual_models =
         providers.find((item) => item.provider === "ollama")?.manualModels ??
         [];
+      payload.llm_models = parseModels(form.get("llmModels"));
       payload.endpoint_url = String(form.get("endpointUrl") ?? "").trim();
     } else {
       payload.manual_models = parseModels(form.get("manualModels"));
@@ -1611,6 +1665,8 @@ function App() {
             providers.find((item) => item.provider === provider)?.endpointUrl ??
             null,
           manual_models: models,
+          llm_models: providers.find((item) => item.provider === provider)
+            ?.llmModels,
         }),
       },
     );
@@ -1973,11 +2029,6 @@ function App() {
         },
       );
       setIndexingRuns((existing) => existing.filter((run) => run.id !== runId));
-      if (clusterLoadRunId === runId) {
-        setClusters([]);
-        setClusterSources([]);
-        setClusterLoadRunId(null);
-      }
       showFeedback("success", "Indizierung gelöscht.");
     } catch (error: unknown) {
       showFeedback(
@@ -1987,51 +2038,220 @@ function App() {
     }
   }
 
-  async function generateClusters(runId: string) {
+  function upsertClusterSet(clusterSet: ClusterSet) {
+    setClusterSets((existing) => {
+      const index = existing.findIndex((item) => item.id === clusterSet.id);
+      if (index === -1) {
+        return [clusterSet, ...existing];
+      }
+      return existing.map((item) =>
+        item.id === clusterSet.id ? clusterSet : item,
+      );
+    });
+    const parentClusterSetId = clusterSet.parentClusterSetId;
+    if (parentClusterSetId !== null) {
+      setCollapsedClusterSetIds((existing) => {
+        if (!existing.has(parentClusterSetId)) {
+          return existing;
+        }
+        const next = new Set(existing);
+        next.delete(parentClusterSetId);
+        return next;
+      });
+    }
+  }
+
+  function toggleClusterSetBranch(clusterSetId: string) {
+    setCollapsedClusterSetIds((existing) => {
+      const next = new Set(existing);
+      if (next.has(clusterSetId)) {
+        next.delete(clusterSetId);
+      } else {
+        next.add(clusterSetId);
+      }
+      return next;
+    });
+  }
+
+  async function createClusterSet(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
     if (
       session === null ||
       currentProject === null ||
-      clusterGenerationRequestRef.current !== null
+      clusterSetGenerationRequestRef.current !== null
     ) {
       return;
     }
-    const request: ClusterGenerationRequest = {
+    const form = new FormData(event.currentTarget);
+    const indexingRunId = String(form.get("indexingRunId") ?? "");
+    if (!indexingRunId) {
+      showFeedback("error", "Bitte eine abgeschlossene Indizierung wählen.");
+      return;
+    }
+    const minClusterSize = Number.parseInt(
+      String(form.get("minClusterSize") ?? "2"),
+      10,
+    );
+    const minSamplesRaw = String(form.get("minSamples") ?? "").trim();
+    const epsilonRaw = String(
+      form.get("clusterSelectionEpsilon") ?? "0",
+    ).trim();
+    const outlierThresholdRaw = String(
+      form.get("outlierThreshold") ?? "",
+    ).trim();
+    const llmProvider = String(form.get("llmProvider") ?? "") as
+      "" | "openai" | "ollama";
+    const llmModel = String(form.get("llmModel") ?? "").trim();
+    const llmSampleCount = parsePositiveInteger(form.get("llmSampleCount"));
+    if (
+      llmProvider !== "" &&
+      !clusterSetLlmSampleAll &&
+      llmSampleCount === null
+    ) {
+      showFeedback(
+        "error",
+        ERROR_MESSAGES_BY_CODE.CLUSTER_SUMMARY_SAMPLE_COUNT_INVALID,
+      );
+      return;
+    }
+    const request: ClusterSetGenerationRequest = {
       projectId: currentProject.id,
-      runId,
+      indexingRunId,
       generation: projectOpenGeneration.current,
     };
-    clusterGenerationRequestRef.current = request;
-    setClusterGenerationRequest(request);
-    showFeedback("info", `Clustererzeugung für Indizierung ${runId} läuft.`);
+    clusterSetGenerationRequestRef.current = request;
+    setClusterSetGenerationRequest(request);
+    showFeedback("info", "Cluster-Set-Erzeugung wurde gestartet.");
     try {
-      const apiClusters = await apiRequest<ApiCluster[]>(
-        `/api/projects/${request.projectId}/analysis-runs/${runId}/clusters/generate`,
-        { method: "POST", token: session.token },
+      const created = await apiRequest<ApiClusterSet>(
+        `/api/projects/${currentProject.id}/cluster-sets`,
+        {
+          method: "POST",
+          token: session.token,
+          body: JSON.stringify({
+            indexing_run_id: indexingRunId,
+            display_name: String(form.get("displayName") ?? "").trim() || null,
+            parent_cluster_set_id:
+              clusterSetRefinementDraft?.parentClusterSetId ?? null,
+            derivation_type:
+              clusterSetRefinementDraft === null ? "root" : "refinement",
+            vector_basis: clusterSetVectorBasis,
+            message_weight:
+              clusterSetVectorBasis === "combined"
+                ? Number(form.get("messageWeight") ?? 0.5)
+                : 1,
+            answer_weight:
+              clusterSetVectorBasis === "combined"
+                ? Number(form.get("answerWeight") ?? 0.5)
+                : 0,
+            algorithm_settings: {
+              algorithm: "hdbscan",
+              min_cluster_size: Number.isFinite(minClusterSize)
+                ? minClusterSize
+                : 2,
+              ...(minSamplesRaw
+                ? { min_samples: Number.parseInt(minSamplesRaw, 10) }
+                : {}),
+              cluster_selection_epsilon: epsilonRaw
+                ? Number.parseFloat(epsilonRaw)
+                : 0,
+            },
+            outlier_threshold: outlierThresholdRaw
+              ? Number.parseFloat(outlierThresholdRaw)
+              : null,
+            source_cluster_ids:
+              clusterSetRefinementDraft?.sourceClusterIds ?? [],
+            llm_provider: llmProvider || null,
+            llm_model: llmProvider ? llmModel || null : null,
+            llm_sample_count:
+              llmProvider && !clusterSetLlmSampleAll ? llmSampleCount : null,
+            llm_sample_all: clusterSetLlmSampleAll,
+            llm_cloud_use_confirmed:
+              llmProvider === "openai" && clusterSetCloudUseConfirmed,
+          }),
+        },
       );
       if (projectOpenGeneration.current !== request.generation) {
         return;
       }
-      setClusters(apiClusters.map(toCluster));
-      setClusterSources([]);
-      setClusterLoadRunId(runId);
-      showFeedback("success", "Cluster erzeugt und geladen.");
+      upsertClusterSet(toClusterSet(created));
+      setClusterSetRefinementDraft(null);
+      showFeedback(
+        "success",
+        "Cluster-Set angelegt. Status wird aktualisiert.",
+      );
     } catch (error: unknown) {
       if (projectOpenGeneration.current === request.generation) {
         showFeedback(
           "error",
           actionErrorMessage(
             error,
-            "Cluster konnten nicht erzeugt werden. Indizierungsstatus prüfen.",
+            "Cluster-Set konnte nicht erstellt werden.",
           ),
         );
       }
     } finally {
-      if (clusterGenerationRequestRef.current === request) {
-        clusterGenerationRequestRef.current = null;
-        setClusterGenerationRequest((activeRequest) =>
+      if (clusterSetGenerationRequestRef.current === request) {
+        clusterSetGenerationRequestRef.current = null;
+        setClusterSetGenerationRequest((activeRequest) =>
           activeRequest === request ? null : activeRequest,
         );
       }
+    }
+  }
+
+  async function cancelClusterSet(clusterSetId: string) {
+    if (session === null || currentProject === null) {
+      return;
+    }
+    try {
+      const cancelled = await apiRequest<ApiClusterSet>(
+        `/api/projects/${currentProject.id}/cluster-sets/${clusterSetId}/cancel`,
+        { method: "POST", token: session.token },
+      );
+      upsertClusterSet(toClusterSet(cancelled));
+      showFeedback("success", "Cluster-Set abgebrochen.");
+    } catch (error: unknown) {
+      showFeedback(
+        "error",
+        actionErrorMessage(
+          error,
+          "Cluster-Set konnte nicht abgebrochen werden.",
+        ),
+      );
+    }
+  }
+
+  async function deleteClusterSet(clusterSetId: string) {
+    if (session === null || currentProject === null) {
+      return;
+    }
+    if (
+      !window.confirm(
+        "Cluster-Set wirklich löschen? Es wird aus der Übersicht entfernt; abgeleitete Historie kann weiterhin auf gelöschte Knoten verweisen.",
+      )
+    ) {
+      return;
+    }
+    try {
+      await apiRequest<void>(
+        `/api/projects/${currentProject.id}/cluster-sets/${clusterSetId}`,
+        { method: "DELETE", token: session.token },
+      );
+      setClusterSets((existing) =>
+        existing.filter((clusterSet) => clusterSet.id !== clusterSetId),
+      );
+      if (clusterSetLoadId === clusterSetId) {
+        setClusters([]);
+        resetSourceDialogState();
+        setClusterSetLoadId(null);
+      }
+      showFeedback("success", "Cluster-Set gelöscht.");
+    } catch (error: unknown) {
+      showFeedback(
+        "error",
+        actionErrorMessage(error, "Cluster-Set konnte nicht gelöscht werden."),
+      );
     }
   }
 
@@ -2073,204 +2293,331 @@ function App() {
     }
   }
 
-  async function inspectClusterSources(clusterId: string) {
-    if (session === null || currentProject === null) {
-      return;
-    }
-    try {
-      const apiSources = await apiRequest<ApiClusterSource[]>(
-        `/api/projects/${currentProject.id}/clusters/${clusterId}/sources`,
-        { token: session.token },
-      );
-      setClusterSources(apiSources.map(toClusterSource));
-      showFeedback("success", "Quellen geladen.");
-    } catch (error: unknown) {
-      showFeedback(
-        "error",
-        actionErrorMessage(
-          error,
-          "Clusterquellen konnten nicht geladen werden.",
-        ),
-      );
-    }
-  }
-
-  async function createCandidateFromCluster(clusterId: string) {
-    if (session === null || currentProject === null) {
-      return;
-    }
-    try {
-      const apiCandidate = await apiRequest<ApiCandidate>(
-        `/api/projects/${currentProject.id}/clusters/${clusterId}/candidates`,
-        { method: "POST", token: session.token },
-      );
-      const candidate = toCandidate(apiCandidate);
-      setCandidates((existing) => [
-        candidate,
-        ...existing.filter((item) => item.id !== candidate.id),
-      ]);
-      setCandidateSources([]);
-      showFeedback("success", "Candidate aus Cluster erstellt.");
-    } catch (error: unknown) {
-      showFeedback(
-        "error",
-        actionErrorMessage(
-          error,
-          "Candidate konnte nicht aus Cluster erstellt werden.",
-        ),
-      );
-    }
-  }
-
-  async function updateCandidate(
-    event: FormEvent<HTMLFormElement>,
-    candidate: Candidate,
+  async function setClusterManualStatus(
+    clusterId: string,
+    manualStatus: string | null,
   ) {
-    event.preventDefault();
     if (session === null || currentProject === null) {
       return;
     }
-    const form = new FormData(event.currentTarget);
-    const listFromField = (name: string) =>
-      String(form.get(name) ?? "")
-        .split("\n")
-        .map((item) => item.trim())
-        .filter(Boolean);
-    const listOverrideFromField = (
-      name: string,
-      currentManualValue: string[] | null,
-    ) => {
-      const values = listFromField(name);
-      return currentManualValue === null && values.length === 0 ? null : values;
-    };
-    const objectOverrideFromField = (
-      name: string,
-      currentManualValue: Record<string, unknown> | null,
-    ) => {
-      const rawValue = String(form.get(name) ?? "").trim();
-      if (rawValue === "") {
-        return currentManualValue === null ? null : {};
-      }
-      const parsed = JSON.parse(rawValue) as unknown;
-      if (
-        parsed === null ||
-        Array.isArray(parsed) ||
-        typeof parsed !== "object"
-      ) {
-        throw new Error("manual parameters must be a JSON object");
-      }
-      return parsed as Record<string, unknown>;
-    };
     try {
-      const updated = await apiRequest<ApiCandidate>(
-        `/api/projects/${currentProject.id}/candidates/${candidate.id}`,
+      const updated = await apiRequest<ApiCluster>(
+        `/api/projects/${currentProject.id}/clusters/${clusterId}`,
         {
           method: "PATCH",
           token: session.token,
+          body: JSON.stringify({ manual_status: manualStatus }),
+        },
+      );
+      setClusters((existing) =>
+        existing.map((cluster) =>
+          cluster.id === clusterId ? toCluster(updated) : cluster,
+        ),
+      );
+      showFeedback(
+        "success",
+        manualStatus === "rejected"
+          ? "Cluster ausgeschlossen."
+          : "Cluster wieder eingeschlossen.",
+      );
+    } catch (error: unknown) {
+      showFeedback(
+        "error",
+        actionErrorMessage(
+          error,
+          "Clusterstatus konnte nicht aktualisiert werden.",
+        ),
+      );
+    }
+  }
+
+  async function inspectClusterSources(cluster: Cluster) {
+    if (session === null || currentProject === null) {
+      return;
+    }
+    sourceDialogTriggerRef.current =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+    setSourceDialogCluster(cluster);
+    await loadClusterSourcePage(cluster, 0, { append: false });
+  }
+
+  async function loadClusterSourcePage(
+    cluster: Cluster,
+    offset: number,
+    options: { append: boolean },
+  ) {
+    if (session === null || currentProject === null) {
+      return;
+    }
+    if (options.append) {
+      setSourceDialogLoadingMore(true);
+    } else {
+      setSourceDialogLoaded(false);
+      setClusterSources([]);
+      setSourceDialogNextOffset(null);
+    }
+    setSourceDialogError(null);
+    try {
+      const apiPage = await apiRequest<ApiClusterSourcePage>(
+        `/api/projects/${currentProject.id}/clusters/${cluster.id}/sources?limit=${CLUSTER_SOURCE_PAGE_SIZE}&offset=${offset}`,
+        { token: session.token },
+      );
+      const pageSources = apiPage.sources.map(toClusterSource);
+      setClusterSources((existing) =>
+        options.append ? [...existing, ...pageSources] : pageSources,
+      );
+      setSourceDialogNextOffset(apiPage.next_offset);
+      setSourceDialogLoaded(true);
+      if (!options.append) {
+        showFeedback("success", "Quellen geladen.");
+      }
+    } catch (error: unknown) {
+      const message = actionErrorMessage(
+        error,
+        "Clusterquellen konnten nicht geladen werden.",
+      );
+      setSourceDialogError(message);
+      setSourceDialogLoaded(true);
+      if (!options.append) {
+        setClusterSources([]);
+        setSourceDialogNextOffset(null);
+      }
+      showFeedback("error", message);
+    } finally {
+      if (options.append) {
+        setSourceDialogLoadingMore(false);
+      }
+    }
+  }
+
+  async function loadMoreClusterSources() {
+    if (sourceDialogCluster === null || sourceDialogNextOffset === null) {
+      return;
+    }
+    await loadClusterSourcePage(sourceDialogCluster, sourceDialogNextOffset, {
+      append: true,
+    });
+  }
+
+  function closeSourceDialog() {
+    resetSourceDialogState();
+  }
+
+  function createRefinementDraftFromVisibleClusters() {
+    if (loadedClusterSet === null) {
+      return;
+    }
+    const sourceClusterIds = visibleIncludedClusters.map(
+      (cluster) => cluster.id,
+    );
+    if (sourceClusterIds.length === 0) {
+      showFeedback(
+        "error",
+        ERROR_MESSAGES_BY_CODE.CLUSTER_REFINEMENT_EMPTY_SOURCE,
+      );
+      return;
+    }
+    setClusterSetRefinementDraft({
+      parentClusterSetId: loadedClusterSet.id,
+      indexingRunId: loadedClusterSet.indexingRunId,
+      sourceClusterIds,
+      description: `${sourceClusterIds.length} sichtbare eingeschlossene Cluster aus ${loadedClusterSet.displayName}`,
+    });
+    setProjectTab("cluster-sets");
+    showFeedback(
+      "info",
+      "Verfeinerung ist in der Cluster-Set-Erzeugung vorausgefüllt.",
+    );
+  }
+
+  async function createRefinementDraftFromClusterSet(clusterSet: ClusterSet) {
+    if (session === null || currentProject === null) {
+      return;
+    }
+    try {
+      const apiClusters = await apiRequest<ApiCluster[]>(
+        `/api/projects/${currentProject.id}/cluster-sets/${clusterSet.id}/clusters`,
+        { token: session.token },
+      );
+      const sourceClusterIds = apiClusters
+        .map(toCluster)
+        .filter((cluster) => !clusterIsExcluded(cluster))
+        .map((cluster) => cluster.id);
+      if (sourceClusterIds.length === 0) {
+        showFeedback(
+          "error",
+          ERROR_MESSAGES_BY_CODE.CLUSTER_REFINEMENT_EMPTY_SOURCE,
+        );
+        return;
+      }
+      setClusterSetRefinementDraft({
+        parentClusterSetId: clusterSet.id,
+        indexingRunId: clusterSet.indexingRunId,
+        sourceClusterIds,
+        description: `${sourceClusterIds.length} eingeschlossene Cluster aus ${clusterSet.displayName}`,
+      });
+      setProjectTab("cluster-sets");
+      showFeedback(
+        "info",
+        "Verfeinerung ist in der Cluster-Set-Erzeugung vorausgefüllt.",
+      );
+    } catch (error: unknown) {
+      showFeedback(
+        "error",
+        actionErrorMessage(
+          error,
+          "Verfeinerung konnte nicht vorbereitet werden.",
+        ),
+      );
+    }
+  }
+
+  function algorithmSettingsFromClusterSet(
+    clusterSet: ClusterSet,
+  ): Record<string, unknown> {
+    const allowedKeys = [
+      "min_cluster_size",
+      "min_samples",
+      "cluster_selection_epsilon",
+      "n_clusters",
+      "linkage",
+      "distance_threshold",
+    ];
+    return {
+      algorithm: clusterSet.algorithm,
+      ...Object.fromEntries(
+        allowedKeys
+          .filter((key) => clusterSet.parameters[key] !== undefined)
+          .map((key) => [key, clusterSet.parameters[key]]),
+      ),
+    };
+  }
+
+  async function createOutlierExclusionSet() {
+    if (
+      session === null ||
+      currentProject === null ||
+      loadedClusterSet === null
+    ) {
+      return;
+    }
+    const threshold = Number.parseFloat(outlierThreshold);
+    if (!Number.isFinite(threshold) || threshold < 0 || threshold > 1) {
+      showFeedback(
+        "error",
+        ERROR_MESSAGES_BY_CODE.CLUSTER_OUTLIER_EMPTY_RESULT,
+      );
+      return;
+    }
+    const sourceClusterIds = visibleIncludedClusters.map(
+      (cluster) => cluster.id,
+    );
+    if (sourceClusterIds.length === 0) {
+      showFeedback(
+        "error",
+        ERROR_MESSAGES_BY_CODE.CLUSTER_REFINEMENT_EMPTY_SOURCE,
+      );
+      return;
+    }
+    try {
+      const created = await apiRequest<ApiClusterSet>(
+        `/api/projects/${currentProject.id}/cluster-sets`,
+        {
+          method: "POST",
+          token: session.token,
           body: JSON.stringify({
-            candidate_type:
-              String(form.get("candidateType") ?? "").trim() || null,
-            manual_status:
-              String(form.get("manualStatus") ?? "").trim() || null,
-            manual_category_path:
-              String(form.get("manualCategoryPath") ?? "").trim() || null,
-            manual_title: String(form.get("manualTitle") ?? "").trim() || null,
-            manual_canonical_question:
-              String(form.get("manualCanonicalQuestion") ?? "").trim() || null,
-            manual_canonical_answer:
-              String(form.get("manualCanonicalAnswer") ?? "").trim() || null,
-            manual_alternative_questions: listOverrideFromField(
-              "manualAlternativeQuestions",
-              candidate.manualAlternativeQuestions,
-            ),
-            manual_parameters: objectOverrideFromField(
-              "manualParameters",
-              candidate.manualParameters,
-            ),
-            manual_external_data_dependencies: listOverrideFromField(
-              "manualExternalDataDependencies",
-              candidate.manualExternalDataDependencies,
-            ),
-            notes: String(form.get("notes") ?? "").trim() || null,
+            indexing_run_id: loadedClusterSet.indexingRunId,
+            display_name: `${loadedClusterSet.displayName} ohne Ausreißer`,
+            parent_cluster_set_id: loadedClusterSet.id,
+            derivation_type: "outlier_exclusion",
+            vector_basis: loadedClusterSet.vectorBasis,
+            message_weight: loadedClusterSet.messageWeight,
+            answer_weight: loadedClusterSet.answerWeight,
+            algorithm_settings:
+              algorithmSettingsFromClusterSet(loadedClusterSet),
+            source_cluster_ids: sourceClusterIds,
+            outlier_threshold: threshold,
+            llm_provider: null,
+            llm_model: null,
+            llm_sample_count: null,
+            llm_sample_all: false,
+            llm_cloud_use_confirmed: false,
           }),
         },
       );
-      setCandidates((existing) =>
-        existing.map((candidate) =>
-          candidate.id === updated.id ? toCandidate(updated) : candidate,
-        ),
+      upsertClusterSet(toClusterSet(created));
+      setProjectTab("cluster-sets");
+      showFeedback(
+        "success",
+        "Ausreißer-Neuberechnung als Child-Cluster-Set gestartet.",
       );
-      showFeedback("success", "Candidate-Curation gespeichert.");
     } catch (error: unknown) {
       showFeedback(
         "error",
         actionErrorMessage(
           error,
-          "Candidate konnte nicht aktualisiert werden.",
+          "Ausreißer-Neuberechnung konnte nicht gestartet werden.",
         ),
       );
     }
   }
 
-  async function inspectCandidateSources(candidateId: string) {
-    if (session === null || currentProject === null) {
-      return;
-    }
-    try {
-      const apiSources = await apiRequest<ApiCandidateSource[]>(
-        `/api/projects/${currentProject.id}/candidates/${candidateId}/sources`,
-        { token: session.token },
-      );
-      setCandidateSources(apiSources.map(toCandidateSource));
-      showFeedback("success", "Candidate-Quellen geladen.");
-    } catch (error: unknown) {
-      showFeedback(
-        "error",
-        actionErrorMessage(
-          error,
-          "Candidate-Quellen konnten nicht geladen werden.",
-        ),
-      );
-    }
-  }
-
-  async function createExport(
-    event: FormEvent<HTMLFormElement>,
-    exportType: "candidates" | "source-assignments",
-  ) {
+  async function createExplorerExport(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (session === null || currentProject === null) {
+    if (
+      session === null ||
+      currentProject === null ||
+      loadedClusterSet === null
+    ) {
       return;
     }
-    const form = new FormData(event.currentTarget);
-    const includeOriginalText = form.get("includeOriginalText") === "on";
+    setExplorerExportError(null);
+    if (visibleClusters.length === 0) {
+      const message = ERROR_MESSAGES_BY_CODE.EXPLORER_EXPORT_EMPTY;
+      setExplorerExportError(message);
+      showFeedback("error", message);
+      return;
+    }
     try {
       const result = await apiRequest<{
         export: ApiExportLog;
-        csv_content: string;
+        content: string;
+        content_type: string;
         warning: string | null;
-      }>(`/api/projects/${currentProject.id}/exports/${exportType}`, {
+      }>(`/api/projects/${currentProject.id}/exports/explorer`, {
         method: "POST",
         token: session.token,
         body: JSON.stringify({
-          include_original_text: includeOriginalText,
+          cluster_set_id: loadedClusterSet.id,
+          export_format: explorerExportFormat,
+          search_query: clusterSearchQuery.trim() || null,
+          category: clusterCategoryFilter || null,
+          include_excluded: showExcludedClusters,
+          include_outliers: includeOutlierRows,
+          cluster_ids: visibleClusters.map((cluster) => cluster.id),
         }),
       });
       setExportLogs((existing) => [
         toExportLog(result.export),
         ...existing.filter((item) => item.id !== result.export.id),
       ]);
-      setLastExportCsv(result.csv_content);
+      setLastExportContent(result.content);
+      setLastExportContentType(result.content_type);
+      setExplorerExportError(null);
       showFeedback(
         result.warning === null ? "success" : "warning",
         result.warning ??
-          `Export erstellt: ${result.export.output_filename} (${result.export.row_count} Zeilen).`,
+          `Explorer-Export erstellt: ${result.export.output_filename} (${result.export.row_count} Zeilen).`,
       );
     } catch (error: unknown) {
-      showFeedback(
-        "error",
-        actionErrorMessage(error, "Export konnte nicht erstellt werden."),
+      const message = actionErrorMessage(
+        error,
+        "Export konnte nicht erstellt werden.",
       );
+      setExplorerExportError(message);
+      showFeedback("error", message);
     }
   }
 
@@ -2308,6 +2655,144 @@ function App() {
   );
   const indexingProviderModels =
     indexingProviderConfiguration?.manualModels ?? [];
+  const completedIndexingRuns = indexingRuns.filter(
+    (run) => run.status === "completed",
+  );
+  const clusterSetLlmProviderModels =
+    clusterSetLlmProvider === ""
+      ? []
+      : (providers.find(
+          (provider) => provider.provider === clusterSetLlmProvider,
+        )?.llmModels ?? []);
+
+  function clusterIsExcluded(cluster: Cluster): boolean {
+    return cluster.effectiveStatus === "rejected";
+  }
+
+  function clusterCategory(cluster: Cluster): string {
+    return cluster.effectiveCategory?.trim() || "Ohne Kategorie";
+  }
+
+  function clusterMatchesSearch(
+    cluster: Cluster,
+    searchQuery: string,
+  ): boolean {
+    const query = searchQuery.trim().toLowerCase();
+    if (query === "") {
+      return true;
+    }
+    return [
+      cluster.effectiveTitle,
+      cluster.effectiveCategory ?? "",
+      cluster.effectiveStatus,
+      cluster.autoSummaryQuestion ?? "",
+      cluster.autoSummaryAnswer ?? "",
+    ]
+      .join("\n")
+      .toLowerCase()
+      .includes(query);
+  }
+
+  function mismatchMetric(cluster: Cluster, key: "average" | "maximum") {
+    const mismatch = cluster.metadata.qa_mismatch;
+    if (
+      mismatch === null ||
+      Array.isArray(mismatch) ||
+      typeof mismatch !== "object"
+    ) {
+      return null;
+    }
+    const value = (mismatch as Record<string, unknown>)[key];
+    return typeof value === "number" ? value : null;
+  }
+
+  function formatScore(value: number | null): string {
+    return value === null ? "-" : value.toFixed(2);
+  }
+
+  function formatClusterSetType(value: string): string {
+    return (
+      {
+        root: "Root",
+        refinement: "Verfeinerung",
+        outlier_exclusion: "Ausreißer-Ausschluss",
+        manual_edit: "Manuelle Änderung",
+      }[value] ?? value
+    );
+  }
+
+  const loadedClusterSet =
+    clusterSets.find((clusterSet) => clusterSet.id === clusterSetLoadId) ??
+    null;
+  const clusterCategories = Array.from(
+    new Set(clusters.map(clusterCategory)),
+  ).sort((left, right) => left.localeCompare(right));
+  const visibleClusters = clusters.filter(
+    (cluster) =>
+      (showExcludedClusters || !clusterIsExcluded(cluster)) &&
+      (includeOutlierRows || !cluster.isOutlier) &&
+      (clusterCategoryFilter === "" ||
+        clusterCategory(cluster) === clusterCategoryFilter) &&
+      clusterMatchesSearch(cluster, clusterSearchQuery),
+  );
+  const visibleIncludedClusters = visibleClusters.filter(
+    (cluster) => !clusterIsExcluded(cluster),
+  );
+  const visibleExcludedClusters = visibleClusters.filter(clusterIsExcluded);
+  const includedClusterGroups = clusterGroupByCategory
+    ? Array.from(
+        visibleIncludedClusters.reduce((groups, cluster) => {
+          const category = clusterCategory(cluster);
+          groups.set(category, [...(groups.get(category) ?? []), cluster]);
+          return groups;
+        }, new Map<string, Cluster[]>()),
+      )
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([category, groupClusters]) => ({
+          key: category,
+          label: category,
+          clusters: groupClusters,
+        }))
+    : [
+        {
+          key: "all",
+          label: "Eingeschlossene Cluster",
+          clusters: visibleIncludedClusters,
+        },
+      ];
+  const rootClusterSets = clusterSets.filter(
+    (clusterSet) => clusterSet.parentClusterSetId === null,
+  );
+  const childClusterSets = (parentId: string) =>
+    clusterSets.filter(
+      (clusterSet) => clusterSet.parentClusterSetId === parentId,
+    );
+  function clusterSetPath(clusterSet: ClusterSet): ClusterSet[] {
+    const byId = new Map(clusterSets.map((item) => [item.id, item]));
+    const path = [clusterSet];
+    const visited = new Set([clusterSet.id]);
+    let parentId = clusterSet.parentClusterSetId;
+    while (parentId !== null) {
+      const parent = byId.get(parentId);
+      if (parent === undefined || visited.has(parent.id)) {
+        break;
+      }
+      path.unshift(parent);
+      visited.add(parent.id);
+      parentId = parent.parentClusterSetId;
+    }
+    return path;
+  }
+  const loadedAnalysisPath =
+    loadedClusterSet === null ? [] : clusterSetPath(loadedClusterSet);
+  const visibleExportLogs =
+    loadedClusterSet === null
+      ? exportLogs
+      : exportLogs.filter(
+          (log) =>
+            log.clusterSetId === null ||
+            log.clusterSetId === loadedClusterSet.id,
+        );
 
   function rememberProjectAccess(projectId: string) {
     setRecentProjectIds((existing) =>
@@ -2342,16 +2827,25 @@ function App() {
   }, [currentProject?.id, indexingProvider]);
 
   useEffect(() => {
+    setClusterSetCloudUseConfirmed(false);
+  }, [currentProject?.id, clusterSetLlmProvider]);
+
+  useEffect(() => {
     if (
       session === null ||
       currentProject === null ||
       activePage !== "projects" ||
-      (projectTab !== "indexing" && projectTab !== "clusters")
+      (projectTab !== "indexing" &&
+        projectTab !== "cluster-sets" &&
+        projectTab !== "explorer")
     ) {
       return undefined;
     }
 
-    const shouldPoll = projectTab === "indexing";
+    const shouldPoll =
+      projectTab === "indexing" ||
+      projectTab === "cluster-sets" ||
+      projectTab === "explorer";
     const token = session.token;
     const projectId = currentProject.id;
     const projectGeneration = projectOpenGeneration.current;
@@ -2398,13 +2892,31 @@ function App() {
       const request = { controller: new AbortController() };
       activeRequest = request;
       try {
-        const runs = await fetchIndexingRuns(
-          token,
-          projectId,
-          request.controller.signal,
-        );
+        const [runsResult, clusterSetsResult] = await Promise.allSettled([
+          fetchIndexingRuns(token, projectId, request.controller.signal),
+          projectTab === "cluster-sets" || projectTab === "explorer"
+            ? fetchClusterSets(token, projectId, request.controller.signal)
+            : Promise.resolve<ClusterSet[] | null>(null),
+        ]);
+        for (const result of [runsResult, clusterSetsResult]) {
+          if (
+            result.status === "rejected" &&
+            result.reason instanceof ApiRequestError &&
+            result.reason.status === 401
+          ) {
+            throw result.reason;
+          }
+        }
         if (activeRequest === request && isCurrentPollingContext(true)) {
-          setIndexingRuns(runs);
+          if (runsResult.status === "fulfilled") {
+            setIndexingRuns(runsResult.value);
+          }
+          if (
+            clusterSetsResult.status === "fulfilled" &&
+            clusterSetsResult.value !== null
+          ) {
+            setClusterSets(clusterSetsResult.value);
+          }
         }
       } catch (error: unknown) {
         if (
@@ -2451,6 +2963,300 @@ function App() {
     const timeout = window.setTimeout(() => setFeedback(null), 3500);
     return () => window.clearTimeout(timeout);
   }, [feedback]);
+
+  useEffect(() => {
+    if (sourceDialogCluster === null) {
+      return undefined;
+    }
+    sourceDialogCloseRef.current?.focus();
+    const handleDialogKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        closeSourceDialog();
+        return;
+      }
+      if (event.key !== "Tab" || sourceDialogRef.current === null) {
+        return;
+      }
+      const focusable = Array.from(
+        sourceDialogRef.current.querySelectorAll<HTMLElement>(
+          [
+            "a[href]",
+            "button:not([disabled])",
+            "input:not([disabled])",
+            "select:not([disabled])",
+            "textarea:not([disabled])",
+            "[tabindex]:not([tabindex='-1'])",
+          ].join(","),
+        ),
+      ).filter(
+        (element) =>
+          !element.hasAttribute("hidden") &&
+          element.getAttribute("aria-hidden") !== "true",
+      );
+      if (focusable.length === 0) {
+        event.preventDefault();
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    window.addEventListener("keydown", handleDialogKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleDialogKeyDown);
+      const trigger = sourceDialogTriggerRef.current;
+      sourceDialogTriggerRef.current = null;
+      if (trigger !== null && document.contains(trigger)) {
+        trigger.focus();
+      }
+    };
+  }, [sourceDialogCluster]);
+
+  function renderClusterTableRow(cluster: Cluster) {
+    const isExcluded = clusterIsExcluded(cluster);
+    const mismatchMaximum = mismatchMetric(cluster, "maximum");
+    return (
+      <tr className={isExcluded ? "excluded-row" : ""} key={cluster.id}>
+        <td className="cluster-status-cell">
+          <span className={`status-chip ${isExcluded ? "warning" : "active"}`}>
+            {isExcluded ? "ausgeschlossen" : cluster.effectiveStatus}
+          </span>
+          {cluster.isOutlier && (
+            <span className="status-chip warning">Ausreißer</span>
+          )}
+        </td>
+        <td className="cluster-title-cell">
+          <strong>{cluster.effectiveTitle}</strong>
+          <p className="hint">Auto: {cluster.autoTitle}</p>
+        </td>
+        <td className="cluster-short-cell">{clusterCategory(cluster)}</td>
+        <td className="cluster-text-cell">
+          {cluster.autoSummaryQuestion ?? "-"}
+        </td>
+        <td className="cluster-text-cell">
+          {cluster.autoSummaryAnswer ?? "-"}
+        </td>
+        <td className="cluster-count-cell">{cluster.memberCount}</td>
+        <td className="cluster-count-cell">{cluster.memberCount}</td>
+        <td className="cluster-hints-cell">
+          Score {formatScore(cluster.score)}
+          {mismatchMaximum !== null && mismatchMaximum >= 0.35 && (
+            <p className="status warning">
+              Q/A-Mismatch {formatScore(mismatchMaximum)}
+            </p>
+          )}
+        </td>
+        <td className="cluster-actions-cell">
+          <form
+            className="table-edit-form"
+            onSubmit={(event) => updateCluster(event, cluster.id)}
+          >
+            <label>
+              Titel
+              <input
+                name="manualTitle"
+                defaultValue={cluster.manualTitle ?? ""}
+                aria-label={`Titel für ${cluster.effectiveTitle}`}
+              />
+            </label>
+            <label>
+              Kategorie
+              <input
+                name="manualCategory"
+                defaultValue={cluster.manualCategory ?? ""}
+                aria-label={`Kategorie für ${cluster.effectiveTitle}`}
+              />
+            </label>
+            <label>
+              Status
+              <select
+                name="manualStatus"
+                defaultValue={cluster.manualStatus ?? ""}
+                aria-label={`Status für ${cluster.effectiveTitle}`}
+              >
+                <option value="">Kein Override</option>
+                <option value="unreviewed">unreviewed</option>
+                <option value="in_progress">in_progress</option>
+                <option value="reviewed">reviewed</option>
+                <option value="rejected">rejected</option>
+                <option value="outlier">outlier</option>
+              </select>
+            </label>
+            <button type="submit" className="secondary">
+              Speichern
+            </button>
+          </form>
+          <div className="form-actions">
+            <button
+              type="button"
+              className="secondary"
+              onClick={() => void inspectClusterSources(cluster)}
+            >
+              Quellen anzeigen
+            </button>
+            <button
+              type="button"
+              className="secondary"
+              onClick={() =>
+                void setClusterManualStatus(
+                  cluster.id,
+                  isExcluded ? "unreviewed" : "rejected",
+                )
+              }
+            >
+              {isExcluded ? "Wieder einschließen" : "Ausschließen"}
+            </button>
+          </div>
+        </td>
+      </tr>
+    );
+  }
+
+  function renderClusterSetCard(clusterSet: ClusterSet, depth = 0) {
+    const children = childClusterSets(clusterSet.id);
+    const hasChildren = children.length > 0;
+    const isExpanded = !collapsedClusterSetIds.has(clusterSet.id);
+    const childRegionId = `cluster-set-children-${clusterSet.id}`;
+    const isDeletedHistoryNode = clusterSet.deletedAt !== null;
+    return (
+      <article
+        className="user-card cluster-set-node"
+        key={clusterSet.id}
+        style={{ marginLeft: depth === 0 ? 0 : "1rem" }}
+      >
+        <div className="user-heading cluster-set-heading">
+          <div className="cluster-set-title">
+            {hasChildren ? (
+              <button
+                type="button"
+                className="tree-toggle"
+                aria-expanded={isExpanded}
+                aria-controls={childRegionId}
+                onClick={() => toggleClusterSetBranch(clusterSet.id)}
+              >
+                <span aria-hidden="true">{isExpanded ? "▾" : "▸"}</span>
+                {isExpanded ? "Ast einklappen" : "Ast ausklappen"}
+              </button>
+            ) : (
+              <span className="tree-toggle-placeholder" aria-hidden="true" />
+            )}
+            <strong>{clusterSet.displayName}</strong>
+          </div>
+          <span>
+            {formatClusterSetType(clusterSet.derivationType)} ·{" "}
+            {clusterSet.status} · {clusterSet.progress}%
+          </span>
+        </div>
+        <progress value={clusterSet.progress} max={100}>
+          {clusterSet.progress}%
+        </progress>
+        <p className="hint">
+          Phase: {clusterSet.phase}; Basis: {clusterSet.vectorBasis};
+          Algorithmus: {clusterSet.algorithm}; Cluster:{" "}
+          {clusterSet.clusterCount}
+        </p>
+        <p className="hint">
+          Parameter: min_cluster_size{" "}
+          {String(clusterSet.parameters.min_cluster_size ?? "-")};
+          Outlier-Schwelle:{" "}
+          {typeof clusterSet.parameters.outlier_threshold === "number"
+            ? String(clusterSet.parameters.outlier_threshold)
+            : "aus"}
+        </p>
+        <p className="hint">
+          Indizierung: {clusterSet.indexingRunId}; Datensatz:{" "}
+          {clusterSet.datasetDisplayName ?? "-"}
+        </p>
+        {clusterSet.parentClusterSetId !== null && (
+          <p className="hint">Parent: {clusterSet.parentClusterSetId}</p>
+        )}
+        {isDeletedHistoryNode && (
+          <p className="status warning" role="status">
+            Gelöschter Historienknoten. Nicht ladbar, bleibt aber als Parent
+            sichtbar.
+          </p>
+        )}
+        {clusterSet.indexingDeletedAt !== null && (
+          <p className="status warning">
+            Basis-Indizierung gelöscht: {clusterSet.indexingDeletedAt}
+          </p>
+        )}
+        <p className="hint">
+          LLM:{" "}
+          {clusterSet.llmProvider
+            ? `${clusterSet.llmProvider}/${clusterSet.llmModel}`
+            : "deaktiviert"}
+        </p>
+        {clusterSet.errorCode !== null && (
+          <p className="error" role="alert">
+            {ERROR_MESSAGES_BY_CODE[clusterSet.errorCode] ??
+              ERROR_MESSAGES_BY_CODE.UNEXPECTED_ERROR}
+          </p>
+        )}
+        <div className="form-actions">
+          <button
+            type="button"
+            className="secondary"
+            disabled={clusterSet.status !== "completed" || isDeletedHistoryNode}
+            onClick={() =>
+              session &&
+              currentProject &&
+              loadClusterSetClusters(
+                session.token,
+                currentProject.id,
+                clusterSet.id,
+              )
+            }
+          >
+            Im Explorer laden
+          </button>
+          <button
+            type="button"
+            className="secondary"
+            disabled={clusterSet.status !== "completed" || isDeletedHistoryNode}
+            onClick={() => void createRefinementDraftFromClusterSet(clusterSet)}
+          >
+            Cluster verfeinern
+          </button>
+          <button
+            type="button"
+            className="secondary"
+            disabled={
+              isDeletedHistoryNode ||
+              (clusterSet.status !== "queued" &&
+                clusterSet.status !== "running")
+            }
+            onClick={() => void cancelClusterSet(clusterSet.id)}
+          >
+            Abbrechen
+          </button>
+          <button
+            type="button"
+            className="secondary"
+            disabled={isDeletedHistoryNode}
+            onClick={() => void deleteClusterSet(clusterSet.id)}
+          >
+            Löschen
+          </button>
+        </div>
+        {hasChildren && isExpanded && (
+          <div
+            id={childRegionId}
+            className="cluster-set-children"
+            aria-label={`Child Cluster-Sets von ${clusterSet.displayName}`}
+          >
+            {children.map((child) => renderClusterSetCard(child, depth + 1))}
+          </div>
+        )}
+      </article>
+    );
+  }
 
   if (isSessionChecking) {
     return (
@@ -2630,14 +3436,15 @@ function App() {
                   [
                     ["import", "Import"],
                     ["indexing", "Indizieren"],
-                    ["clusters", "Cluster"],
-                    ["candidates", "Kandidaten"],
-                    ["exports", "Export"],
+                    ["cluster-sets", "Cluster-Sets"],
+                    ["explorer", "Explorer"],
                     ["delete", "Projekt löschen"],
                   ] as const
                 ).map(([tab, label]) => (
                   <button
                     type="button"
+                    role="tab"
+                    aria-selected={projectTab === tab}
                     className={projectTab === tab ? "selected" : ""}
                     key={tab}
                     onClick={() => setProjectTab(tab)}
@@ -2658,6 +3465,8 @@ function App() {
               >
                 <button
                   type="button"
+                  role="tab"
+                  aria-selected={settingsTab === "providers"}
                   className={settingsTab === "providers" ? "selected" : ""}
                   onClick={() => setSettingsTab("providers")}
                 >
@@ -2665,6 +3474,17 @@ function App() {
                 </button>
                 <button
                   type="button"
+                  role="tab"
+                  aria-selected={settingsTab === "llm-providers"}
+                  className={settingsTab === "llm-providers" ? "selected" : ""}
+                  onClick={() => setSettingsTab("llm-providers")}
+                >
+                  LLM-Provider
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={settingsTab === "users"}
                   className={settingsTab === "users" ? "selected" : ""}
                   onClick={() => setSettingsTab("users")}
                 >
@@ -2674,313 +3494,259 @@ function App() {
             </>
           )}
 
-          {activePage === "settings" && settingsTab === "providers" && (
-            <section id="providers" className="provider-settings">
-              <section className="provider-grid">
-                <form
-                  className="panel provider-card stack"
-                  onSubmit={(event) => configureProvider(event, "openai")}
-                  aria-label="OpenAI Provider konfigurieren"
-                >
-                  <div className="panel-title">
-                    <div>
-                      <p className="eyebrow">Cloud</p>
-                      <h2>OpenAI</h2>
-                    </div>
-                    <span
-                      className={`provider-status ${
-                        openAiProvider?.apiKeySet ? "active" : "idle"
-                      }`}
-                    >
-                      {openAiProvider?.apiKeySet
-                        ? "API-Key gesetzt"
-                        : "Nicht eingerichtet"}
-                    </span>
-                  </div>
-                  <p className="hint">
-                    Modelle werden über den gespeicherten oder neu eingegebenen
-                    API-Key abgerufen und danach für Analysen freigegeben.
-                  </p>
-                  <label className="provider-key-row">
-                    Neuer OpenAI API-Key
-                    <input
-                      name="apiKey"
-                      type="password"
-                      autoComplete="off"
-                      placeholder={
-                        openAiProvider?.apiKeySet
-                          ? "Neuen API-Key eintragen"
-                          : "sk-..."
-                      }
-                    />
-                  </label>
-                  <div className="form-actions">
-                    <button type="submit">OpenAI speichern</button>
-                    <button
-                      type="button"
-                      className="secondary"
-                      onClick={() =>
-                        discoverOpenAiModels(openAiSelectedModels, true)
-                      }
-                    >
-                      Modelle abrufen
-                    </button>
-                  </div>
-                  <div
-                    className="model-selection"
-                    aria-label="OpenAI Modell-Auswahl"
+          {activePage === "settings" &&
+            (settingsTab === "providers" ||
+              settingsTab === "llm-providers") && (
+              <section id="providers" className="provider-settings">
+                <section className="provider-grid">
+                  <form
+                    className="panel provider-card stack"
+                    onSubmit={(event) => configureProvider(event, "openai")}
+                    aria-label="OpenAI Provider konfigurieren"
                   >
-                    <span className="field-caption">Freigegebene Modelle</span>
-                    {(openAiDiscoveredModels.length
-                      ? openAiDiscoveredModels
-                      : openAiSelectedModels
-                    ).map((model) => (
-                      <label className="inline-check" key={model}>
-                        <input
-                          type="checkbox"
-                          checked={openAiSelectedModels.includes(model)}
-                          onChange={(event) =>
-                            toggleOpenAiModel(model, event.target.checked)
-                          }
-                        />
-                        {model}
-                      </label>
-                    ))}
-                    {openAiDiscoveredModels.length === 0 &&
-                      openAiSelectedModels.length === 0 && (
-                        <p className="hint">Noch keine Modelle abgerufen.</p>
-                      )}
-                  </div>
-                  <label className="inline-check">
-                    <input name="removeApiKey" type="checkbox" />
-                    Gespeicherten API-Key entfernen
-                  </label>
-                </form>
-
-                <form
-                  className="panel provider-card stack"
-                  onSubmit={(event) => configureProvider(event, "vllm")}
-                  aria-label="vLLM Provider konfigurieren"
-                >
-                  <div className="panel-title">
-                    <div>
-                      <p className="eyebrow">Lokal</p>
-                      <h2>vLLM</h2>
+                    <div className="panel-title">
+                      <div>
+                        <p className="eyebrow">Cloud</p>
+                        <h2>OpenAI</h2>
+                      </div>
+                      <span
+                        className={`provider-status ${
+                          openAiProvider?.apiKeySet ? "active" : "idle"
+                        }`}
+                      >
+                        {openAiProvider?.apiKeySet
+                          ? "API-Key gesetzt"
+                          : "Nicht eingerichtet"}
+                      </span>
                     </div>
-                    <span
-                      className={`provider-status ${vllmProvider ? "active" : "idle"}`}
-                    >
-                      {vllmProvider ? "Konfiguriert" : "Nicht eingerichtet"}
-                    </span>
-                  </div>
-                  <p className="hint">
-                    vLLM bleibt für dedizierte, bereits gestartete lokale
-                    Endpoints mit expliziter Modellliste vorgesehen.
-                  </p>
-                  <label>
-                    Endpoint URL
-                    <input
-                      name="endpointUrl"
-                      defaultValue={vllmProvider?.endpointUrl ?? ""}
-                      placeholder="http://localhost:8000"
-                    />
-                  </label>
-                  <label>
-                    vLLM Modelle
-                    <input
-                      name="manualModels"
-                      defaultValue={vllmProvider?.manualModels.join(", ") ?? ""}
-                      placeholder="local-embed, local-chat"
-                    />
-                  </label>
-                  <div className="provider-meta">
-                    <span className="field-caption">Aktuelle Modelle</span>
                     <p className="hint">
-                      {vllmProvider?.manualModels.length
-                        ? vllmProvider.manualModels.join(", ")
-                        : "keine"}
+                      Modelle werden über den gespeicherten oder neu
+                      eingegebenen API-Key abgerufen und danach für Analysen
+                      freigegeben.
                     </p>
-                  </div>
-                  <div className="form-actions">
-                    <button type="submit">vLLM speichern</button>
-                    <button
-                      type="button"
-                      className="secondary"
-                      onClick={() => discoverProviderModels("vllm")}
-                    >
-                      Modelle abrufen
-                    </button>
-                  </div>
-                </form>
-
-                <form
-                  className="panel provider-card stack"
-                  onSubmit={(event) => configureProvider(event, "ollama")}
-                  aria-label="Ollama Provider konfigurieren"
-                >
-                  <div className="panel-title">
-                    <div>
-                      <p className="eyebrow">Lokal</p>
-                      <h2>Ollama</h2>
-                    </div>
-                    <span
-                      className={`provider-status ${ollamaProvider ? "active" : "idle"}`}
-                    >
-                      {ollamaProvider ? "Konfiguriert" : "Nicht eingerichtet"}
-                    </span>
-                  </div>
-                  <p className="hint">
-                    Ollama verwaltet lokale Modelle. Neue Modelle können hier
-                    heruntergeladen und danach direkt für Analysen verwendet
-                    werden.
-                  </p>
-                  <label>
-                    Endpoint URL
-                    <input
-                      name="endpointUrl"
-                      defaultValue={ollamaProvider?.endpointUrl ?? ""}
-                      placeholder="http://localhost:11434"
-                    />
-                  </label>
-                  <div className="provider-meta">
-                    <span className="field-caption">Installierte Modelle</span>
-                    <p className="hint">
-                      {ollamaProvider?.manualModels.length
-                        ? ollamaProvider.manualModels.join(", ")
-                        : "keine"}
-                    </p>
-                  </div>
-                  <div className="form-actions">
-                    <button type="submit">Ollama speichern</button>
-                    <button
-                      type="button"
-                      className="secondary"
-                      onClick={() => discoverProviderModels("ollama")}
-                    >
-                      Modelle abrufen
-                    </button>
-                  </div>
-                  <div className="inline-form provider-pull-row">
-                    <label>
-                      Neues Ollama Modell
-                      <input name="pullModel" placeholder="nomic-embed-text" />
-                    </label>
-                    <button
-                      type="button"
-                      className="secondary"
-                      onClick={(event) => {
-                        const form = event.currentTarget.closest("form");
-                        if (form !== null) {
-                          void pullOllamaModel(form);
+                    <label className="provider-key-row">
+                      Neuer OpenAI API-Key
+                      <input
+                        name="apiKey"
+                        type="password"
+                        autoComplete="off"
+                        placeholder={
+                          openAiProvider?.apiKeySet
+                            ? "Neuen API-Key eintragen"
+                            : "sk-..."
                         }
-                      }}
+                      />
+                    </label>
+                    <div className="form-actions">
+                      <button type="submit">OpenAI speichern</button>
+                      <button
+                        type="button"
+                        className="secondary"
+                        onClick={() =>
+                          discoverOpenAiModels(openAiSelectedModels, true)
+                        }
+                      >
+                        Modelle abrufen
+                      </button>
+                    </div>
+                    <div
+                      className="model-selection"
+                      aria-label="OpenAI Modell-Auswahl"
                     >
-                      Herunterladen und hinzufügen
-                    </button>
-                  </div>
-                </form>
+                      <span className="field-caption">
+                        Freigegebene Modelle
+                      </span>
+                      {(openAiDiscoveredModels.length
+                        ? openAiDiscoveredModels
+                        : openAiSelectedModels
+                      ).map((model) => (
+                        <label className="inline-check" key={model}>
+                          <input
+                            type="checkbox"
+                            checked={openAiSelectedModels.includes(model)}
+                            onChange={(event) =>
+                              toggleOpenAiModel(model, event.target.checked)
+                            }
+                          />
+                          {model}
+                        </label>
+                      ))}
+                      {openAiDiscoveredModels.length === 0 &&
+                        openAiSelectedModels.length === 0 && (
+                          <p className="hint">Noch keine Modelle abgerufen.</p>
+                        )}
+                    </div>
+                    <label>
+                      OpenAI LLM-Modelle
+                      <input
+                        name="llmModels"
+                        defaultValue={
+                          openAiProvider?.llmModels.join(", ") ?? ""
+                        }
+                        placeholder="gpt-4.1-mini"
+                      />
+                    </label>
+                    <label className="inline-check">
+                      <input name="removeApiKey" type="checkbox" />
+                      Gespeicherten API-Key entfernen
+                    </label>
+                  </form>
+
+                  <form
+                    className="panel provider-card stack"
+                    onSubmit={(event) => configureProvider(event, "vllm")}
+                    aria-label="vLLM Provider konfigurieren"
+                  >
+                    <div className="panel-title">
+                      <div>
+                        <p className="eyebrow">Lokal</p>
+                        <h2>vLLM</h2>
+                      </div>
+                      <span
+                        className={`provider-status ${vllmProvider ? "active" : "idle"}`}
+                      >
+                        {vllmProvider ? "Konfiguriert" : "Nicht eingerichtet"}
+                      </span>
+                    </div>
+                    <p className="hint">
+                      vLLM bleibt für dedizierte, bereits gestartete lokale
+                      Endpoints mit expliziter Modellliste vorgesehen.
+                    </p>
+                    <label>
+                      Endpoint URL
+                      <input
+                        name="endpointUrl"
+                        defaultValue={vllmProvider?.endpointUrl ?? ""}
+                        placeholder="http://localhost:8000"
+                      />
+                    </label>
+                    <label>
+                      vLLM Modelle
+                      <input
+                        name="manualModels"
+                        defaultValue={
+                          vllmProvider?.manualModels.join(", ") ?? ""
+                        }
+                        placeholder="local-embed, local-chat"
+                      />
+                    </label>
+                    <div className="provider-meta">
+                      <span className="field-caption">Aktuelle Modelle</span>
+                      <p className="hint">
+                        {vllmProvider?.manualModels.length
+                          ? vllmProvider.manualModels.join(", ")
+                          : "keine"}
+                      </p>
+                    </div>
+                    <div className="form-actions">
+                      <button type="submit">vLLM speichern</button>
+                      <button
+                        type="button"
+                        className="secondary"
+                        onClick={() => discoverProviderModels("vllm")}
+                      >
+                        Modelle abrufen
+                      </button>
+                    </div>
+                  </form>
+
+                  <form
+                    className="panel provider-card stack"
+                    onSubmit={(event) => configureProvider(event, "ollama")}
+                    aria-label="Ollama Provider konfigurieren"
+                  >
+                    <div className="panel-title">
+                      <div>
+                        <p className="eyebrow">Lokal</p>
+                        <h2>Ollama</h2>
+                      </div>
+                      <span
+                        className={`provider-status ${ollamaProvider ? "active" : "idle"}`}
+                      >
+                        {ollamaProvider ? "Konfiguriert" : "Nicht eingerichtet"}
+                      </span>
+                    </div>
+                    <p className="hint">
+                      Ollama verwaltet lokale Modelle. Neue Modelle können hier
+                      heruntergeladen und danach direkt für Analysen verwendet
+                      werden.
+                    </p>
+                    <label>
+                      Endpoint URL
+                      <input
+                        name="endpointUrl"
+                        defaultValue={ollamaProvider?.endpointUrl ?? ""}
+                        placeholder="http://localhost:11434"
+                      />
+                    </label>
+                    <div className="provider-meta">
+                      <span className="field-caption">
+                        Installierte Modelle
+                      </span>
+                      <p className="hint">
+                        {ollamaProvider?.manualModels.length
+                          ? ollamaProvider.manualModels.join(", ")
+                          : "keine"}
+                      </p>
+                    </div>
+                    <label>
+                      Ollama LLM-Modelle
+                      <input
+                        name="llmModels"
+                        defaultValue={
+                          ollamaProvider?.llmModels.join(", ") ?? ""
+                        }
+                        placeholder="llama3.1"
+                      />
+                    </label>
+                    <div className="provider-meta">
+                      <span className="field-caption">
+                        Aktuelle LLM-Modelle
+                      </span>
+                      <p className="hint">
+                        {ollamaProvider?.llmModels.length
+                          ? ollamaProvider.llmModels.join(", ")
+                          : "keine"}
+                      </p>
+                    </div>
+                    <div className="form-actions">
+                      <button type="submit">Ollama speichern</button>
+                      <button
+                        type="button"
+                        className="secondary"
+                        onClick={() => discoverProviderModels("ollama")}
+                      >
+                        Modelle abrufen
+                      </button>
+                    </div>
+                    <div className="inline-form provider-pull-row">
+                      <label>
+                        Neues Ollama Modell
+                        <input
+                          name="pullModel"
+                          placeholder="nomic-embed-text"
+                        />
+                      </label>
+                      <button
+                        type="button"
+                        className="secondary"
+                        onClick={(event) => {
+                          const form = event.currentTarget.closest("form");
+                          if (form !== null) {
+                            void pullOllamaModel(form);
+                          }
+                        }}
+                      >
+                        Herunterladen und hinzufügen
+                      </button>
+                    </div>
+                  </form>
+                </section>
               </section>
-            </section>
-          )}
+            )}
 
           {activePage === "projects" && (
             <>
-              {projectTab === "exports" && (
-                <section id="exports" className="panel-grid">
-                  <form
-                    className="panel stack"
-                    onSubmit={(event) => createExport(event, "candidates")}
-                    aria-label="Candidate CSV exportieren"
-                  >
-                    <p className="eyebrow">Export</p>
-                    <h2>Candidate CSV exportieren</h2>
-                    <p className="hint">
-                      Export nutzt die akzeptierten Candidate-Baseline-Spalten
-                      und persistiert Metadaten in der Projektdatenbank.
-                    </p>
-                    <label className="inline-check">
-                      <input name="includeOriginalText" type="checkbox" />
-                      Originaltext bewusst einschliessen
-                    </label>
-                    <p className="status warning">
-                      Warnung: Candidate-Felder können aus Supporttexten
-                      abgeleitet sein. Der Export wird dann auch ohne aktivierte
-                      Checkbox als Originaltext-Export protokolliert.
-                    </p>
-                    <button type="submit">Candidate CSV exportieren</button>
-                  </form>
-
-                  <form
-                    className="panel stack"
-                    onSubmit={(event) =>
-                      createExport(event, "source-assignments")
-                    }
-                    aria-label="Source Assignment CSV exportieren"
-                  >
-                    <p className="eyebrow">Traceability</p>
-                    <h2>Source-Assignment CSV exportieren</h2>
-                    <p className="hint">
-                      Ohne Toggle bleiben die Originalfelder customer_message
-                      und support_answer leer; Traceability-IDs und
-                      normalisierte Felder bleiben enthalten.
-                    </p>
-                    <label className="inline-check">
-                      <input name="includeOriginalText" type="checkbox" />
-                      Originaltext in customer_message/support_answer
-                      einschliessen
-                    </label>
-                    <p className="status warning">
-                      Warnung: Originaltexte sind potentiell identifizierende
-                      Inhalte und sollten nur bewusst exportiert werden.
-                    </p>
-                    <button type="submit">
-                      Source Assignment CSV exportieren
-                    </button>
-                  </form>
-
-                  <section className="panel" aria-label="Exporthistorie">
-                    <h2>Exporthistorie</h2>
-                    <div className="user-list">
-                      {exportLogs.length === 0 && (
-                        <p className="hint">
-                          Noch keine Exporte für dieses Projekt.
-                        </p>
-                      )}
-                      {exportLogs.map((log) => (
-                        <article className="user-card" key={log.id}>
-                          <div className="user-heading">
-                            <strong>{log.outputFilename}</strong>
-                            <span>{log.exportType}</span>
-                          </div>
-                          <p className="hint">
-                            Zeilen: {log.rowCount}; Originaltext:{" "}
-                            {log.includeOriginalText ? "ja" : "nein"}
-                          </p>
-                          <p className="hint">
-                            Dataset-Version: {log.datasetVersionId ?? "-"};
-                            Indizierung: {log.analysisRunId ?? "-"}
-                          </p>
-                          <p className="hint">Erstellt: {log.createdAt}</p>
-                          {log.includeOriginalText && (
-                            <p className="status warning">
-                              Dieser Export wurde mit Originaltext erstellt.
-                            </p>
-                          )}
-                        </article>
-                      ))}
-                    </div>
-                    {lastExportCsv && (
-                      <pre
-                        className="log-detail"
-                        aria-label="Letzter CSV Export"
-                      >
-                        {lastExportCsv}
-                      </pre>
-                    )}
-                  </section>
-                </section>
-              )}
-
               {projectTab === "indexing" && (
                 <section id="indexing" className="panel-grid">
                   <form
@@ -3154,460 +3920,678 @@ function App() {
                 </section>
               )}
 
-              {projectTab === "clusters" && (
-                <section id="clusters" className="panel-grid">
-                  <section className="panel" aria-label="Cluster Aktionen">
-                    <p className="eyebrow">Cluster Explorer</p>
-                    <h2>Cluster erzeugen</h2>
+              {projectTab === "cluster-sets" && (
+                <section id="cluster-sets" className="panel-grid">
+                  <form
+                    className="panel stack"
+                    onSubmit={createClusterSet}
+                    aria-label="Cluster-Set erstellen"
+                  >
+                    <p className="eyebrow">Cluster-Sets</p>
+                    <h2>Cluster-Set erstellen</h2>
                     <p className="hint">
-                      Abgeschlossene Indizierungen können in diesem
-                      Übergangsschritt geclustert werden.
+                      Cluster-Sets speichern Analyseparameter, Vektor-Basis,
+                      Quelle und optional LLM-Zusammenfassungen.
                     </p>
-                    <div className="user-list">
-                      {indexingRuns.length === 0 && (
-                        <p className="hint">
-                          Noch keine Indizierungen für Cluster vorhanden.
+                    {clusterSetRefinementDraft !== null ? (
+                      <section className="status info" role="status">
+                        <strong>Verfeinerung vorausgefüllt</strong>
+                        <p>
+                          {clusterSetRefinementDraft.description}. Parent:{" "}
+                          {clusterSetRefinementDraft.parentClusterSetId}
                         </p>
-                      )}
-                      {indexingRuns.map((run) => (
-                        <article
-                          className="user-card"
-                          key={`cluster-action-${run.id}`}
+                        <input
+                          type="hidden"
+                          name="indexingRunId"
+                          value={clusterSetRefinementDraft.indexingRunId}
+                        />
+                        <button
+                          type="button"
+                          className="secondary"
+                          onClick={() => setClusterSetRefinementDraft(null)}
                         >
-                          <div className="user-heading">
-                            <strong>{run.status}</strong>
-                            <span>{run.model}</span>
-                          </div>
-                          <p className="hint">Indizierung: {run.id}</p>
-                          <p className="hint">
-                            Datensatz: {run.datasetDisplayName ?? "-"}; Version:{" "}
-                            {run.datasetVersionId}
-                          </p>
-                          <button
-                            type="button"
-                            className="secondary"
-                            disabled={
-                              run.status !== "completed" ||
-                              clusterGenerationRequest !== null
-                            }
-                            onClick={() => generateClusters(run.id)}
-                          >
-                            {clusterGenerationRequest?.projectId ===
-                              currentProject?.id &&
-                            clusterGenerationRequest?.runId === run.id
-                              ? "Cluster werden erzeugt"
-                              : "Cluster erzeugen"}
-                          </button>
-                          {clusterGenerationRequest?.projectId ===
-                            currentProject?.id &&
-                            clusterGenerationRequest?.runId === run.id && (
-                              <p className="status info" role="status">
-                                Clustererzeugung läuft für Indizierung {run.id}.
-                              </p>
-                            )}
-                          <button
-                            type="button"
-                            className="secondary"
-                            disabled={run.status !== "completed"}
-                            onClick={() =>
-                              session &&
-                              currentProject &&
-                              loadClusters(
-                                session.token,
-                                currentProject.id,
-                                run.id,
-                              )
-                            }
-                          >
-                            Cluster laden
-                          </button>
-                        </article>
-                      ))}
+                          Verfeinerung zurücksetzen
+                        </button>
+                      </section>
+                    ) : (
+                      <label>
+                        Indizierung
+                        <select name="indexingRunId" required>
+                          {completedIndexingRuns.length === 0 && (
+                            <option value="">
+                              Keine abgeschlossene Indizierung
+                            </option>
+                          )}
+                          {completedIndexingRuns.map((run) => (
+                            <option key={run.id} value={run.id}>
+                              {run.datasetDisplayName ?? run.datasetVersionId} /{" "}
+                              {run.model}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    )}
+                    <label>
+                      Anzeigename
+                      <input
+                        name="displayName"
+                        placeholder="z. B. Antworten grob"
+                      />
+                    </label>
+                    <label>
+                      Vektor-Basis
+                      <select
+                        name="vectorBasis"
+                        value={clusterSetVectorBasis}
+                        onChange={(event) =>
+                          setClusterSetVectorBasis(event.target.value)
+                        }
+                      >
+                        <option value="message">Nachricht</option>
+                        <option value="answer">Antwort</option>
+                        <option value="combined">Q/A kombiniert</option>
+                      </select>
+                    </label>
+                    {clusterSetVectorBasis === "combined" && (
+                      <div className="inline-form">
+                        <label>
+                          Nachricht-Gewicht
+                          <input
+                            name="messageWeight"
+                            type="number"
+                            min="0"
+                            step="0.1"
+                            defaultValue="0.5"
+                          />
+                        </label>
+                        <label>
+                          Antwort-Gewicht
+                          <input
+                            name="answerWeight"
+                            type="number"
+                            min="0"
+                            step="0.1"
+                            defaultValue="0.5"
+                          />
+                        </label>
+                      </div>
+                    )}
+                    <div className="inline-form">
+                      <label>
+                        HDBSCAN min_cluster_size
+                        <input
+                          name="minClusterSize"
+                          type="number"
+                          min="2"
+                          defaultValue="2"
+                        />
+                      </label>
+                      <label>
+                        min_samples optional
+                        <input name="minSamples" type="number" min="1" />
+                      </label>
+                      <label>
+                        selection_epsilon
+                        <input
+                          name="clusterSelectionEpsilon"
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          defaultValue="0"
+                        />
+                      </label>
+                      <label>
+                        Outlier-Schwelle optional
+                        <input
+                          name="outlierThreshold"
+                          type="number"
+                          min="0"
+                          max="1"
+                          step="0.01"
+                        />
+                      </label>
                     </div>
-                  </section>
+                    <label>
+                      LLM-Zusammenfassung
+                      <select
+                        name="llmProvider"
+                        value={clusterSetLlmProvider}
+                        onChange={(event) =>
+                          setClusterSetLlmProvider(
+                            event.target.value as LlmProviderSelection,
+                          )
+                        }
+                      >
+                        <option value="">Keine Zusammenfassung</option>
+                        <option value="ollama">Ollama lokal</option>
+                        <option value="openai">OpenAI Cloud</option>
+                      </select>
+                    </label>
+                    {clusterSetLlmProvider !== "" && (
+                      <>
+                        <label>
+                          LLM-Modell
+                          <select
+                            name="llmModel"
+                            required
+                            disabled={clusterSetLlmProviderModels.length === 0}
+                          >
+                            {clusterSetLlmProviderModels.length === 0 && (
+                              <option value="">Keine Modelle verfügbar</option>
+                            )}
+                            {clusterSetLlmProviderModels.map((model) => (
+                              <option key={model} value={model}>
+                                {model}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <label>
+                          Beispiele pro Cluster
+                          <input
+                            name="llmSampleCount"
+                            type="number"
+                            min="1"
+                            step="any"
+                            defaultValue="10"
+                            disabled={clusterSetLlmSampleAll}
+                          />
+                        </label>
+                        <label className="inline-check">
+                          <input
+                            name="llmSampleAll"
+                            type="checkbox"
+                            checked={clusterSetLlmSampleAll}
+                            onChange={(event) =>
+                              setClusterSetLlmSampleAll(event.target.checked)
+                            }
+                          />
+                          Alle Beispiele je Cluster verwenden
+                        </label>
+                      </>
+                    )}
+                    {clusterSetLlmProvider === "openai" && (
+                      <label className="confirmation-field">
+                        <input
+                          name="llmCloudUseConfirmed"
+                          type="checkbox"
+                          checked={clusterSetCloudUseConfirmed}
+                          onChange={(event) =>
+                            setClusterSetCloudUseConfirmed(event.target.checked)
+                          }
+                        />
+                        Ich bestätige, dass Beispieltexte für
+                        Cluster-Zusammenfassungen an OpenAI übertragen werden.
+                      </label>
+                    )}
+                    <button
+                      type="submit"
+                      disabled={
+                        (clusterSetRefinementDraft === null &&
+                          completedIndexingRuns.length === 0) ||
+                        clusterSetGenerationRequest !== null ||
+                        (clusterSetLlmProvider !== "" &&
+                          clusterSetLlmProviderModels.length === 0) ||
+                        (clusterSetLlmProvider === "openai" &&
+                          !clusterSetCloudUseConfirmed)
+                      }
+                    >
+                      {clusterSetGenerationRequest === null
+                        ? clusterSetRefinementDraft === null
+                          ? "Cluster-Set erstellen"
+                          : "Verfeinerung erstellen"
+                        : "Cluster-Set wird erstellt"}
+                    </button>
+                  </form>
 
-                  <section className="panel" aria-label="Cluster Explorer">
-                    <h2>Cluster Explorer</h2>
+                  <section className="panel" aria-label="Cluster-Sets">
+                    <h2>Gespeicherte Cluster-Sets</h2>
                     <div className="user-list">
-                      {clusters.length === 0 && (
+                      {clusterSets.length === 0 && (
                         <p className="hint">
-                          {clusterLoadRunId === null
-                            ? "Noch keine Cluster geladen."
-                            : "Für die ausgewählte abgeschlossene Indizierung wurden noch keine Cluster erzeugt. Bitte zuerst „Cluster erzeugen“ ausführen."}
+                          Noch keine Cluster-Sets für dieses Projekt.
                         </p>
                       )}
-                      {clusters.map((cluster) => (
-                        <article className="user-card" key={cluster.id}>
-                          <div className="user-heading">
-                            <strong>{cluster.effectiveTitle}</strong>
-                            <span>
-                              {cluster.isOutlier ? "Outlier" : "Cluster"}
-                            </span>
-                          </div>
-                          <p className="hint">
-                            Auto: {cluster.autoTitle} / {cluster.autoCategory} /{" "}
-                            {cluster.autoStatus}
-                          </p>
-                          <p className="hint">
-                            Manual: {cluster.manualTitle ?? "-"} /{" "}
-                            {cluster.manualCategory ?? "-"} /{" "}
-                            {cluster.manualStatus ?? "-"}
-                          </p>
-                          <p className="hint">
-                            Effective: {cluster.effectiveTitle} /{" "}
-                            {cluster.effectiveCategory ?? "-"} /{" "}
-                            {cluster.effectiveStatus}
-                          </p>
-                          <p className="hint">
-                            Score: {cluster.score}; Quellen:{" "}
-                            {cluster.memberCount}; Algorithmus:{" "}
-                            {cluster.algorithm}
-                          </p>
-                          <form
-                            className="stack"
-                            onSubmit={(event) =>
-                              updateCluster(event, cluster.id)
-                            }
-                          >
-                            <label>
-                              Manueller Titel
-                              <input
-                                name="manualTitle"
-                                defaultValue={cluster.manualTitle ?? ""}
-                              />
-                            </label>
-                            <label>
-                              Manuelle Kategorie
-                              <input
-                                name="manualCategory"
-                                defaultValue={cluster.manualCategory ?? ""}
-                              />
-                            </label>
-                            <label>
-                              Manueller Status
-                              <select
-                                name="manualStatus"
-                                defaultValue={cluster.manualStatus ?? ""}
-                              >
-                                <option value="">Kein Override</option>
-                                <option value="unreviewed">unreviewed</option>
-                                <option value="in_progress">in_progress</option>
-                                <option value="reviewed">reviewed</option>
-                                <option value="rejected">rejected</option>
-                                <option value="outlier">outlier</option>
-                              </select>
-                            </label>
-                            <button type="submit">Overrides speichern</button>
-                          </form>
-                          <button
-                            type="button"
-                            className="secondary"
-                            onClick={() => inspectClusterSources(cluster.id)}
-                          >
-                            Quellen anzeigen
-                          </button>
-                          <button
-                            type="button"
-                            className="secondary"
-                            onClick={() =>
-                              createCandidateFromCluster(cluster.id)
-                            }
-                          >
-                            Candidate erstellen
-                          </button>
-                        </article>
-                      ))}
+                      {rootClusterSets.map((clusterSet) =>
+                        renderClusterSetCard(clusterSet),
+                      )}
                     </div>
-                    {clusterSources.length > 0 && (
-                      <section
-                        className="log-detail"
-                        aria-label="Cluster Quellen"
-                      >
-                        <h2>Quellen</h2>
-                        {clusterSources.map((source) => (
-                          <article
-                            className="user-card"
-                            key={source.messagePairId}
-                          >
-                            <strong>
-                              {source.ticketId} / {source.messageGroupId}
-                            </strong>
-                            <p className="hint">Message: {source.message}</p>
-                            <p className="hint">Answer: {source.answer}</p>
-                            <p className="hint">
-                              Score: {source.membershipScore}; Assignment:{" "}
-                              {source.assignmentType}
-                            </p>
-                          </article>
-                        ))}
-                      </section>
-                    )}
                   </section>
                 </section>
               )}
 
-              {projectTab === "candidates" && (
-                <section
-                  id="candidates"
-                  className="panel"
-                  aria-label="Candidate Editor"
-                >
-                  <p className="eyebrow">Candidate Curation</p>
-                  <h2>Candidate Editor</h2>
-                  <p className="hint">
-                    Generierte Werte bleiben erhalten; manuelle Felder bestimmen
-                    die effektiven Kurationswerte.
-                  </p>
-                  <div className="user-list">
-                    {candidates.length === 0 && (
+              {projectTab === "explorer" && (
+                <section id="explorer" className="explorer-layout">
+                  <section
+                    className="panel cluster-explorer"
+                    aria-label="Cluster Explorer"
+                  >
+                    <div className="panel-title">
+                      <div>
+                        <p className="eyebrow">Explorer</p>
+                        <h2>Cluster Explorer</h2>
+                      </div>
+                      <button
+                        type="button"
+                        className="secondary"
+                        onClick={() => setProjectTab("cluster-sets")}
+                      >
+                        Cluster-Set auswählen
+                      </button>
+                    </div>
+
+                    {loadedClusterSet === null ? (
                       <p className="hint">
-                        Noch keine Candidates für dieses Projekt.
+                        Noch kein abgeschlossenes Cluster-Set geladen. Wähle im
+                        Tab „Cluster-Sets“ einen fertigen Satz aus.
                       </p>
-                    )}
-                    {candidates.map((candidate) => (
-                      <article className="user-card" key={candidate.id}>
-                        <div className="user-heading">
-                          <strong>{candidate.effectiveTitle}</strong>
-                          <span>
-                            {candidate.candidateType} /{" "}
-                            {candidate.effectiveStatus}
-                          </span>
+                    ) : (
+                      <>
+                        <div
+                          className="metric-grid"
+                          aria-label="Explorer Kennzahlen"
+                        >
+                          <div>
+                            <span className="field-caption">Geladenes Set</span>
+                            <strong>{loadedClusterSet.displayName}</strong>
+                          </div>
+                          <div>
+                            <span className="field-caption">Cluster</span>
+                            <strong>{clusters.length}</strong>
+                          </div>
+                          <div>
+                            <span className="field-caption">Sichtbar</span>
+                            <strong>{visibleClusters.length}</strong>
+                          </div>
+                          <div>
+                            <span className="field-caption">
+                              Ausgeschlossen
+                            </span>
+                            <strong>
+                              {clusters.filter(clusterIsExcluded).length}
+                            </strong>
+                          </div>
                         </div>
+
+                        <section
+                          className="analysis-path"
+                          aria-label="Analysepfad"
+                        >
+                          <span className="field-caption">Analysepfad</span>
+                          <ol>
+                            <li>
+                              Import:{" "}
+                              {loadedClusterSet.datasetDisplayName ?? "-"}
+                            </li>
+                            <li>
+                              Indizierung: {loadedClusterSet.indexingRunId}
+                            </li>
+                            {loadedAnalysisPath.map((clusterSet) => (
+                              <li key={clusterSet.id}>
+                                {formatClusterSetType(
+                                  clusterSet.derivationType,
+                                )}
+                                : {clusterSet.displayName}
+                                {clusterSet.deletedAt !== null
+                                  ? " (gelöscht)"
+                                  : ""}
+                              </li>
+                            ))}
+                          </ol>
+                        </section>
+
+                        <section
+                          className="explorer-controls"
+                          aria-label="Explorer Filter"
+                        >
+                          <label>
+                            Textsuche
+                            <input
+                              value={clusterSearchQuery}
+                              onChange={(event) =>
+                                setClusterSearchQuery(event.target.value)
+                              }
+                              placeholder="Titel, Kategorie, Summary oder Status"
+                            />
+                          </label>
+                          <label>
+                            Kategorie
+                            <select
+                              value={clusterCategoryFilter}
+                              onChange={(event) =>
+                                setClusterCategoryFilter(event.target.value)
+                              }
+                            >
+                              <option value="">Alle Kategorien</option>
+                              {clusterCategories.map((category) => (
+                                <option key={category} value={category}>
+                                  {category}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                          <label className="inline-check">
+                            <input
+                              type="checkbox"
+                              checked={clusterGroupByCategory}
+                              onChange={(event) =>
+                                setClusterGroupByCategory(event.target.checked)
+                              }
+                            />
+                            Nach Kategorie gruppieren
+                          </label>
+                          <label className="inline-check">
+                            <input
+                              type="checkbox"
+                              checked={showExcludedClusters}
+                              onChange={(event) =>
+                                setShowExcludedClusters(event.target.checked)
+                              }
+                            />
+                            Ausgeschlossene anzeigen
+                          </label>
+                          <label className="inline-check">
+                            <input
+                              type="checkbox"
+                              checked={includeOutlierRows}
+                              onChange={(event) =>
+                                setIncludeOutlierRows(event.target.checked)
+                              }
+                            />
+                            Ausreißer in Tabelle anzeigen
+                          </label>
+                        </section>
+
+                        <section
+                          className="outlier-box"
+                          aria-label="Ausreißer ausschließen"
+                        >
+                          <h2>Ausreißer ausschließen</h2>
+                          <p className="hint">
+                            Diese Aktion verändert das Analyseergebnis und
+                            erstellt deshalb ein neues Child-Cluster-Set.
+                          </p>
+                          <div className="inline-form">
+                            <label>
+                              Threshold
+                              <input
+                                type="number"
+                                min="0"
+                                max="1"
+                                step="0.01"
+                                value={outlierThreshold}
+                                onChange={(event) =>
+                                  setOutlierThreshold(event.target.value)
+                                }
+                              />
+                            </label>
+                            <button
+                              type="button"
+                              onClick={() => void createOutlierExclusionSet()}
+                            >
+                              Ausreißer berechnen
+                            </button>
+                          </div>
+                        </section>
+
+                        {clusters.length > 0 &&
+                          visibleClusters.length === 0 && (
+                            <p className="status info" role="status">
+                              {ERROR_MESSAGES_BY_CODE.CLUSTER_SEARCH_NO_RESULTS}
+                            </p>
+                          )}
+
+                        <div className="cluster-table-wrap" tabIndex={0}>
+                          <table className="cluster-table">
+                            <thead>
+                              <tr>
+                                <th>Status</th>
+                                <th>Titel</th>
+                                <th>Kategorie</th>
+                                <th>Frage</th>
+                                <th>Antwort</th>
+                                <th>Kundenanfragen</th>
+                                <th>Supportantworten</th>
+                                <th>Hinweise</th>
+                                <th>Aktionen</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {includedClusterGroups.map((group) => (
+                                <Fragment key={group.key}>
+                                  {clusterGroupByCategory && (
+                                    <tr className="group-row">
+                                      <td colSpan={9}>{group.label}</td>
+                                    </tr>
+                                  )}
+                                  {group.clusters.map((cluster) =>
+                                    renderClusterTableRow(cluster),
+                                  )}
+                                </Fragment>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+
+                        {showExcludedClusters && (
+                          <section
+                            className="excluded-section"
+                            aria-label="Ausgeschlossene Cluster"
+                          >
+                            <h2>Ausgeschlossene Cluster</h2>
+                            {visibleExcludedClusters.length === 0 ? (
+                              <p className="hint">
+                                Keine ausgeschlossenen Cluster sichtbar.
+                              </p>
+                            ) : (
+                              <div className="cluster-table-wrap" tabIndex={0}>
+                                <table className="cluster-table">
+                                  <tbody>
+                                    {visibleExcludedClusters.map((cluster) =>
+                                      renderClusterTableRow(cluster),
+                                    )}
+                                  </tbody>
+                                </table>
+                              </div>
+                            )}
+                          </section>
+                        )}
+
+                        <div className="form-actions">
+                          <button
+                            type="button"
+                            onClick={createRefinementDraftFromVisibleClusters}
+                          >
+                            Eingeschlossene Cluster verfeinern
+                          </button>
+                        </div>
+                      </>
+                    )}
+                  </section>
+
+                  <section className="panel stack" aria-label="Explorer Export">
+                    <p className="eyebrow">Export</p>
+                    <h2>Explorer exportieren</h2>
+                    <p className="hint">
+                      Exportiert die aktuelle gefilterte Explorer-Tabelle ohne
+                      Originaltexte aus dem Quellen-Dialog.
+                    </p>
+                    {explorerExportError !== null && (
+                      <div className="status error stack" role="alert">
+                        <strong>Explorer-Export fehlgeschlagen.</strong>
+                        <p>{explorerExportError}</p>
                         <p className="hint">
-                          Auto: {candidate.autoTitle} /{" "}
-                          {candidate.autoCategoryPath ?? "-"} /{" "}
-                          {candidate.autoStatus}
+                          Filter und Format bleiben erhalten. Bitte Eingaben
+                          anpassen oder den Export erneut starten.
                         </p>
-                        <p className="hint">
-                          Manual: {candidate.manualTitle ?? "-"} /{" "}
-                          {candidate.manualCategoryPath ?? "-"} /{" "}
-                          {candidate.manualStatus ?? "-"}
-                        </p>
-                        <p className="hint">
-                          Effective: {candidate.effectiveTitle} /{" "}
-                          {candidate.effectiveCategoryPath ?? "-"} /{" "}
-                          {candidate.effectiveStatus}
-                        </p>
-                        <p className="hint">
-                          Frage Auto: {candidate.autoCanonicalQuestion}
-                        </p>
-                        <p className="hint">
-                          Frage Manual:{" "}
-                          {candidate.manualCanonicalQuestion ?? "-"}
-                        </p>
-                        <p className="hint">
-                          Frage Effective:{" "}
-                          {candidate.effectiveCanonicalQuestion}
-                        </p>
-                        <p className="hint">
-                          Antwort Auto: {candidate.autoCanonicalAnswer}
-                        </p>
-                        <p className="hint">
-                          Antwort Manual:{" "}
-                          {candidate.manualCanonicalAnswer ?? "-"}
-                        </p>
-                        <p className="hint">
-                          Antwort Effective:{" "}
-                          {candidate.effectiveCanonicalAnswer}
-                        </p>
-                        <p className="hint">
-                          Alternative Fragen Auto:{" "}
-                          {candidate.autoAlternativeQuestions.join("; ") || "-"}
-                        </p>
-                        <p className="hint">
-                          Alternative Fragen Manual:{" "}
-                          {candidate.manualAlternativeQuestions?.join("; ") ??
-                            "-"}
-                        </p>
-                        <p className="hint">
-                          Alternative Fragen Effective:{" "}
-                          {candidate.effectiveAlternativeQuestions.join("; ") ||
-                            "-"}
-                        </p>
-                        <p className="hint">
-                          Parameter Auto:{" "}
-                          {formatJsonObject(candidate.autoParameters)}
-                        </p>
-                        <p className="hint">
-                          Parameter Manual:{" "}
-                          {formatJsonObject(candidate.manualParameters)}
-                        </p>
-                        <p className="hint">
-                          Parameter Effective:{" "}
-                          {formatJsonObject(candidate.effectiveParameters)}
-                        </p>
-                        <p className="hint">
-                          Externe Datenabhängigkeiten Auto:{" "}
-                          {candidate.autoExternalDataDependencies.join("; ") ||
-                            "-"}
-                        </p>
-                        <p className="hint">
-                          Externe Datenabhängigkeiten Manual:{" "}
-                          {candidate.manualExternalDataDependencies?.join(
-                            "; ",
-                          ) ?? "-"}
-                        </p>
-                        <p className="hint">
-                          Externe Datenabhängigkeiten Effective:{" "}
-                          {candidate.effectiveExternalDataDependencies.join(
-                            "; ",
-                          ) || "-"}
-                        </p>
-                        <p className="hint">
-                          Quellen: {candidate.sourcePairCount}; Cluster:{" "}
-                          {candidate.sourceClusterIds.join(", ") || "-"};
-                          Sprache: {candidate.language}
-                        </p>
-                        <p className="hint">
-                          Scores: quality {candidate.qualityScore}, FAQ{" "}
-                          {candidate.faqSuitabilityScore}, dynamic{" "}
-                          {candidate.dynamicityScore}, contradiction{" "}
-                          {candidate.contradictionScore}
-                        </p>
-                        <form
-                          className="stack"
-                          onSubmit={(event) =>
-                            updateCandidate(event, candidate)
+                      </div>
+                    )}
+                    <form className="stack" onSubmit={createExplorerExport}>
+                      <label>
+                        Format
+                        <select
+                          value={explorerExportFormat}
+                          onChange={(event) =>
+                            setExplorerExportFormat(
+                              event.target.value as ExplorerExportFormat,
+                            )
                           }
                         >
-                          <label>
-                            Candidate Typ
-                            <select
-                              name="candidateType"
-                              defaultValue={candidate.candidateType}
-                            >
-                              <option value="static_faq">static_faq</option>
-                              <option value="parameterized_faq">
-                                parameterized_faq
-                              </option>
-                              <option value="dynamic_case">dynamic_case</option>
-                              <option value="text_block">text_block</option>
-                              <option value="single_case">single_case</option>
-                              <option value="not_usable">not_usable</option>
-                            </select>
-                          </label>
-                          <label>
-                            Manueller Status
-                            <select
-                              name="manualStatus"
-                              defaultValue={candidate.manualStatus ?? ""}
-                            >
-                              <option value="">Kein Override</option>
-                              <option value="unreviewed">unreviewed</option>
-                              <option value="in_progress">in_progress</option>
-                              <option value="reviewed">reviewed</option>
-                              <option value="rejected">rejected</option>
-                              <option value="export_ready">export_ready</option>
-                            </select>
-                          </label>
-                          <label>
-                            Manuelle Kategorie
-                            <input
-                              name="manualCategoryPath"
-                              defaultValue={candidate.manualCategoryPath ?? ""}
-                            />
-                          </label>
-                          <label>
-                            Manueller Titel
-                            <input
-                              name="manualTitle"
-                              defaultValue={candidate.manualTitle ?? ""}
-                            />
-                          </label>
-                          <label>
-                            Manuelle Frage
-                            <textarea
-                              name="manualCanonicalQuestion"
-                              defaultValue={
-                                candidate.manualCanonicalQuestion ?? ""
-                              }
-                            />
-                          </label>
-                          <label>
-                            Manuelle Antwort
-                            <textarea
-                              name="manualCanonicalAnswer"
-                              defaultValue={
-                                candidate.manualCanonicalAnswer ?? ""
-                              }
-                            />
-                          </label>
-                          <label>
-                            Alternative Fragen, eine pro Zeile
-                            <textarea
-                              name="manualAlternativeQuestions"
-                              defaultValue={
-                                candidate.manualAlternativeQuestions?.join(
-                                  "\n",
-                                ) ?? ""
-                              }
-                            />
-                          </label>
-                          <label>
-                            Parameter JSON
-                            <textarea
-                              name="manualParameters"
-                              defaultValue={
-                                candidate.manualParameters === null
-                                  ? ""
-                                  : JSON.stringify(candidate.manualParameters)
-                              }
-                            />
-                          </label>
-                          <label>
-                            Externe Datenabhängigkeiten, eine pro Zeile
-                            <textarea
-                              name="manualExternalDataDependencies"
-                              defaultValue={
-                                candidate.manualExternalDataDependencies?.join(
-                                  "\n",
-                                ) ?? ""
-                              }
-                            />
-                          </label>
-                          <label>
-                            Notizen
-                            <textarea
-                              name="notes"
-                              defaultValue={candidate.notes ?? ""}
-                            />
-                          </label>
-                          <button type="submit">Candidate speichern</button>
-                        </form>
-                        <button
-                          type="button"
-                          className="secondary"
-                          onClick={() => inspectCandidateSources(candidate.id)}
-                        >
-                          Candidate Quellen anzeigen
-                        </button>
-                      </article>
-                    ))}
-                  </div>
-                  {candidateSources.length > 0 && (
-                    <section
-                      className="log-detail"
-                      aria-label="Candidate Quellen"
-                    >
-                      <h2>Candidate Quellen</h2>
-                      {candidateSources.map((source) => (
-                        <article
-                          className="user-card"
-                          key={source.messagePairId}
-                        >
-                          <strong>
-                            {source.ticketId} / {source.messageGroupId}
-                          </strong>
-                          <p className="hint">Message: {source.message}</p>
-                          <p className="hint">Answer: {source.answer}</p>
+                          <option value="csv">CSV</option>
+                          <option value="json">JSON</option>
+                        </select>
+                      </label>
+                      <button
+                        type="submit"
+                        disabled={
+                          loadedClusterSet === null ||
+                          visibleClusters.length === 0
+                        }
+                      >
+                        Aktuelle Tabelle exportieren
+                      </button>
+                    </form>
+                    <section aria-label="Exporthistorie">
+                      <h2>Exporthistorie</h2>
+                      <div className="user-list">
+                        {visibleExportLogs.length === 0 && (
                           <p className="hint">
-                            Assignment: {source.assignmentType}; Score:{" "}
-                            {source.membershipScore}; Cluster:{" "}
-                            {source.clusterId ?? "-"}
+                            Noch keine Explorer-Exporte für dieses Projekt.
                           </p>
-                        </article>
-                      ))}
+                        )}
+                        {visibleExportLogs.map((log) => (
+                          <article className="user-card" key={log.id}>
+                            <div className="user-heading">
+                              <strong>{log.outputFilename}</strong>
+                              <span>{log.exportType}</span>
+                            </div>
+                            <p className="hint">
+                              Zeilen: {log.rowCount}; Cluster-Set:{" "}
+                              {log.clusterSetId ?? "-"}
+                            </p>
+                            <p className="hint">Erstellt: {log.createdAt}</p>
+                          </article>
+                        ))}
+                      </div>
                     </section>
+                    {lastExportContent && (
+                      <pre
+                        className="log-detail"
+                        aria-label="Letzter Explorer Export"
+                        tabIndex={0}
+                      >
+                        {lastExportContentType}:{"\n"}
+                        {lastExportContent}
+                      </pre>
+                    )}
+                  </section>
+
+                  {sourceDialogCluster !== null && (
+                    <div className="dialog-backdrop">
+                      <section
+                        className="source-dialog"
+                        role="dialog"
+                        aria-modal="true"
+                        aria-labelledby="source-dialog-title"
+                        ref={sourceDialogRef}
+                      >
+                        <div className="panel-title">
+                          <div>
+                            <p className="eyebrow">Quellen</p>
+                            <h2 id="source-dialog-title">
+                              {sourceDialogCluster.effectiveTitle}
+                            </h2>
+                          </div>
+                          <button
+                            type="button"
+                            className="secondary"
+                            ref={sourceDialogCloseRef}
+                            onClick={closeSourceDialog}
+                          >
+                            Schließen
+                          </button>
+                        </div>
+                        {!sourceDialogLoaded ? (
+                          <p className="hint" role="status">
+                            Quellen werden geladen.
+                          </p>
+                        ) : sourceDialogError !== null &&
+                          clusterSources.length === 0 ? (
+                          <div className="status error stack" role="alert">
+                            <strong>
+                              Quellen konnten nicht geladen werden.
+                            </strong>
+                            <p>{sourceDialogError}</p>
+                            <button
+                              type="button"
+                              className="secondary"
+                              onClick={() =>
+                                void loadClusterSourcePage(
+                                  sourceDialogCluster,
+                                  0,
+                                  { append: false },
+                                )
+                              }
+                            >
+                              Quellen erneut laden
+                            </button>
+                          </div>
+                        ) : clusterSources.length === 0 ? (
+                          <p className="hint">
+                            Keine Quellen für diesen Cluster vorhanden.
+                          </p>
+                        ) : (
+                          <>
+                            {sourceDialogError !== null && (
+                              <div className="status error stack" role="alert">
+                                <strong>
+                                  Weitere Quellen konnten nicht geladen werden.
+                                </strong>
+                                <p>{sourceDialogError}</p>
+                              </div>
+                            )}
+                            <div className="source-list">
+                              {clusterSources.map((source) => (
+                                <article
+                                  className="user-card"
+                                  key={source.messagePairId}
+                                >
+                                  <strong>
+                                    Ticket {source.ticketId} · Gruppe{" "}
+                                    {source.messageGroupId}
+                                  </strong>
+                                  <p>Kundenfrage: {source.message}</p>
+                                  <p>Supportantwort: {source.answer}</p>
+                                  <p className="hint">
+                                    Score: {formatScore(source.membershipScore)}
+                                    ; Assignment: {source.assignmentType}
+                                    {source.isOutlier ? "; Ausreißer" : ""}
+                                  </p>
+                                </article>
+                              ))}
+                            </div>
+                            <div className="source-dialog-footer">
+                              {sourceDialogNextOffset !== null && (
+                                <button
+                                  type="button"
+                                  className="secondary"
+                                  disabled={sourceDialogLoadingMore}
+                                  onClick={() => void loadMoreClusterSources()}
+                                >
+                                  {sourceDialogLoadingMore
+                                    ? "Weitere Quellen werden geladen"
+                                    : "Weitere Quellen laden"}
+                                </button>
+                              )}
+                              <p className="hint">
+                                Angezeigt: {clusterSources.length} Quelle
+                                {clusterSources.length === 1 ? "" : "n"}.
+                              </p>
+                            </div>
+                          </>
+                        )}
+                      </section>
+                    </div>
                   )}
                 </section>
               )}

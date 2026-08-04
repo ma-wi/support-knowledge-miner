@@ -8,13 +8,15 @@ from fastapi.testclient import TestClient
 from backend.api import create_app
 from backend.auth import CurrentUser
 from backend.auth.service import AuthenticationError
-from backend.exports import ExportLog, ExportResult
+from backend.exports import ExplorerExportInput, ExportError, ExportLog, ExportResult
 
 OWNER_ID = UUID("11111111-1111-1111-1111-111111111111")
 PROJECT_ID = UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
 EXPORT_ID = UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
 DATASET_ID = UUID("cccccccc-cccc-cccc-cccc-cccccccccccc")
 RUN_ID = UUID("dddddddd-dddd-dddd-dddd-dddddddddddd")
+CLUSTER_SET_ID = UUID("99999999-9999-9999-9999-999999999999")
+CLUSTER_ID = UUID("eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee")
 NOW = datetime(2026, 7, 23, tzinfo=UTC)
 
 
@@ -38,52 +40,41 @@ class FakeAuthService:
 
 class FakeExportService:
     def __init__(self) -> None:
-        self.last_candidate_include: bool | None = None
-        self.last_source_include: bool | None = None
+        self.last_payload: ExplorerExportInput | None = None
         self.last_actor: UUID | None = None
+        self.raise_error: ExportError | None = None
         self.log = ExportLog(
             id=EXPORT_ID,
             project_id=PROJECT_ID,
-            export_type="candidate_csv",
-            include_original_text=True,
-            filters={},
-            selection={},
+            export_type="explorer_csv",
+            include_original_text=False,
+            filters={"search_query": "reset"},
+            selection={"cluster_ids": [str(CLUSTER_ID)]},
             dataset_version_id=DATASET_ID,
             analysis_run_id=RUN_ID,
-            output_filename="candidate_csv-test.csv",
+            cluster_set_id=CLUSTER_SET_ID,
+            output_filename="explorer_csv-test.csv",
             output_path=None,
             row_count=1,
             created_at=NOW,
         )
 
-    def export_candidates(
-        self, project_id: UUID, *, include_original_text: bool, actor_user_id: UUID
+    def export_explorer(
+        self,
+        project_id: UUID,
+        payload: ExplorerExportInput,
+        *,
+        actor_user_id: UUID,
     ) -> ExportResult:
         assert project_id == PROJECT_ID
-        self.last_candidate_include = include_original_text
+        self.last_payload = payload
         self.last_actor = actor_user_id
+        if self.raise_error is not None:
+            raise self.raise_error
         return ExportResult(
             log=self.log,
-            csv_content="candidate_id,title\ncandidate-1,Reset FAQ\n",
-            warning="Export enthaelt Originaltext.",
-        )
-
-    def export_source_assignments(
-        self, project_id: UUID, *, include_original_text: bool, actor_user_id: UUID
-    ) -> ExportResult:
-        assert project_id == PROJECT_ID
-        self.last_source_include = include_original_text
-        self.last_actor = actor_user_id
-        return ExportResult(
-            log=ExportLog(
-                **{
-                    **self.log.__dict__,
-                    "export_type": "source_assignment_csv",
-                    "include_original_text": include_original_text,
-                    "output_filename": "source_assignment_csv-test.csv",
-                }
-            ),
-            csv_content="candidate_id,pair_id,customer_message\ncandidate-1,pair-1,\n",
+            content="cluster_id,title\ncluster-1,Reset FAQ\n",
+            content_type="text/csv",
             warning=None,
         )
 
@@ -107,50 +98,14 @@ def test_export_routes_require_authentication() -> None:
     assert client.get(f"/api/projects/{PROJECT_ID}/exports").status_code == 401
     assert (
         client.post(
-            f"/api/projects/{PROJECT_ID}/exports/candidates", json={}
+            f"/api/projects/{PROJECT_ID}/exports/explorer",
+            json={"cluster_set_id": str(CLUSTER_SET_ID)},
         ).status_code
         == 401
     )
 
 
-def test_export_api_creates_candidate_and_source_exports_and_lists_history() -> None:
-    fake_service = FakeExportService()
-    client = TestClient(
-        create_app(
-            auth_service=FakeAuthService(),  # type: ignore[arg-type]
-            export_service=fake_service,  # type: ignore[arg-type]
-        )
-    )
-
-    candidate_export = client.post(
-        f"/api/projects/{PROJECT_ID}/exports/candidates",
-        headers=auth_headers(),
-        json={"include_original_text": True},
-    )
-    assert candidate_export.status_code == 201
-    assert candidate_export.json()["export"]["export_type"] == "candidate_csv"
-    assert candidate_export.json()["export"]["include_original_text"] is True
-    assert candidate_export.json()["csv_content"].startswith("candidate_id,title")
-    assert fake_service.last_candidate_include is True
-    assert fake_service.last_actor == OWNER_ID
-
-    source_export = client.post(
-        f"/api/projects/{PROJECT_ID}/exports/source-assignments",
-        headers=auth_headers(),
-        json={"include_original_text": False},
-    )
-    assert source_export.status_code == 201
-    assert source_export.json()["export"]["export_type"] == "source_assignment_csv"
-    assert source_export.json()["export"]["include_original_text"] is False
-    assert fake_service.last_source_include is False
-
-    history = client.get(f"/api/projects/{PROJECT_ID}/exports", headers=auth_headers())
-    assert history.status_code == 200
-    assert history.json()[0]["output_filename"] == "candidate_csv-test.csv"
-    assert history.json()[0]["row_count"] == 1
-
-
-def test_candidate_export_api_returns_actual_original_text_metadata() -> None:
+def test_explorer_export_api_creates_export_and_lists_history() -> None:
     fake_service = FakeExportService()
     client = TestClient(
         create_app(
@@ -160,12 +115,124 @@ def test_candidate_export_api_returns_actual_original_text_metadata() -> None:
     )
 
     response = client.post(
-        f"/api/projects/{PROJECT_ID}/exports/candidates",
+        f"/api/projects/{PROJECT_ID}/exports/explorer",
         headers=auth_headers(),
-        json={"include_original_text": False},
+        json={
+            "cluster_set_id": str(CLUSTER_SET_ID),
+            "export_format": "csv",
+            "search_query": "reset",
+            "category": "account",
+            "include_excluded": False,
+            "include_outliers": True,
+            "cluster_ids": [str(CLUSTER_ID)],
+        },
     )
 
     assert response.status_code == 201
-    assert fake_service.last_candidate_include is False
-    assert response.json()["export"]["include_original_text"] is True
-    assert response.json()["warning"] == "Export enthaelt Originaltext."
+    payload = response.json()
+    assert payload["export"]["export_type"] == "explorer_csv"
+    assert payload["export"]["cluster_set_id"] == str(CLUSTER_SET_ID)
+    assert payload["content_type"] == "text/csv"
+    assert payload["content"].startswith("cluster_id,title")
+    assert fake_service.last_payload == ExplorerExportInput(
+        cluster_set_id=CLUSTER_SET_ID,
+        export_format="csv",
+        search_query="reset",
+        category="account",
+        include_excluded=False,
+        include_outliers=True,
+        cluster_ids=[CLUSTER_ID],
+    )
+    assert fake_service.last_actor == OWNER_ID
+
+    history = client.get(f"/api/projects/{PROJECT_ID}/exports", headers=auth_headers())
+    assert history.status_code == 200
+    assert history.json()[0]["output_filename"] == "explorer_csv-test.csv"
+    assert history.json()[0]["cluster_set_id"] == str(CLUSTER_SET_ID)
+
+
+def test_explorer_export_api_maps_empty_filter_problem() -> None:
+    fake_service = FakeExportService()
+    fake_service.raise_error = ExportError(
+        "empty",
+        code="EXPLORER_EXPORT_EMPTY",
+        status_code=422,
+        retryable=True,
+        suggested_action="adjust-filter",
+    )
+    client = TestClient(
+        create_app(
+            auth_service=FakeAuthService(),  # type: ignore[arg-type]
+            export_service=fake_service,  # type: ignore[arg-type]
+        )
+    )
+
+    response = client.post(
+        f"/api/projects/{PROJECT_ID}/exports/explorer",
+        headers=auth_headers(),
+        json={"cluster_set_id": str(CLUSTER_SET_ID), "export_format": "csv"},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["code"] == "EXPLORER_EXPORT_EMPTY"
+    assert response.json()["suggestedAction"] == "adjust-filter"
+
+
+def test_explorer_export_api_maps_validation_problem_details() -> None:
+    fake_service = FakeExportService()
+    fake_service.raise_error = ExportError(
+        "unsupported format",
+        code="EXPLORER_EXPORT_FORMAT_INVALID",
+        status_code=422,
+        retryable=True,
+        suggested_action="choose-format",
+        field_errors={"export_format": "Export format must be csv or json."},
+    )
+    client = TestClient(
+        create_app(
+            auth_service=FakeAuthService(),  # type: ignore[arg-type]
+            export_service=fake_service,  # type: ignore[arg-type]
+        )
+    )
+
+    response = client.post(
+        f"/api/projects/{PROJECT_ID}/exports/explorer",
+        headers=auth_headers(),
+        json={"cluster_set_id": str(CLUSTER_SET_ID), "export_format": "xlsx"},
+    )
+
+    assert response.status_code == 422
+    payload = response.json()
+    assert payload["type"] == "urn:skm:error:EXPLORER_EXPORT_FORMAT_INVALID"
+    assert payload["code"] == "EXPLORER_EXPORT_FORMAT_INVALID"
+    assert payload["detail"] != "unsupported format"
+    assert payload["suggestedAction"] == "choose-format"
+    assert payload["fieldErrors"] == [
+        {"field": "export_format", "message": "Export format must be csv or json."}
+    ]
+
+
+def test_old_candidate_export_routes_are_not_active() -> None:
+    client = TestClient(
+        create_app(
+            auth_service=FakeAuthService(),  # type: ignore[arg-type]
+            export_service=FakeExportService(),  # type: ignore[arg-type]
+        )
+    )
+
+    assert (
+        client.post(
+            f"/api/projects/{PROJECT_ID}/exports/candidates",
+            headers=auth_headers(),
+            json={},
+        ).status_code
+        == 404
+    )
+    assert (
+        client.post(
+            f"/api/projects/{PROJECT_ID}/exports/source-assignments",
+            headers=auth_headers(),
+            json={},
+        ).status_code
+        == 404
+    )

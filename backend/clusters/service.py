@@ -2,9 +2,15 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from datetime import datetime
+import json
+import logging
 import math
+from queue import Full, Queue
+from random import Random
+from threading import Thread
 from typing import Any, cast
 from uuid import UUID, uuid4
 
@@ -19,8 +25,18 @@ from sklearn.neighbors import kneighbors_graph  # type: ignore[import-untyped]
 from backend.audit import AuditService
 from backend.config import DatabaseSettings
 from backend.db.connection import open_database_connection
+from backend.providers import ProviderError, ProviderService
 
+LOGGER = logging.getLogger(__name__)
 VALID_STATUSES = {"unreviewed", "in_progress", "reviewed", "rejected", "outlier"}
+TERMINAL_CLUSTER_SET_STATUSES = {"completed", "failed", "cancelled"}
+SUPPORTED_VECTOR_BASES = {"message", "answer", "combined"}
+SUPPORTED_DERIVATION_TYPES = {
+    "root",
+    "refinement",
+    "outlier_exclusion",
+    "manual_edit",
+}
 AGGLOMERATIVE_MAX_RECORDS = 10_000
 HDBSCAN_MAX_RECORDS = 100_000
 MAX_CLUSTER_DIMENSIONS = 8_192
@@ -45,10 +61,96 @@ AGGLOMERATIVE_DISTANCE_BYTES_PER_CELL_VALUE = 3 * NATIVE_MATRIX_BYTES_PER_VALUE
 AGGLOMERATIVE_FIXED_BYTES_PER_RECORD = 512
 SUPPORTED_ALGORITHMS = {"hdbscan", "agglomerative"}
 AGGLOMERATIVE_LINKAGES = {"ward", "complete", "average", "single"}
+CLUSTER_SET_START_PROGRESS = 5
+CLUSTER_SET_LOAD_PROGRESS = 25
+CLUSTER_SET_CLUSTERING_PROGRESS = 60
+CLUSTER_SET_SUMMARY_PROGRESS = 85
+DEFAULT_CLUSTER_SET_ALGORITHM = {"algorithm": "hdbscan", "min_cluster_size": 2}
+MAX_CLUSTER_SET_NAME_LENGTH = 160
+MAX_SUMMARY_PROMPT_CHARACTERS = 50_000
+MAX_SUMMARY_FIELD_CHARACTERS = 500
+MAX_LLM_SUMMARY_CLUSTERS = 500
+DEFAULT_CLUSTER_SOURCE_PAGE_SIZE = 50
+MAX_CLUSTER_SOURCE_PAGE_SIZE = 50
+MAX_CLUSTER_SOURCE_OFFSET = 100_000
 
 
 class ClusterError(ValueError):
     """Raised when cluster input or state is invalid."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str = "UNEXPECTED_ERROR",
+        status_code: int = 400,
+        retryable: bool = False,
+        suggested_action: str = "correct-input",
+        field_errors: dict[str, str] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.status_code = status_code
+        self.retryable = retryable
+        self.suggested_action = suggested_action
+        self.field_errors = field_errors or {}
+
+
+class ClusterSetQueueFull(ClusterError):
+    """Raised when local Cluster-Set background capacity is exhausted."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(
+            message,
+            code="UNEXPECTED_ERROR",
+            status_code=503,
+            retryable=True,
+            suggested_action="retry",
+        )
+
+
+class ClusterSetCancelled(Exception):
+    """Internal control-flow exception for cooperative Cluster-Set cancellation."""
+
+
+class LocalClusterSetJobRunner:
+    """Fixed daemon workers with a bounded local Cluster-Set queue."""
+
+    def __init__(self, *, worker_count: int = 2, queue_capacity: int = 8) -> None:
+        if worker_count < 1 or queue_capacity < 1:
+            raise ValueError("worker_count and queue_capacity must be positive")
+        self._queue: Queue[Callable[[], None]] = Queue(maxsize=queue_capacity)
+        self._workers = [
+            Thread(
+                target=self._work,
+                name=f"skm-cluster-set-worker-{index + 1}",
+                daemon=True,
+            )
+            for index in range(worker_count)
+        ]
+        for worker in self._workers:
+            worker.start()
+
+    def submit(self, task: Callable[[], None]) -> None:
+        try:
+            self._queue.put_nowait(task)
+        except Full as exc:
+            raise ClusterSetQueueFull(
+                "local Cluster-Set capacity is exhausted; retry later"
+            ) from exc
+
+    def _work(self) -> None:
+        while True:
+            task = self._queue.get()
+            try:
+                task()
+            except Exception as exc:
+                LOGGER.error(
+                    "Cluster-Set background task failed unexpectedly: %s",
+                    exc.__class__.__name__,
+                )
+            finally:
+                self._queue.task_done()
 
 
 @dataclass(frozen=True)
@@ -61,10 +163,86 @@ class AlgorithmConfiguration:
 
 
 @dataclass(frozen=True)
+class ClusterSetBasisBudget:
+    output_dimensions: int
+    message_dimensions: int | None
+    answer_dimensions: int | None
+
+
+@dataclass(frozen=True)
 class ClusterManualUpdate:
     manual_title: str | None = None
     manual_category: str | None = None
     manual_status: str | None = None
+    fields_to_update: frozenset[str] = field(default_factory=frozenset)
+
+
+@dataclass(frozen=True)
+class ClusterSetInput:
+    indexing_run_id: UUID
+    display_name: str | None = None
+    parent_cluster_set_id: UUID | None = None
+    derivation_type: str = "root"
+    vector_basis: str = "message"
+    message_weight: float = 0.5
+    answer_weight: float = 0.5
+    algorithm_settings: dict[str, Any] = field(
+        default_factory=lambda: dict(DEFAULT_CLUSTER_SET_ALGORITHM)
+    )
+    source_cluster_ids: list[UUID] = field(default_factory=list)
+    source_pair_ids: list[UUID] = field(default_factory=list)
+    outlier_threshold: float | None = None
+    llm_provider: str | None = None
+    llm_model: str | None = None
+    llm_sample_count: int | None = 10
+    llm_sample_all: bool = False
+    llm_cloud_use_confirmed: bool = False
+
+
+@dataclass(frozen=True)
+class ClusterSet:
+    id: UUID
+    project_id: UUID
+    indexing_run_id: UUID
+    dataset_version_id: UUID
+    dataset_display_name: str | None
+    indexing_deleted_at: datetime | None
+    parent_cluster_set_id: UUID | None
+    display_name: str
+    status: str
+    progress: int
+    phase: str
+    derivation_type: str
+    vector_basis: str
+    message_weight: float
+    answer_weight: float
+    algorithm: str
+    parameters: dict[str, Any]
+    source_snapshot: dict[str, Any]
+    llm_provider: str | None
+    llm_model: str | None
+    llm_parameters: dict[str, Any]
+    llm_sample_strategy: dict[str, Any]
+    error_code: str | None
+    error_message: str | None
+    diagnostics: dict[str, Any]
+    started_at: datetime | None
+    completed_at: datetime | None
+    cancel_requested_at: datetime | None
+    deleted_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+    cluster_count: int
+
+
+@dataclass(frozen=True)
+class ClusterSetEvent:
+    id: UUID
+    project_id: UUID
+    cluster_set_id: UUID
+    event_type: str
+    metadata: dict[str, Any]
+    created_at: datetime
 
 
 @dataclass(frozen=True)
@@ -89,6 +267,9 @@ class Cluster:
     metadata: dict[str, Any]
     created_at: datetime
     updated_at: datetime
+    cluster_set_id: UUID | None = None
+    auto_summary_question: str | None = None
+    auto_summary_answer: str | None = None
 
 
 @dataclass(frozen=True)
@@ -102,6 +283,15 @@ class ClusterSource:
     membership_score: float
     is_outlier: bool
     assignment_type: str
+
+
+@dataclass(frozen=True)
+class ClusterSourcePage:
+    sources: list[ClusterSource]
+    limit: int
+    offset: int
+    next_offset: int | None
+    has_more: bool
 
 
 def _clean_optional(value: str | None) -> str | None:
@@ -155,10 +345,12 @@ def validate_algorithm_settings(settings: dict[str, Any]) -> AlgorithmConfigurat
             "min_cluster_size",
             "min_samples",
             "cluster_selection_epsilon",
+            "outlier_threshold",
         }
         unknown = set(settings) - allowed
         if unknown:
             raise ClusterError(f"unknown hdbscan setting: {sorted(unknown)[0]}")
+        outlier_threshold = _outlier_threshold(settings.get("outlier_threshold"))
         return AlgorithmConfiguration(
             name=algorithm,
             parameters={
@@ -180,6 +372,7 @@ def validate_algorithm_settings(settings: dict[str, Any]) -> AlgorithmConfigurat
                     default=0.0,
                     minimum=0.0,
                 ),
+                "outlier_threshold": outlier_threshold,
             },
         )
 
@@ -188,10 +381,12 @@ def validate_algorithm_settings(settings: dict[str, Any]) -> AlgorithmConfigurat
         "n_clusters",
         "distance_threshold",
         "linkage",
+        "outlier_threshold",
     }
     unknown = set(settings) - allowed
     if unknown:
         raise ClusterError(f"unknown agglomerative setting: {sorted(unknown)[0]}")
+    outlier_threshold = _outlier_threshold(settings.get("outlier_threshold"))
     n_clusters = _integer(settings, "n_clusters", default=2, minimum=1)
     distance_threshold_value = settings.get("distance_threshold")
     distance_threshold: float | None = None
@@ -213,6 +408,7 @@ def validate_algorithm_settings(settings: dict[str, Any]) -> AlgorithmConfigurat
             "n_clusters": n_clusters,
             "distance_threshold": distance_threshold,
             "linkage": linkage,
+            "outlier_threshold": outlier_threshold,
         },
     )
 
@@ -312,6 +508,9 @@ def _cluster_from_row(row: dict[str, object]) -> Cluster:
     manual_category = row["manual_category"]
     manual_status = row["manual_status"]
     auto_category = row["auto_category"]
+    cluster_set_id = row.get("cluster_set_id")
+    auto_summary_question = row.get("auto_summary_question")
+    auto_summary_answer = row.get("auto_summary_answer")
     return Cluster(
         id=UUID(str(row["id"])),
         project_id=UUID(str(row["project_id"])),
@@ -341,6 +540,15 @@ def _cluster_from_row(row: dict[str, object]) -> Cluster:
         metadata=dict(metadata) if isinstance(metadata, dict) else {},
         created_at=row["created_at"],  # type: ignore[arg-type]
         updated_at=row["updated_at"],  # type: ignore[arg-type]
+        cluster_set_id=(
+            UUID(str(cluster_set_id)) if cluster_set_id is not None else None
+        ),
+        auto_summary_question=(
+            str(auto_summary_question) if auto_summary_question is not None else None
+        ),
+        auto_summary_answer=(
+            str(auto_summary_answer) if auto_summary_answer is not None else None
+        ),
     )
 
 
@@ -358,10 +566,840 @@ def _source_from_row(row: dict[str, object]) -> ClusterSource:
     )
 
 
+def _cluster_set_from_row(row: dict[str, object]) -> ClusterSet:
+    parameters = row["parameters"]
+    source_snapshot = row["source_snapshot"]
+    llm_parameters = row["llm_parameters"]
+    llm_sample_strategy = row["llm_sample_strategy"]
+    diagnostics = row["diagnostics"]
+    parent_id = row["parent_cluster_set_id"]
+    llm_provider = row["llm_provider"]
+    llm_model = row["llm_model"]
+    dataset_display_name = row["dataset_display_name"]
+    return ClusterSet(
+        id=UUID(str(row["id"])),
+        project_id=UUID(str(row["project_id"])),
+        indexing_run_id=UUID(str(row["indexing_run_id"])),
+        dataset_version_id=UUID(str(row["dataset_version_id"])),
+        dataset_display_name=(
+            str(dataset_display_name) if dataset_display_name is not None else None
+        ),
+        indexing_deleted_at=row["indexing_deleted_at"],  # type: ignore[arg-type]
+        parent_cluster_set_id=UUID(str(parent_id)) if parent_id is not None else None,
+        display_name=str(row["display_name"]),
+        status=str(row["status"]),
+        progress=int(str(row["progress"])),
+        phase=str(row["phase"]),
+        derivation_type=str(row["derivation_type"]),
+        vector_basis=str(row["vector_basis"]),
+        message_weight=float(str(row["message_weight"])),
+        answer_weight=float(str(row["answer_weight"])),
+        algorithm=str(row["algorithm"]),
+        parameters=dict(parameters) if isinstance(parameters, dict) else {},
+        source_snapshot=(
+            dict(source_snapshot) if isinstance(source_snapshot, dict) else {}
+        ),
+        llm_provider=str(llm_provider) if llm_provider is not None else None,
+        llm_model=str(llm_model) if llm_model is not None else None,
+        llm_parameters=(
+            dict(llm_parameters) if isinstance(llm_parameters, dict) else {}
+        ),
+        llm_sample_strategy=(
+            dict(llm_sample_strategy) if isinstance(llm_sample_strategy, dict) else {}
+        ),
+        error_code=str(row["error_code"]) if row["error_code"] is not None else None,
+        error_message=(
+            str(row["error_message"]) if row["error_message"] is not None else None
+        ),
+        diagnostics=dict(diagnostics) if isinstance(diagnostics, dict) else {},
+        started_at=row["started_at"],  # type: ignore[arg-type]
+        completed_at=row["completed_at"],  # type: ignore[arg-type]
+        cancel_requested_at=row["cancel_requested_at"],  # type: ignore[arg-type]
+        deleted_at=row["deleted_at"],  # type: ignore[arg-type]
+        created_at=row["created_at"],  # type: ignore[arg-type]
+        updated_at=row["updated_at"],  # type: ignore[arg-type]
+        cluster_count=int(str(row.get("cluster_count", 0))),
+    )
+
+
+def _cluster_set_event_from_row(row: dict[str, object]) -> ClusterSetEvent:
+    metadata = row["metadata"]
+    return ClusterSetEvent(
+        id=UUID(str(row["id"])),
+        project_id=UUID(str(row["project_id"])),
+        cluster_set_id=UUID(str(row["cluster_set_id"])),
+        event_type=str(row["event_type"]),
+        metadata=dict(metadata) if isinstance(metadata, dict) else {},
+        created_at=row["created_at"],  # type: ignore[arg-type]
+    )
+
+
+def _display_name(value: str | None, *, fallback: str) -> str:
+    cleaned = _clean_optional(value)
+    if cleaned is None:
+        return fallback
+    if len(cleaned) > MAX_CLUSTER_SET_NAME_LENGTH:
+        raise ClusterError(
+            "display_name is too long",
+            code="UNEXPECTED_ERROR",
+            status_code=422,
+            field_errors={"display_name": "display_name is too long"},
+        )
+    return cleaned
+
+
+def _derivation_type(value: str) -> str:
+    cleaned = value.strip().lower()
+    if cleaned not in SUPPORTED_DERIVATION_TYPES:
+        raise ClusterError(
+            "derivation_type is invalid",
+            code="CLUSTER_REFINEMENT_EMPTY_SOURCE",
+            status_code=422,
+            field_errors={"derivation_type": "derivation_type is invalid"},
+        )
+    return cleaned
+
+
+def _vector_basis(value: str) -> str:
+    cleaned = value.strip().lower()
+    if cleaned not in SUPPORTED_VECTOR_BASES:
+        raise ClusterError(
+            "vector_basis must be message, answer, or combined",
+            code="CLUSTER_VECTOR_BASIS_UNAVAILABLE",
+            status_code=422,
+            field_errors={
+                "vector_basis": "vector_basis must be message, answer, or combined"
+            },
+        )
+    return cleaned
+
+
+def _weight(value: float, field: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ClusterError(
+            f"{field} must be a non-negative number",
+            code="CLUSTER_VECTOR_BASIS_UNAVAILABLE",
+            status_code=422,
+            field_errors={field: f"{field} must be a non-negative number"},
+        )
+    result = float(value)
+    if not math.isfinite(result) or result < 0:
+        raise ClusterError(
+            f"{field} must be a non-negative number",
+            code="CLUSTER_VECTOR_BASIS_UNAVAILABLE",
+            status_code=422,
+            field_errors={field: f"{field} must be a non-negative number"},
+        )
+    return result
+
+
+def _outlier_threshold(value: object) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ClusterError(
+            "outlier_threshold must be between 0 and 1",
+            code="CLUSTER_OUTLIER_EMPTY_RESULT",
+            status_code=422,
+            field_errors={
+                "outlier_threshold": "outlier_threshold must be between 0 and 1"
+            },
+        )
+    result = float(value)
+    if not math.isfinite(result) or result < 0 or result > 1:
+        raise ClusterError(
+            "outlier_threshold must be between 0 and 1",
+            code="CLUSTER_OUTLIER_EMPTY_RESULT",
+            status_code=422,
+            field_errors={
+                "outlier_threshold": "outlier_threshold must be between 0 and 1"
+            },
+        )
+    return result
+
+
+def _apply_outlier_threshold(
+    labels: list[int], probabilities: list[float], threshold: float | None
+) -> list[int]:
+    if threshold is None:
+        return labels
+    adjusted = [
+        label if label == -1 or probability >= threshold else -1
+        for label, probability in zip(labels, probabilities, strict=True)
+    ]
+    if all(label == -1 for label in adjusted):
+        raise ClusterError(
+            "outlier threshold removes all records",
+            code="CLUSTER_OUTLIER_EMPTY_RESULT",
+            status_code=422,
+            field_errors={"outlier_threshold": "outlier threshold removes all records"},
+        )
+    return adjusted
+
+
+def _validate_summary_call_budget(cluster_count: int) -> None:
+    if cluster_count > MAX_LLM_SUMMARY_CLUSTERS:
+        raise ClusterError(
+            "Cluster summary call budget exceeded",
+            code="CLUSTER_BUDGET_EXCEEDED",
+            status_code=422,
+            field_errors={
+                "llm_sample_count": (
+                    "summary generation supports at most "
+                    f"{MAX_LLM_SUMMARY_CLUSTERS} clusters per job"
+                )
+            },
+        )
+
+
+def _llm_provider(value: str | None) -> str | None:
+    if value is None:
+        return None
+    cleaned = value.strip().lower()
+    if cleaned not in {"openai", "ollama"}:
+        raise ClusterError(
+            "LLM provider must be openai or ollama",
+            code="LLM_PROVIDER_UNAVAILABLE",
+            status_code=422,
+            field_errors={"llm_provider": "LLM provider must be openai or ollama"},
+        )
+    return cleaned
+
+
+def _llm_model(value: str | None) -> str | None:
+    cleaned = _clean_optional(value)
+    if cleaned is not None and len(cleaned) > 160:
+        raise ClusterError(
+            "LLM model is too long",
+            code="LLM_PROVIDER_UNAVAILABLE",
+            status_code=422,
+            field_errors={"llm_model": "LLM model is too long"},
+        )
+    return cleaned
+
+
+def _summary_sample_strategy(payload: ClusterSetInput) -> dict[str, Any]:
+    if payload.llm_sample_all:
+        return {"strategy": "random", "requested": "all", "seed": uuid4().int >> 64}
+    count = payload.llm_sample_count if payload.llm_sample_count is not None else 10
+    if isinstance(count, bool) or not isinstance(count, int) or count < 1:
+        raise ClusterError(
+            "summary sample count is invalid",
+            code="CLUSTER_SUMMARY_SAMPLE_COUNT_INVALID",
+            status_code=422,
+            field_errors={
+                "llm_sample_count": ("llm_sample_count must be a positive integer")
+            },
+        )
+    return {"strategy": "random", "requested": count, "seed": uuid4().int >> 64}
+
+
+def _json_object(value: object) -> dict[str, Any]:
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _safe_cluster_failure(exc: Exception) -> tuple[str, str, bool]:
+    if isinstance(exc, ClusterError):
+        return exc.code, str(exc)[:500], exc.retryable
+    if isinstance(exc, ProviderError):
+        return "LLM_PROVIDER_UNAVAILABLE", "LLM provider is unavailable", True
+    return "UNEXPECTED_ERROR", exc.__class__.__name__, False
+
+
 class ClusterService:
-    def __init__(self, settings: DatabaseSettings | None = None) -> None:
+    def __init__(
+        self,
+        settings: DatabaseSettings | None = None,
+        *,
+        job_runner: LocalClusterSetJobRunner | None = None,
+        provider_service: ProviderService | None = None,
+    ) -> None:
         self._settings = settings
         self._audit = AuditService()
+        self._job_runner = job_runner or LocalClusterSetJobRunner()
+        self._provider_service = provider_service or ProviderService(settings)
+
+    def start_cluster_set(
+        self,
+        project_id: UUID,
+        payload: ClusterSetInput,
+        *,
+        actor_user_id: UUID,
+    ) -> ClusterSet:
+        vector_basis = _vector_basis(payload.vector_basis)
+        if vector_basis == "message":
+            message_weight = 1.0
+            answer_weight = 0.0
+        elif vector_basis == "answer":
+            message_weight = 0.0
+            answer_weight = 1.0
+        else:
+            message_weight = _weight(payload.message_weight, "message_weight")
+            answer_weight = _weight(payload.answer_weight, "answer_weight")
+            if message_weight + answer_weight <= 0:
+                raise ClusterError(
+                    "combined vector weights must not both be zero",
+                    code="CLUSTER_VECTOR_BASIS_UNAVAILABLE",
+                    status_code=422,
+                    field_errors={
+                        "message_weight": "combined vector weights must not both be zero",
+                        "answer_weight": "combined vector weights must not both be zero",
+                    },
+                )
+        derivation_type = _derivation_type(payload.derivation_type)
+        algorithm_settings = dict(
+            payload.algorithm_settings or DEFAULT_CLUSTER_SET_ALGORITHM
+        )
+        if payload.outlier_threshold is not None:
+            algorithm_settings["outlier_threshold"] = payload.outlier_threshold
+        config = validate_algorithm_settings(algorithm_settings)
+        llm_provider = _llm_provider(payload.llm_provider)
+        llm_model = _llm_model(payload.llm_model)
+        llm_enabled = llm_provider is not None or llm_model is not None
+        if llm_enabled and (llm_provider is None or llm_model is None):
+            raise ClusterError(
+                "LLM provider and model must be set together",
+                code="LLM_PROVIDER_UNAVAILABLE",
+                status_code=422,
+                field_errors={
+                    "llm_provider": "LLM provider and model must be set together",
+                    "llm_model": "LLM provider and model must be set together",
+                },
+            )
+        if llm_provider == "openai" and payload.llm_cloud_use_confirmed is not True:
+            raise ClusterError(
+                "OpenAI LLM summaries require explicit cloud confirmation",
+                code="LLM_CLOUD_CONFIRMATION_REQUIRED",
+                status_code=422,
+                field_errors={
+                    "llm_cloud_use_confirmed": "OpenAI cloud confirmation is required"
+                },
+            )
+        if llm_provider is not None and llm_model is not None:
+            try:
+                self._provider_service.ensure_text_generation_model(
+                    llm_provider, llm_model
+                )
+            except ProviderError as exc:
+                raise ClusterError(
+                    "LLM provider is unavailable",
+                    code="LLM_PROVIDER_UNAVAILABLE",
+                    status_code=503,
+                    retryable=True,
+                    field_errors={"llm_provider": "LLM provider is unavailable"},
+                ) from exc
+        llm_sample_strategy = _summary_sample_strategy(payload) if llm_enabled else {}
+        source_cluster_ids = list(dict.fromkeys(payload.source_cluster_ids))
+        source_pair_ids = list(dict.fromkeys(payload.source_pair_ids))
+        cluster_set_id = uuid4()
+        with open_database_connection(self._settings) as connection:
+            with connection.transaction():
+                run = connection.execute(
+                    """
+                    SELECT r.id, r.project_id, r.dataset_version_id, r.status,
+                           r.deleted_at AS indexing_deleted_at,
+                           d.display_name AS dataset_display_name,
+                           d.deleted_at AS dataset_deleted_at
+                    FROM analysis_runs r
+                    JOIN dataset_versions d
+                      ON d.id = r.dataset_version_id AND d.project_id = r.project_id
+                    WHERE r.id = %s AND r.project_id = %s
+                    """,
+                    (payload.indexing_run_id, project_id),
+                ).fetchone()
+                if run is None or run["indexing_deleted_at"] is not None:
+                    raise ClusterError(
+                        "indexing run not found",
+                        code="CLUSTER_SET_NOT_FOUND",
+                        status_code=404,
+                    )
+                if run["status"] != "completed":
+                    raise ClusterError(
+                        "indexing run must be completed before clustering",
+                        code="INDEXING_NOT_COMPLETE",
+                        status_code=422,
+                        field_errors={
+                            "indexing_run_id": (
+                                "indexing run must be completed before clustering"
+                            )
+                        },
+                    )
+                parent_id = payload.parent_cluster_set_id
+                if parent_id is not None:
+                    parent = connection.execute(
+                        """
+                        SELECT id, indexing_run_id, status
+                        FROM cluster_sets
+                        WHERE id = %s AND project_id = %s AND deleted_at IS NULL
+                        """,
+                        (parent_id, project_id),
+                    ).fetchone()
+                    if parent is None:
+                        raise ClusterError(
+                            "parent Cluster-Set not found",
+                            code="CLUSTER_SET_NOT_FOUND",
+                            status_code=404,
+                        )
+                    if parent["status"] != "completed":
+                        raise ClusterError(
+                            "parent Cluster-Set is not completed",
+                            code="CLUSTER_SET_NOT_COMPLETE",
+                            status_code=409,
+                            retryable=True,
+                            suggested_action="wait",
+                            field_errors={
+                                "parent_cluster_set_id": (
+                                    "parent Cluster-Set must be completed"
+                                )
+                            },
+                        )
+                    if UUID(str(parent["indexing_run_id"])) != payload.indexing_run_id:
+                        raise ClusterError(
+                            "parent Cluster-Set must use the selected indexing run",
+                            code="CLUSTER_REFINEMENT_EMPTY_SOURCE",
+                            status_code=422,
+                            field_errors={
+                                "parent_cluster_set_id": (
+                                    "parent Cluster-Set must use the selected indexing run"
+                                )
+                            },
+                        )
+                    if derivation_type == "root":
+                        raise ClusterError(
+                            "parent Cluster-Set requires a refinement derivation type",
+                            code="CLUSTER_REFINEMENT_EMPTY_SOURCE",
+                            status_code=422,
+                            field_errors={
+                                "derivation_type": (
+                                    "parent Cluster-Set requires a refinement derivation type"
+                                )
+                            },
+                        )
+                    if not source_cluster_ids and not source_pair_ids:
+                        raise ClusterError(
+                            "refinement requires at least one source selection",
+                            code="CLUSTER_REFINEMENT_EMPTY_SOURCE",
+                            status_code=422,
+                            field_errors={
+                                "source_cluster_ids": (
+                                    "refinement requires at least one source selection"
+                                ),
+                                "source_pair_ids": (
+                                    "refinement requires at least one source selection"
+                                ),
+                            },
+                        )
+                elif derivation_type != "root":
+                    raise ClusterError(
+                        "refinement requires a parent Cluster-Set",
+                        code="CLUSTER_REFINEMENT_EMPTY_SOURCE",
+                        status_code=422,
+                        field_errors={
+                            "parent_cluster_set_id": (
+                                "refinement requires a parent Cluster-Set"
+                            )
+                        },
+                    )
+
+                selected_pair_ids = self._resolve_source_pair_ids(
+                    connection,
+                    project_id=project_id,
+                    dataset_version_id=UUID(str(run["dataset_version_id"])),
+                    parent_cluster_set_id=parent_id,
+                    source_cluster_ids=source_cluster_ids,
+                    source_pair_ids=source_pair_ids,
+                )
+                source_snapshot = self._source_snapshot(
+                    connection,
+                    project_id=project_id,
+                    dataset_version_id=UUID(str(run["dataset_version_id"])),
+                    parent_cluster_set_id=parent_id,
+                    source_cluster_ids=source_cluster_ids,
+                    selected_pair_ids=selected_pair_ids,
+                )
+                display_name = _display_name(
+                    payload.display_name, fallback="Cluster-Set"
+                )
+                row = connection.execute(
+                    """
+                    INSERT INTO cluster_sets (
+                        id, project_id, indexing_run_id, dataset_version_id,
+                        parent_cluster_set_id, display_name, status, progress,
+                        phase, derivation_type, vector_basis, message_weight,
+                        answer_weight, algorithm, parameters, source_snapshot,
+                        llm_provider, llm_model, llm_parameters,
+                        llm_sample_strategy, created_by_user_id
+                    )
+                    VALUES (
+                        %s, %s, %s, %s, %s, %s, 'queued', 0, 'queued',
+                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                    )
+                    RETURNING id, project_id, indexing_run_id, dataset_version_id,
+                              %s::text AS dataset_display_name,
+                              %s::timestamptz AS indexing_deleted_at,
+                              parent_cluster_set_id, display_name, status,
+                              progress, phase, derivation_type, vector_basis,
+                              message_weight, answer_weight, algorithm,
+                              parameters, source_snapshot, llm_provider,
+                              llm_model, llm_parameters, llm_sample_strategy,
+                              error_code, error_message, diagnostics,
+                              started_at, completed_at, cancel_requested_at,
+                              deleted_at, created_at, updated_at,
+                              0::bigint AS cluster_count
+                    """,
+                    (
+                        cluster_set_id,
+                        project_id,
+                        payload.indexing_run_id,
+                        run["dataset_version_id"],
+                        parent_id,
+                        display_name,
+                        derivation_type,
+                        vector_basis,
+                        message_weight,
+                        answer_weight,
+                        config.name,
+                        Jsonb(config.parameters),
+                        Jsonb(source_snapshot),
+                        llm_provider,
+                        llm_model,
+                        Jsonb({"enabled": llm_enabled}),
+                        Jsonb(llm_sample_strategy),
+                        actor_user_id,
+                        run["dataset_display_name"],
+                        run["indexing_deleted_at"],
+                    ),
+                ).fetchone()
+                if row is None:
+                    raise RuntimeError("Cluster-Set insert returned no row")
+                self._record_cluster_set_event(
+                    connection,
+                    project_id=project_id,
+                    cluster_set_id=cluster_set_id,
+                    actor_user_id=actor_user_id,
+                    event_type="created",
+                    metadata={
+                        "indexing_run_id": str(payload.indexing_run_id),
+                        "vector_basis": vector_basis,
+                        "algorithm": config.name,
+                        "derivation_type": derivation_type,
+                        "parent_cluster_set_id": (
+                            str(parent_id) if parent_id is not None else None
+                        ),
+                    },
+                )
+                self._audit.record_event(
+                    connection,
+                    actor_user_id=actor_user_id,
+                    action="cluster_set.create",
+                    target_type="cluster_set",
+                    target_id=cluster_set_id,
+                    metadata={
+                        "project_id": str(project_id),
+                        "indexing_run_id": str(payload.indexing_run_id),
+                        "llm_provider": llm_provider,
+                    },
+                )
+        return _cluster_set_from_row(dict(row))
+
+    def enqueue_cluster_set(self, cluster_set_id: UUID) -> None:
+        try:
+            self._job_runner.submit(
+                lambda: self.execute_queued_cluster_set(cluster_set_id)
+            )
+        except ClusterSetQueueFull:
+            with open_database_connection(self._settings) as connection:
+                with connection.transaction():
+                    connection.execute(
+                        """
+                        UPDATE cluster_sets
+                        SET status = 'failed',
+                            phase = 'failed',
+                            error_code = 'UNEXPECTED_ERROR',
+                            error_message = 'ClusterSetQueueFull',
+                            completed_at = now(), updated_at = now(),
+                            diagnostics = diagnostics || %s
+                        WHERE id = %s AND status = 'queued' AND deleted_at IS NULL
+                        """,
+                        (
+                            Jsonb({"failure_type": "ClusterSetQueueFull"}),
+                            cluster_set_id,
+                        ),
+                    )
+            raise
+
+    def list_cluster_sets(self, project_id: UUID) -> list[ClusterSet]:
+        with open_database_connection(self._settings) as connection:
+            rows = connection.execute(
+                """
+                SELECT cs.id, cs.project_id, cs.indexing_run_id,
+                       cs.dataset_version_id,
+                       d.display_name AS dataset_display_name,
+                       r.deleted_at AS indexing_deleted_at,
+                       cs.parent_cluster_set_id, cs.display_name, cs.status,
+                       cs.progress, cs.phase, cs.derivation_type,
+                       cs.vector_basis, cs.message_weight, cs.answer_weight,
+                       cs.algorithm, cs.parameters, cs.source_snapshot,
+                       cs.llm_provider, cs.llm_model, cs.llm_parameters,
+                       cs.llm_sample_strategy, cs.error_code, cs.error_message,
+                       cs.diagnostics, cs.started_at, cs.completed_at,
+                       cs.cancel_requested_at, cs.deleted_at, cs.created_at,
+                       cs.updated_at, COUNT(c.id) AS cluster_count
+                FROM cluster_sets cs
+                JOIN analysis_runs r
+                  ON r.id = cs.indexing_run_id AND r.project_id = cs.project_id
+                JOIN dataset_versions d
+                  ON d.id = cs.dataset_version_id AND d.project_id = cs.project_id
+                LEFT JOIN clusters c
+                  ON c.cluster_set_id = cs.id AND c.project_id = cs.project_id
+                WHERE cs.project_id = %s
+                  AND (
+                      cs.deleted_at IS NULL
+                      OR EXISTS (
+                          SELECT 1
+                          FROM cluster_sets child
+                          WHERE child.project_id = cs.project_id
+                            AND child.parent_cluster_set_id = cs.id
+                            AND child.deleted_at IS NULL
+                      )
+                  )
+                GROUP BY cs.id, d.display_name, r.deleted_at
+                ORDER BY cs.created_at DESC
+                """,
+                (project_id,),
+            ).fetchall()
+        return [_cluster_set_from_row(dict(row)) for row in rows]
+
+    def get_cluster_set(
+        self, project_id: UUID, cluster_set_id: UUID
+    ) -> ClusterSet | None:
+        with open_database_connection(self._settings) as connection:
+            row = self._fetch_cluster_set_row(connection, project_id, cluster_set_id)
+        return _cluster_set_from_row(dict(row)) if row is not None else None
+
+    def rename_cluster_set(
+        self,
+        project_id: UUID,
+        cluster_set_id: UUID,
+        display_name: str,
+        *,
+        actor_user_id: UUID,
+    ) -> ClusterSet:
+        name = _display_name(display_name, fallback="Cluster-Set")
+        with open_database_connection(self._settings) as connection:
+            with connection.transaction():
+                updated = connection.execute(
+                    """
+                    UPDATE cluster_sets
+                    SET display_name = %s, updated_at = now()
+                    WHERE id = %s AND project_id = %s AND deleted_at IS NULL
+                    RETURNING id
+                    """,
+                    (name, cluster_set_id, project_id),
+                ).fetchone()
+                if updated is None:
+                    raise ClusterError(
+                        "Cluster-Set not found",
+                        code="CLUSTER_SET_NOT_FOUND",
+                        status_code=404,
+                    )
+                self._record_cluster_set_event(
+                    connection,
+                    project_id=project_id,
+                    cluster_set_id=cluster_set_id,
+                    actor_user_id=actor_user_id,
+                    event_type="renamed",
+                    metadata={"display_name": name},
+                )
+        fresh = self.get_cluster_set(project_id, cluster_set_id)
+        if fresh is None:
+            raise RuntimeError("Cluster-Set disappeared after rename")
+        return fresh
+
+    def cancel_cluster_set(
+        self, project_id: UUID, cluster_set_id: UUID, *, actor_user_id: UUID
+    ) -> ClusterSet:
+        with open_database_connection(self._settings) as connection:
+            with connection.transaction():
+                current = connection.execute(
+                    """
+                    SELECT status
+                    FROM cluster_sets
+                    WHERE id = %s AND project_id = %s AND deleted_at IS NULL
+                    """,
+                    (cluster_set_id, project_id),
+                ).fetchone()
+                if current is None:
+                    raise ClusterError(
+                        "Cluster-Set not found",
+                        code="CLUSTER_SET_NOT_FOUND",
+                        status_code=404,
+                    )
+                status_value = str(current["status"])
+                if status_value in TERMINAL_CLUSTER_SET_STATUSES:
+                    raise ClusterError(
+                        "Cluster-Set can no longer be cancelled",
+                        code="CLUSTER_SET_CANCEL_NOT_AVAILABLE",
+                        status_code=409,
+                        suggested_action="reload",
+                    )
+                next_status = "cancelled" if status_value == "queued" else "cancelling"
+                connection.execute(
+                    """
+                    UPDATE cluster_sets
+                    SET status = %s,
+                        phase = %s,
+                        cancel_requested_at = COALESCE(cancel_requested_at, now()),
+                        completed_at = CASE
+                            WHEN %s = 'cancelled' THEN COALESCE(completed_at, now())
+                            ELSE completed_at
+                        END,
+                        updated_at = now()
+                    WHERE id = %s AND project_id = %s AND deleted_at IS NULL
+                    """,
+                    (
+                        next_status,
+                        "cancelled" if next_status == "cancelled" else "cancelling",
+                        next_status,
+                        cluster_set_id,
+                        project_id,
+                    ),
+                )
+                self._record_cluster_set_event(
+                    connection,
+                    project_id=project_id,
+                    cluster_set_id=cluster_set_id,
+                    actor_user_id=actor_user_id,
+                    event_type="cancel_requested",
+                    metadata={"status": next_status},
+                )
+        fresh = self.get_cluster_set(project_id, cluster_set_id)
+        if fresh is None:
+            raise RuntimeError("Cluster-Set disappeared after cancel")
+        return fresh
+
+    def delete_cluster_set(
+        self, project_id: UUID, cluster_set_id: UUID, *, actor_user_id: UUID
+    ) -> None:
+        with open_database_connection(self._settings) as connection:
+            with connection.transaction():
+                row = connection.execute(
+                    """
+                    UPDATE cluster_sets
+                    SET deleted_at = now(),
+                        deleted_by_user_id = %s,
+                        status = CASE
+                            WHEN status IN ('queued', 'running', 'cancelling')
+                            THEN 'cancelled'
+                            ELSE status
+                        END,
+                        phase = 'deleted',
+                        completed_at = CASE
+                            WHEN status IN ('queued', 'running', 'cancelling')
+                            THEN COALESCE(completed_at, now())
+                            ELSE completed_at
+                        END,
+                        updated_at = now()
+                    WHERE id = %s AND project_id = %s AND deleted_at IS NULL
+                    RETURNING id
+                    """,
+                    (actor_user_id, cluster_set_id, project_id),
+                ).fetchone()
+                if row is None:
+                    raise ClusterError(
+                        "Cluster-Set not found",
+                        code="CLUSTER_SET_NOT_FOUND",
+                        status_code=404,
+                    )
+                self._record_cluster_set_event(
+                    connection,
+                    project_id=project_id,
+                    cluster_set_id=cluster_set_id,
+                    actor_user_id=actor_user_id,
+                    event_type="deleted",
+                    metadata={},
+                )
+
+    def list_cluster_set_events(
+        self, project_id: UUID, cluster_set_id: UUID
+    ) -> list[ClusterSetEvent]:
+        with open_database_connection(self._settings) as connection:
+            exists = connection.execute(
+                """
+                SELECT id
+                FROM cluster_sets
+                WHERE id = %s AND project_id = %s
+                """,
+                (cluster_set_id, project_id),
+            ).fetchone()
+            if exists is None:
+                raise ClusterError(
+                    "Cluster-Set not found",
+                    code="CLUSTER_SET_NOT_FOUND",
+                    status_code=404,
+                )
+            rows = connection.execute(
+                """
+                SELECT id, project_id, cluster_set_id, event_type, metadata,
+                       created_at
+                FROM cluster_set_events
+                WHERE project_id = %s AND cluster_set_id = %s
+                ORDER BY created_at ASC
+                """,
+                (project_id, cluster_set_id),
+            ).fetchall()
+        return [_cluster_set_event_from_row(dict(row)) for row in rows]
+
+    def list_clusters_for_set(
+        self, project_id: UUID, cluster_set_id: UUID
+    ) -> list[Cluster]:
+        with open_database_connection(self._settings) as connection:
+            cluster_set = connection.execute(
+                """
+                SELECT id, status
+                FROM cluster_sets
+                WHERE id = %s
+                  AND project_id = %s
+                  AND deleted_at IS NULL
+                """,
+                (cluster_set_id, project_id),
+            ).fetchone()
+            if cluster_set is None:
+                raise ClusterError(
+                    "Cluster-Set not found",
+                    code="CLUSTER_SET_NOT_FOUND",
+                    status_code=404,
+                )
+            if cluster_set["status"] != "completed":
+                raise ClusterError(
+                    "Cluster-Set is not completed",
+                    code="CLUSTER_SET_NOT_COMPLETE",
+                    status_code=409,
+                    retryable=True,
+                    suggested_action="wait",
+                )
+            rows = connection.execute(
+                """
+                SELECT c.id, c.project_id, c.analysis_run_id,
+                       c.dataset_version_id, c.cluster_set_id,
+                       c.auto_title, c.manual_title, c.auto_category,
+                       c.manual_category, c.auto_status, c.manual_status,
+                       c.auto_summary_question, c.auto_summary_answer,
+                       c.score, c.is_outlier, c.algorithm, c.metadata,
+                       c.created_at, c.updated_at, COUNT(cm.id) AS member_count
+                FROM clusters c
+                JOIN cluster_sets cs
+                  ON cs.id = c.cluster_set_id
+                 AND cs.project_id = c.project_id
+                 AND cs.deleted_at IS NULL
+                LEFT JOIN cluster_memberships cm ON cm.cluster_id = c.id
+                WHERE c.project_id = %s AND c.cluster_set_id = %s
+                GROUP BY c.id
+                ORDER BY c.is_outlier ASC, c.score DESC, c.created_at ASC
+                """,
+                (project_id, cluster_set_id),
+            ).fetchall()
+        return [_cluster_from_row(dict(row)) for row in rows]
 
     def generate_for_run(
         self, project_id: UUID, run_id: UUID, *, actor_user_id: UUID
@@ -498,46 +1536,169 @@ class ClusterService:
         manual_title = _clean_optional(payload.manual_title)
         manual_category = _clean_optional(payload.manual_category)
         manual_status = _clean_optional(payload.manual_status)
+        fields_to_update = payload.fields_to_update or frozenset(
+            field_name
+            for field_name, value in (
+                ("manual_title", payload.manual_title),
+                ("manual_category", payload.manual_category),
+                ("manual_status", payload.manual_status),
+            )
+            if value is not None
+        )
         if manual_status is not None and manual_status not in VALID_STATUSES:
-            raise ClusterError("manual_status is invalid")
+            raise ClusterError(
+                "manual_status is invalid",
+                code="CLUSTER_MANUAL_UPDATE_INVALID",
+                status_code=422,
+                field_errors={"manual_status": "manual_status is invalid"},
+            )
         with open_database_connection(self._settings) as connection:
             with connection.transaction():
                 row = connection.execute(
                     """
-                    UPDATE clusters
-                    SET manual_title = %s,
-                        manual_category = %s,
-                        manual_status = %s,
+                    UPDATE clusters c
+                    SET manual_title = CASE WHEN %s THEN %s ELSE manual_title END,
+                        manual_category = CASE WHEN %s THEN %s ELSE manual_category END,
+                        manual_status = CASE WHEN %s THEN %s ELSE manual_status END,
                         updated_at = now()
-                    WHERE id = %s AND project_id = %s
-                    RETURNING analysis_run_id
+                    WHERE c.id = %s
+                      AND c.project_id = %s
+                      AND (
+                          c.cluster_set_id IS NULL
+                          OR EXISTS (
+                              SELECT 1
+                              FROM cluster_sets cs
+                              WHERE cs.id = c.cluster_set_id
+                                AND cs.project_id = c.project_id
+                                AND cs.deleted_at IS NULL
+                          )
+                      )
+                    RETURNING analysis_run_id, cluster_set_id
                     """,
                     (
+                        "manual_title" in fields_to_update,
                         manual_title,
+                        "manual_category" in fields_to_update,
                         manual_category,
+                        "manual_status" in fields_to_update,
                         manual_status,
                         cluster_id,
                         project_id,
                     ),
                 ).fetchone()
                 if row is None:
-                    raise ClusterError("cluster not found")
+                    raise ClusterError(
+                        "cluster not found",
+                        code="CLUSTER_SET_NOT_FOUND",
+                        status_code=404,
+                        retryable=True,
+                        suggested_action="reload",
+                    )
                 self._audit.record_event(
                     connection,
                     actor_user_id=actor_user_id,
                     action="cluster.update_manual",
                     target_type="cluster",
                     target_id=cluster_id,
-                    metadata={"project_id": str(project_id)},
+                    metadata={
+                        "project_id": str(project_id),
+                        "updated_fields": sorted(fields_to_update),
+                    },
                 )
+                cluster_set_id = (
+                    UUID(str(row["cluster_set_id"]))
+                    if row["cluster_set_id"] is not None
+                    else None
+                )
+                if cluster_set_id is not None:
+                    self._record_cluster_set_event(
+                        connection,
+                        project_id=project_id,
+                        cluster_set_id=cluster_set_id,
+                        actor_user_id=actor_user_id,
+                        event_type="cluster_manual_updated",
+                        metadata={
+                            "cluster_id": str(cluster_id),
+                            "updated_fields": sorted(fields_to_update),
+                            "manual_status": manual_status,
+                        },
+                    )
                 run_id = UUID(str(row["analysis_run_id"]))
-        for cluster in self.list_clusters(project_id, run_id):
+        clusters = (
+            self.list_clusters_for_set(project_id, cluster_set_id)
+            if cluster_set_id is not None
+            else self.list_clusters(project_id, run_id)
+        )
+        for cluster in clusters:
             if cluster.id == cluster_id:
                 return cluster
         raise RuntimeError("cluster disappeared after update")
 
-    def list_sources(self, project_id: UUID, cluster_id: UUID) -> list[ClusterSource]:
+    def list_sources(
+        self,
+        project_id: UUID,
+        cluster_id: UUID,
+        *,
+        limit: int = DEFAULT_CLUSTER_SOURCE_PAGE_SIZE,
+        offset: int = 0,
+    ) -> ClusterSourcePage:
+        if (
+            limit < 1
+            or limit > MAX_CLUSTER_SOURCE_PAGE_SIZE
+            or offset < 0
+            or offset > MAX_CLUSTER_SOURCE_OFFSET
+        ):
+            raise ClusterError(
+                "cluster source page parameters are invalid",
+                code="CLUSTER_SOURCE_PAGE_INVALID",
+                status_code=422,
+                retryable=True,
+                suggested_action="correct-input",
+                field_errors={
+                    "limit": (
+                        f"limit must be between 1 and {MAX_CLUSTER_SOURCE_PAGE_SIZE}"
+                    ),
+                    "offset": (
+                        f"offset must be between 0 and {MAX_CLUSTER_SOURCE_OFFSET}"
+                    ),
+                },
+            )
         with open_database_connection(self._settings) as connection:
+            cluster = connection.execute(
+                """
+                SELECT c.id, c.cluster_set_id, cs.status AS cluster_set_status
+                FROM clusters c
+                LEFT JOIN cluster_sets cs
+                  ON cs.id = c.cluster_set_id
+                 AND cs.project_id = c.project_id
+                WHERE c.id = %s
+                  AND c.project_id = %s
+                  AND (
+                      c.cluster_set_id IS NULL
+                      OR (cs.id IS NOT NULL AND cs.deleted_at IS NULL)
+                  )
+                """,
+                (cluster_id, project_id),
+            ).fetchone()
+            if cluster is None:
+                raise ClusterError(
+                    "cluster source target not found",
+                    code="CLUSTER_SOURCE_NOT_FOUND",
+                    status_code=404,
+                    retryable=True,
+                    suggested_action="reload",
+                )
+            if (
+                cluster["cluster_set_id"] is not None
+                and str(cluster["cluster_set_status"]) != "completed"
+            ):
+                raise ClusterError(
+                    "Cluster-Set is not completed",
+                    code="CLUSTER_SET_NOT_COMPLETE",
+                    status_code=409,
+                    retryable=True,
+                    suggested_action="wait",
+                )
             rows = connection.execute(
                 """
                 SELECT cm.cluster_id, cm.message_pair_id, mp.ticket_id,
@@ -545,13 +1706,699 @@ class ClusterService:
                        cm.membership_score, cm.is_outlier, cm.assignment_type
                 FROM cluster_memberships cm
                 JOIN clusters c ON c.id = cm.cluster_id AND c.project_id = %s
-                JOIN message_pairs mp ON mp.id = cm.message_pair_id
+                JOIN message_pairs mp
+                  ON mp.id = cm.message_pair_id
+                 AND mp.project_id = cm.project_id
                 WHERE cm.project_id = %s AND cm.cluster_id = %s
                 ORDER BY cm.is_outlier ASC, cm.membership_score DESC, mp.ordinal ASC
+                LIMIT %s OFFSET %s
                 """,
-                (project_id, project_id, cluster_id),
+                (project_id, project_id, cluster_id, limit + 1, offset),
             ).fetchall()
-        return [_source_from_row(dict(row)) for row in rows]
+        has_more = len(rows) > limit
+        page_rows = rows[:limit]
+        sources = [_source_from_row(dict(row)) for row in page_rows]
+        return ClusterSourcePage(
+            sources=sources,
+            limit=limit,
+            offset=offset,
+            next_offset=offset + len(sources) if has_more else None,
+            has_more=has_more,
+        )
+
+    def execute_queued_cluster_set(self, cluster_set_id: UUID) -> None:
+        with open_database_connection(self._settings) as connection:
+            with connection.transaction():
+                cluster_set = connection.execute(
+                    """
+                    UPDATE cluster_sets cs
+                    SET status = 'running',
+                        progress = %s,
+                        phase = 'loading',
+                        started_at = now(),
+                        updated_at = now()
+                    FROM analysis_runs r
+                    WHERE cs.id = %s
+                      AND cs.status = 'queued'
+                      AND cs.deleted_at IS NULL
+                      AND r.id = cs.indexing_run_id
+                      AND r.project_id = cs.project_id
+                    RETURNING cs.id, cs.project_id, cs.indexing_run_id,
+                              cs.dataset_version_id, cs.vector_basis,
+                              cs.message_weight, cs.answer_weight,
+                              cs.algorithm, cs.parameters, cs.source_snapshot,
+                              cs.llm_provider, cs.llm_model,
+                              cs.llm_sample_strategy, r.provider, r.model
+                    """,
+                    (CLUSTER_SET_START_PROGRESS, cluster_set_id),
+                ).fetchone()
+                if cluster_set is None:
+                    return
+        try:
+            config = validate_algorithm_settings(
+                {
+                    "algorithm": str(cluster_set["algorithm"]),
+                    **_json_object(cluster_set["parameters"]),
+                }
+            )
+            project_id = UUID(str(cluster_set["project_id"]))
+            indexing_run_id = UUID(str(cluster_set["indexing_run_id"]))
+            dataset_version_id = UUID(str(cluster_set["dataset_version_id"]))
+            vector_basis = str(cluster_set["vector_basis"])
+            message_weight = float(str(cluster_set["message_weight"]))
+            answer_weight = float(str(cluster_set["answer_weight"]))
+            source_pair_ids = self._snapshot_pair_ids(
+                _json_object(cluster_set["source_snapshot"])
+            )
+            record_limit = (
+                AGGLOMERATIVE_MAX_RECORDS
+                if config.name == "agglomerative"
+                else HDBSCAN_MAX_RECORDS
+            )
+            with open_database_connection(self._settings) as connection:
+                with connection.transaction():
+                    self._raise_if_cluster_set_cancelled(connection, cluster_set_id)
+                    input_summary = self._cluster_set_input_summary(
+                        connection,
+                        project_id=project_id,
+                        indexing_run_id=indexing_run_id,
+                        dataset_version_id=dataset_version_id,
+                        source_pair_ids=source_pair_ids,
+                    )
+                    basis_budget = self._validate_cluster_set_basis_budget(
+                        config,
+                        vector_basis=vector_basis,
+                        input_summary=input_summary,
+                    )
+                    self._publish_cluster_set_progress(
+                        cluster_set_id, CLUSTER_SET_LOAD_PROGRESS, "loading"
+                    )
+                    pair_ids, vectors, mismatch_scores = (
+                        self._load_cluster_set_embedding_matrix(
+                            connection,
+                            project_id=project_id,
+                            indexing_run_id=indexing_run_id,
+                            dataset_version_id=dataset_version_id,
+                            vector_basis=vector_basis,
+                            message_weight=message_weight,
+                            answer_weight=answer_weight,
+                            source_pair_ids=source_pair_ids,
+                            record_limit=record_limit,
+                            expected_record_count=int(
+                                str(input_summary["record_count"])
+                            ),
+                            expected_dimensions=basis_budget.output_dimensions,
+                            message_expected_dimensions=(
+                                basis_budget.message_dimensions
+                            ),
+                            answer_expected_dimensions=(basis_budget.answer_dimensions),
+                        )
+                    )
+                    self._raise_if_cluster_set_cancelled(connection, cluster_set_id)
+
+            labels, probabilities = self._cluster_vectors(config, vectors)
+            self._publish_cluster_set_progress(
+                cluster_set_id, CLUSTER_SET_CLUSTERING_PROGRESS, "clustering"
+            )
+            with open_database_connection(self._settings) as connection:
+                with connection.transaction():
+                    self._raise_if_cluster_set_cancelled(connection, cluster_set_id)
+                    self._insert_cluster_set_clusters(
+                        connection,
+                        project_id=project_id,
+                        cluster_set_id=cluster_set_id,
+                        indexing_run_id=indexing_run_id,
+                        dataset_version_id=dataset_version_id,
+                        embedding_provider=str(cluster_set["provider"]),
+                        embedding_model=str(cluster_set["model"]),
+                        config=config,
+                        pair_ids=pair_ids,
+                        labels=labels,
+                        probabilities=probabilities,
+                        mismatch_scores=mismatch_scores,
+                        expected_dimensions=basis_budget.output_dimensions,
+                        vector_basis=vector_basis,
+                        message_weight=message_weight,
+                        answer_weight=answer_weight,
+                    )
+                    self._record_cluster_set_event(
+                        connection,
+                        project_id=project_id,
+                        cluster_set_id=cluster_set_id,
+                        actor_user_id=None,
+                        event_type="clusters_created",
+                        metadata={
+                            "cluster_count": len(set(int(label) for label in labels))
+                        },
+                    )
+
+            summary_error: Exception | None = None
+            if (
+                cluster_set["llm_provider"] is not None
+                and cluster_set["llm_model"] is not None
+            ):
+                try:
+                    self._publish_cluster_set_progress(
+                        cluster_set_id,
+                        CLUSTER_SET_SUMMARY_PROGRESS,
+                        "summarizing",
+                    )
+                    self._generate_cluster_summaries(
+                        project_id=project_id,
+                        cluster_set_id=cluster_set_id,
+                        llm_provider=str(cluster_set["llm_provider"]),
+                        llm_model=str(cluster_set["llm_model"]),
+                        sample_strategy=_json_object(
+                            cluster_set["llm_sample_strategy"]
+                        ),
+                    )
+                except Exception as exc:
+                    summary_error = exc
+
+            with open_database_connection(self._settings) as connection:
+                with connection.transaction():
+                    self._raise_if_cluster_set_cancelled(connection, cluster_set_id)
+                    if summary_error is None:
+                        connection.execute(
+                            """
+                            UPDATE cluster_sets
+                            SET status = 'completed',
+                                progress = 100,
+                                phase = 'completed',
+                                completed_at = now(),
+                                updated_at = now(),
+                                diagnostics = diagnostics || %s
+                            WHERE id = %s AND status = 'running'
+                            """,
+                            (Jsonb({"completed": True}), cluster_set_id),
+                        )
+                    else:
+                        code, message, retryable = _safe_cluster_failure(summary_error)
+                        if code == "UNEXPECTED_ERROR":
+                            code = "CLUSTER_SUMMARY_FAILED"
+                            message = "Cluster summary generation failed"
+                        connection.execute(
+                            """
+                            UPDATE cluster_sets
+                            SET status = 'completed',
+                                progress = 100,
+                                phase = 'completed',
+                                error_code = %s,
+                                error_message = %s,
+                                completed_at = now(),
+                                updated_at = now(),
+                                diagnostics = diagnostics || %s
+                            WHERE id = %s AND status = 'running'
+                            """,
+                            (
+                                code,
+                                message,
+                                Jsonb(
+                                    {
+                                        "summary_failed": True,
+                                        "summary_failure_retryable": retryable,
+                                        "summary_failure_type": summary_error.__class__.__name__,
+                                    }
+                                ),
+                                cluster_set_id,
+                            ),
+                        )
+        except ClusterSetCancelled:
+            with open_database_connection(self._settings) as connection:
+                with connection.transaction():
+                    connection.execute(
+                        """
+                        UPDATE cluster_sets
+                        SET status = 'cancelled',
+                            phase = 'cancelled',
+                            completed_at = now(),
+                            updated_at = now(),
+                            diagnostics = diagnostics || %s
+                        WHERE id = %s AND status IN ('running', 'cancelling')
+                        """,
+                        (Jsonb({"cancelled": True}), cluster_set_id),
+                    )
+        except Exception as exc:
+            code, message, retryable = _safe_cluster_failure(exc)
+            with open_database_connection(self._settings) as connection:
+                with connection.transaction():
+                    connection.execute(
+                        """
+                        UPDATE cluster_sets
+                        SET status = 'failed',
+                            phase = 'failed',
+                            error_code = %s,
+                            error_message = %s,
+                            completed_at = now(),
+                            updated_at = now(),
+                            diagnostics = %s
+                        WHERE id = %s AND deleted_at IS NULL
+                        """,
+                        (
+                            code,
+                            message,
+                            Jsonb(
+                                {
+                                    "failure_type": exc.__class__.__name__,
+                                    "retryable": retryable,
+                                }
+                            ),
+                            cluster_set_id,
+                        ),
+                    )
+
+    def _fetch_cluster_set_row(
+        self, connection: Any, project_id: UUID, cluster_set_id: UUID
+    ) -> dict[str, object] | None:
+        return connection.execute(
+            """
+            SELECT cs.id, cs.project_id, cs.indexing_run_id,
+                   cs.dataset_version_id,
+                   d.display_name AS dataset_display_name,
+                   r.deleted_at AS indexing_deleted_at,
+                   cs.parent_cluster_set_id, cs.display_name, cs.status,
+                   cs.progress, cs.phase, cs.derivation_type,
+                   cs.vector_basis, cs.message_weight, cs.answer_weight,
+                   cs.algorithm, cs.parameters, cs.source_snapshot,
+                   cs.llm_provider, cs.llm_model, cs.llm_parameters,
+                   cs.llm_sample_strategy, cs.error_code, cs.error_message,
+                   cs.diagnostics, cs.started_at, cs.completed_at,
+                   cs.cancel_requested_at, cs.deleted_at, cs.created_at,
+                   cs.updated_at, COUNT(c.id) AS cluster_count
+            FROM cluster_sets cs
+            JOIN analysis_runs r
+              ON r.id = cs.indexing_run_id AND r.project_id = cs.project_id
+            JOIN dataset_versions d
+              ON d.id = cs.dataset_version_id AND d.project_id = cs.project_id
+            LEFT JOIN clusters c
+              ON c.cluster_set_id = cs.id AND c.project_id = cs.project_id
+            WHERE cs.id = %s AND cs.project_id = %s AND cs.deleted_at IS NULL
+            GROUP BY cs.id, d.display_name, r.deleted_at
+            """,
+            (cluster_set_id, project_id),
+        ).fetchone()
+
+    def _record_cluster_set_event(
+        self,
+        connection: Any,
+        *,
+        project_id: UUID,
+        cluster_set_id: UUID,
+        actor_user_id: UUID | None,
+        event_type: str,
+        metadata: dict[str, Any],
+    ) -> None:
+        connection.execute(
+            """
+            INSERT INTO cluster_set_events (
+                id, project_id, cluster_set_id, event_type, actor_user_id,
+                metadata
+            )
+            VALUES (%s, %s, %s, %s, %s, %s)
+            """,
+            (
+                uuid4(),
+                project_id,
+                cluster_set_id,
+                event_type,
+                actor_user_id,
+                Jsonb(metadata),
+            ),
+        )
+
+    def _resolve_source_pair_ids(
+        self,
+        connection: Any,
+        *,
+        project_id: UUID,
+        dataset_version_id: UUID,
+        parent_cluster_set_id: UUID | None,
+        source_cluster_ids: list[UUID],
+        source_pair_ids: list[UUID],
+    ) -> list[UUID] | None:
+        selected: set[UUID] = set()
+        if source_cluster_ids:
+            if parent_cluster_set_id is None:
+                raise ClusterError(
+                    "source clusters require a parent Cluster-Set",
+                    code="CLUSTER_REFINEMENT_EMPTY_SOURCE",
+                    status_code=422,
+                    field_errors={
+                        "source_cluster_ids": (
+                            "source clusters require a parent Cluster-Set"
+                        )
+                    },
+                )
+            requested_cluster_ids = set(source_cluster_ids)
+            rows = connection.execute(
+                """
+                SELECT DISTINCT c.id AS cluster_id, cm.message_pair_id
+                FROM clusters c
+                JOIN cluster_memberships cm
+                  ON cm.cluster_id = c.id
+                 AND cm.project_id = c.project_id
+                 AND cm.cluster_set_id = c.cluster_set_id
+                JOIN message_pairs mp
+                  ON mp.id = cm.message_pair_id
+                 AND mp.project_id = cm.project_id
+                WHERE c.project_id = %s
+                  AND c.cluster_set_id = %s
+                  AND mp.dataset_version_id = %s
+                  AND c.id = ANY(%s)
+                """,
+                (
+                    project_id,
+                    parent_cluster_set_id,
+                    dataset_version_id,
+                    source_cluster_ids,
+                ),
+            ).fetchall()
+            returned_cluster_ids = {UUID(str(row["cluster_id"])) for row in rows}
+            if returned_cluster_ids != requested_cluster_ids:
+                raise ClusterError(
+                    "source clusters contain rows outside the parent Cluster-Set",
+                    code="CLUSTER_REFINEMENT_EMPTY_SOURCE",
+                    status_code=422,
+                    field_errors={
+                        "source_cluster_ids": (
+                            "source clusters must belong to the parent Cluster-Set"
+                        )
+                    },
+                )
+            selected.update(UUID(str(row["message_pair_id"])) for row in rows)
+        if source_pair_ids:
+            requested_pair_ids = set(source_pair_ids)
+            if parent_cluster_set_id is None:
+                rows = connection.execute(
+                    """
+                    SELECT id
+                    FROM message_pairs
+                    WHERE project_id = %s
+                      AND dataset_version_id = %s
+                      AND id = ANY(%s)
+                    """,
+                    (project_id, dataset_version_id, source_pair_ids),
+                ).fetchall()
+                returned_pair_ids = {UUID(str(row["id"])) for row in rows}
+            else:
+                rows = connection.execute(
+                    """
+                    SELECT DISTINCT cm.message_pair_id
+                    FROM cluster_memberships cm
+                    JOIN message_pairs mp
+                      ON mp.id = cm.message_pair_id
+                     AND mp.project_id = cm.project_id
+                    WHERE cm.project_id = %s
+                      AND cm.cluster_set_id = %s
+                      AND mp.dataset_version_id = %s
+                      AND cm.message_pair_id = ANY(%s)
+                    """,
+                    (
+                        project_id,
+                        parent_cluster_set_id,
+                        dataset_version_id,
+                        source_pair_ids,
+                    ),
+                ).fetchall()
+                returned_pair_ids = {UUID(str(row["message_pair_id"])) for row in rows}
+            if returned_pair_ids != requested_pair_ids:
+                raise ClusterError(
+                    "refinement source contains rows outside the parent Cluster-Set",
+                    code="CLUSTER_REFINEMENT_EMPTY_SOURCE",
+                    status_code=422,
+                    field_errors={
+                        "source_pair_ids": (
+                            "source pairs must belong to the parent Cluster-Set"
+                        )
+                    },
+                )
+            selected.update(returned_pair_ids)
+        if source_cluster_ids or source_pair_ids:
+            if not selected:
+                raise ClusterError(
+                    "refinement source contains no usable rows",
+                    code="CLUSTER_REFINEMENT_EMPTY_SOURCE",
+                    status_code=422,
+                )
+            return sorted(selected, key=str)
+        return None
+
+    def _source_snapshot(
+        self,
+        connection: Any,
+        *,
+        project_id: UUID,
+        dataset_version_id: UUID,
+        parent_cluster_set_id: UUID | None,
+        source_cluster_ids: list[UUID],
+        selected_pair_ids: list[UUID] | None,
+    ) -> dict[str, Any]:
+        if selected_pair_ids is not None:
+            return {
+                "type": "selected_pairs",
+                "parent_cluster_set_id": (
+                    str(parent_cluster_set_id)
+                    if parent_cluster_set_id is not None
+                    else None
+                ),
+                "source_cluster_ids": [str(item) for item in source_cluster_ids],
+                "source_pair_ids": [str(item) for item in selected_pair_ids],
+                "source_pair_count": len(selected_pair_ids),
+            }
+        row = connection.execute(
+            """
+            SELECT COUNT(id) AS record_count
+            FROM message_pairs
+            WHERE project_id = %s AND dataset_version_id = %s
+            """,
+            (project_id, dataset_version_id),
+        ).fetchone()
+        record_count = int(str(row["record_count"])) if row is not None else 0
+        if record_count < 1:
+            raise ClusterError(
+                "refinement source contains no usable rows",
+                code="CLUSTER_REFINEMENT_EMPTY_SOURCE",
+                status_code=422,
+            )
+        return {
+            "type": "all_dataset_pairs",
+            "dataset_version_id": str(dataset_version_id),
+            "source_pair_count": record_count,
+        }
+
+    def _snapshot_pair_ids(self, source_snapshot: dict[str, Any]) -> list[UUID] | None:
+        if source_snapshot.get("type") != "selected_pairs":
+            return None
+        raw_ids = source_snapshot.get("source_pair_ids")
+        if not isinstance(raw_ids, list):
+            raise ClusterError(
+                "Cluster-Set source snapshot is invalid",
+                code="CLUSTER_SET_LINEAGE_UNAVAILABLE",
+                status_code=503,
+            )
+        try:
+            return [UUID(str(item)) for item in raw_ids]
+        except (TypeError, ValueError) as exc:
+            raise ClusterError(
+                "Cluster-Set source snapshot is invalid",
+                code="CLUSTER_SET_LINEAGE_UNAVAILABLE",
+                status_code=503,
+            ) from exc
+
+    def _cluster_set_input_summary(
+        self,
+        connection: Any,
+        *,
+        project_id: UUID,
+        indexing_run_id: UUID,
+        dataset_version_id: UUID,
+        source_pair_ids: list[UUID] | None,
+    ) -> dict[str, object]:
+        params: list[object] = [
+            indexing_run_id,
+            indexing_run_id,
+            project_id,
+            dataset_version_id,
+        ]
+        query = """
+            SELECT COUNT(mp.id) AS record_count,
+                   COUNT(em.id) AS message_embedding_count,
+                   COUNT(ea.id) AS answer_embedding_count,
+                   MIN(em.dimensions) AS message_minimum_dimensions,
+                   MAX(em.dimensions) AS message_maximum_dimensions,
+                   MIN(ea.dimensions) AS answer_minimum_dimensions,
+                   MAX(ea.dimensions) AS answer_maximum_dimensions
+            FROM message_pairs mp
+            LEFT JOIN embeddings em
+              ON em.project_id = mp.project_id
+             AND em.analysis_run_id = %s
+             AND em.dataset_version_id = mp.dataset_version_id
+             AND em.source_object_type = 'message_pair'
+             AND em.source_object_id = mp.id
+             AND em.text_variant = 'message'
+            LEFT JOIN embeddings ea
+              ON ea.project_id = mp.project_id
+             AND ea.analysis_run_id = %s
+             AND ea.dataset_version_id = mp.dataset_version_id
+             AND ea.source_object_type = 'message_pair'
+             AND ea.source_object_id = mp.id
+             AND ea.text_variant = 'answer'
+            WHERE mp.project_id = %s AND mp.dataset_version_id = %s
+            """
+        if source_pair_ids is not None:
+            query = """
+            SELECT COUNT(mp.id) AS record_count,
+                   COUNT(em.id) AS message_embedding_count,
+                   COUNT(ea.id) AS answer_embedding_count,
+                   MIN(em.dimensions) AS message_minimum_dimensions,
+                   MAX(em.dimensions) AS message_maximum_dimensions,
+                   MIN(ea.dimensions) AS answer_minimum_dimensions,
+                   MAX(ea.dimensions) AS answer_maximum_dimensions
+            FROM message_pairs mp
+            LEFT JOIN embeddings em
+              ON em.project_id = mp.project_id
+             AND em.analysis_run_id = %s
+             AND em.dataset_version_id = mp.dataset_version_id
+             AND em.source_object_type = 'message_pair'
+             AND em.source_object_id = mp.id
+             AND em.text_variant = 'message'
+            LEFT JOIN embeddings ea
+              ON ea.project_id = mp.project_id
+             AND ea.analysis_run_id = %s
+             AND ea.dataset_version_id = mp.dataset_version_id
+             AND ea.source_object_type = 'message_pair'
+             AND ea.source_object_id = mp.id
+             AND ea.text_variant = 'answer'
+            WHERE mp.project_id = %s
+              AND mp.dataset_version_id = %s
+              AND mp.id = ANY(%s)
+            """
+            params.append(source_pair_ids)
+        row = connection.execute(query, tuple(params)).fetchone()
+        if row is None:
+            raise ClusterError(
+                "Cluster-Set embedding summary is unavailable",
+                code="CLUSTER_VECTOR_BASIS_UNAVAILABLE",
+                status_code=422,
+            )
+        return dict(row)
+
+    def _validate_cluster_set_basis_budget(
+        self,
+        config: AlgorithmConfiguration,
+        *,
+        vector_basis: str,
+        input_summary: dict[str, object],
+    ) -> ClusterSetBasisBudget:
+        record_count = int(str(input_summary["record_count"]))
+        message_count = int(str(input_summary["message_embedding_count"]))
+        answer_count = int(str(input_summary["answer_embedding_count"]))
+        message_dimensions: int | None = None
+        answer_dimensions: int | None = None
+        if vector_basis == "message":
+            embedding_count = message_count
+            minimum_dimensions = input_summary["message_minimum_dimensions"]
+            maximum_dimensions = input_summary["message_maximum_dimensions"]
+            if minimum_dimensions is not None and maximum_dimensions is not None:
+                message_dimensions = int(str(minimum_dimensions))
+        elif vector_basis == "answer":
+            embedding_count = answer_count
+            minimum_dimensions = input_summary["answer_minimum_dimensions"]
+            maximum_dimensions = input_summary["answer_maximum_dimensions"]
+            if minimum_dimensions is not None and maximum_dimensions is not None:
+                answer_dimensions = int(str(minimum_dimensions))
+        else:
+            if message_count != record_count or answer_count != record_count:
+                raise ClusterError(
+                    "combined vector basis has missing embeddings",
+                    code="CLUSTER_VECTOR_BASIS_UNAVAILABLE",
+                    status_code=422,
+                )
+            message_min = input_summary["message_minimum_dimensions"]
+            message_max = input_summary["message_maximum_dimensions"]
+            answer_min = input_summary["answer_minimum_dimensions"]
+            answer_max = input_summary["answer_maximum_dimensions"]
+            if (
+                message_min is None
+                or message_max is None
+                or answer_min is None
+                or answer_max is None
+                or int(str(message_min)) != int(str(message_max))
+                or int(str(answer_min)) != int(str(answer_max))
+            ):
+                raise ClusterError(
+                    "combined vector basis has inconsistent embedding dimensions",
+                    code="CLUSTER_VECTOR_BASIS_UNAVAILABLE",
+                    status_code=422,
+                )
+            message_dimensions = int(str(message_min))
+            answer_dimensions = int(str(answer_min))
+            embedding_count = record_count
+            minimum_dimensions = message_dimensions + answer_dimensions
+            maximum_dimensions = minimum_dimensions
+        try:
+            output_dimensions = validate_cluster_input_budget(
+                config,
+                record_count=record_count,
+                embedding_count=embedding_count,
+                minimum_dimensions=(
+                    int(str(minimum_dimensions))
+                    if minimum_dimensions is not None
+                    else None
+                ),
+                maximum_dimensions=(
+                    int(str(maximum_dimensions))
+                    if maximum_dimensions is not None
+                    else None
+                ),
+            )
+            return ClusterSetBasisBudget(
+                output_dimensions=output_dimensions,
+                message_dimensions=message_dimensions,
+                answer_dimensions=answer_dimensions,
+            )
+        except ClusterError as exc:
+            if "working set" in str(exc) or "supports at most" in str(exc):
+                raise ClusterError(
+                    str(exc),
+                    code="CLUSTER_BUDGET_EXCEEDED",
+                    status_code=422,
+                ) from exc
+            raise ClusterError(
+                str(exc),
+                code="CLUSTER_VECTOR_BASIS_UNAVAILABLE",
+                status_code=422,
+            ) from exc
+
+    def _publish_cluster_set_progress(
+        self, cluster_set_id: UUID, progress: int, phase: str
+    ) -> None:
+        with open_database_connection(self._settings) as connection:
+            with connection.transaction():
+                connection.execute(
+                    """
+                    UPDATE cluster_sets
+                    SET progress = %s, phase = %s, updated_at = now()
+                    WHERE id = %s
+                      AND status = 'running'
+                      AND progress < %s
+                    """,
+                    (progress, phase, cluster_set_id, progress),
+                )
+
+    def _raise_if_cluster_set_cancelled(
+        self, connection: Any, cluster_set_id: UUID
+    ) -> None:
+        row = connection.execute(
+            """
+            SELECT status
+            FROM cluster_sets
+            WHERE id = %s
+            """,
+            (cluster_set_id,),
+        ).fetchone()
+        if row is not None and row["status"] in {"cancelling", "cancelled"}:
+            raise ClusterSetCancelled()
 
     def _load_native_embedding_matrix(
         self,
@@ -652,6 +2499,669 @@ class ClusterService:
                 "analysis run embedding summary changed during clustering"
             )
         return pair_ids, vectors
+
+    def _load_cluster_set_embedding_matrix(
+        self,
+        connection: Any,
+        *,
+        project_id: UUID,
+        indexing_run_id: UUID,
+        dataset_version_id: UUID,
+        vector_basis: str,
+        message_weight: float,
+        answer_weight: float,
+        source_pair_ids: list[UUID] | None,
+        record_limit: int,
+        expected_record_count: int,
+        expected_dimensions: int,
+        message_expected_dimensions: int | None,
+        answer_expected_dimensions: int | None,
+    ) -> tuple[
+        list[object], np.ndarray[Any, np.dtype[np.float32]], dict[object, float]
+    ]:
+        pair_ids: list[object] = []
+        seen_pair_ids: set[object] = set()
+        mismatch_scores: dict[object, float] = {}
+        vectors = np.empty(
+            (expected_record_count, expected_dimensions),
+            dtype=np.float32,
+            order="C",
+        )
+        params: list[object] = [
+            indexing_run_id,
+            indexing_run_id,
+            project_id,
+            dataset_version_id,
+            record_limit + 1,
+        ]
+        query = """
+                SELECT mp.id AS message_pair_id,
+                       em.embedding AS message_embedding,
+                       em.dimensions AS message_dimensions,
+                       ea.embedding AS answer_embedding,
+                       ea.dimensions AS answer_dimensions
+                FROM message_pairs mp
+                LEFT JOIN embeddings em
+                  ON em.project_id = mp.project_id
+                 AND em.analysis_run_id = %s
+                 AND em.dataset_version_id = mp.dataset_version_id
+                 AND em.source_object_type = 'message_pair'
+                 AND em.source_object_id = mp.id
+                 AND em.text_variant = 'message'
+                LEFT JOIN embeddings ea
+                  ON ea.project_id = mp.project_id
+                 AND ea.analysis_run_id = %s
+                 AND ea.dataset_version_id = mp.dataset_version_id
+                 AND ea.source_object_type = 'message_pair'
+                 AND ea.source_object_id = mp.id
+                 AND ea.text_variant = 'answer'
+                WHERE mp.project_id = %s AND mp.dataset_version_id = %s
+                ORDER BY mp.ordinal ASC
+                LIMIT %s
+                """
+        if source_pair_ids is not None:
+            query = """
+                SELECT mp.id AS message_pair_id,
+                       em.embedding AS message_embedding,
+                       em.dimensions AS message_dimensions,
+                       ea.embedding AS answer_embedding,
+                       ea.dimensions AS answer_dimensions
+                FROM message_pairs mp
+                LEFT JOIN embeddings em
+                  ON em.project_id = mp.project_id
+                 AND em.analysis_run_id = %s
+                 AND em.dataset_version_id = mp.dataset_version_id
+                 AND em.source_object_type = 'message_pair'
+                 AND em.source_object_id = mp.id
+                 AND em.text_variant = 'message'
+                LEFT JOIN embeddings ea
+                  ON ea.project_id = mp.project_id
+                 AND ea.analysis_run_id = %s
+                 AND ea.dataset_version_id = mp.dataset_version_id
+                 AND ea.source_object_type = 'message_pair'
+                 AND ea.source_object_id = mp.id
+                 AND ea.text_variant = 'answer'
+                WHERE mp.project_id = %s
+                  AND mp.dataset_version_id = %s
+                  AND mp.id = ANY(%s)
+                ORDER BY mp.ordinal ASC
+                LIMIT %s
+                """
+            params.insert(4, source_pair_ids)
+        loaded = 0
+        with connection.cursor(
+            name=f"cluster_set_vectors_{indexing_run_id.hex}",
+            binary=True,
+        ) as cursor:
+            cursor.execute(query, tuple(params))
+            while rows := cursor.fetchmany(NATIVE_VECTOR_FETCH_BATCH_SIZE):
+                for row in rows:
+                    if loaded >= expected_record_count:
+                        raise ClusterError(
+                            "Cluster-Set embedding summary changed during clustering",
+                            code="CLUSTER_VECTOR_BASIS_UNAVAILABLE",
+                            status_code=422,
+                        )
+                    pair_id = row["message_pair_id"]
+                    if pair_id in seen_pair_ids:
+                        raise ClusterError(
+                            "Cluster-Set has duplicate embeddings",
+                            code="CLUSTER_VECTOR_BASIS_UNAVAILABLE",
+                            status_code=422,
+                        )
+                    seen_pair_ids.add(pair_id)
+                    message_vector = self._native_vector_from_row(
+                        row,
+                        "message",
+                        expected_dimensions=message_expected_dimensions,
+                        required=vector_basis in {"message", "combined"},
+                    )
+                    answer_vector = self._native_vector_from_row(
+                        row,
+                        "answer",
+                        expected_dimensions=answer_expected_dimensions,
+                        required=vector_basis in {"answer", "combined"},
+                    )
+                    if (
+                        message_vector is not None
+                        and answer_vector is not None
+                        and message_vector.shape == answer_vector.shape
+                    ):
+                        mismatch_scores[pair_id] = self._cosine_distance(
+                            message_vector, answer_vector
+                        )
+                    if vector_basis == "message":
+                        if message_vector is None:
+                            raise ClusterError(
+                                "message vector basis has missing embeddings",
+                                code="CLUSTER_VECTOR_BASIS_UNAVAILABLE",
+                                status_code=422,
+                            )
+                        vector = self._normalized_vector(message_vector)
+                    elif vector_basis == "answer":
+                        if answer_vector is None:
+                            raise ClusterError(
+                                "answer vector basis has missing embeddings",
+                                code="CLUSTER_VECTOR_BASIS_UNAVAILABLE",
+                                status_code=422,
+                            )
+                        vector = self._normalized_vector(answer_vector)
+                    else:
+                        if message_vector is None or answer_vector is None:
+                            raise ClusterError(
+                                "combined vector basis has missing embeddings",
+                                code="CLUSTER_VECTOR_BASIS_UNAVAILABLE",
+                                status_code=422,
+                            )
+                        vector = np.concatenate(
+                            (
+                                self._normalized_vector(message_vector)
+                                * message_weight,
+                                self._normalized_vector(answer_vector) * answer_weight,
+                            )
+                        )
+                    if not np.isfinite(vector).all():
+                        raise ClusterError(
+                            "Cluster-Set contains a non-finite vector",
+                            code="CLUSTER_VECTOR_BASIS_UNAVAILABLE",
+                            status_code=422,
+                        )
+                    pair_ids.append(pair_id)
+                    vectors[loaded] = vector.astype(np.float32, copy=False)
+                    loaded += 1
+        if loaded != expected_record_count:
+            raise ClusterError(
+                "Cluster-Set embedding summary changed during clustering",
+                code="CLUSTER_VECTOR_BASIS_UNAVAILABLE",
+                status_code=422,
+            )
+        return pair_ids, vectors, mismatch_scores
+
+    def _native_vector_from_row(
+        self,
+        row: dict[str, object],
+        prefix: str,
+        *,
+        expected_dimensions: int | None,
+        required: bool,
+    ) -> np.ndarray[Any, np.dtype[np.float32]] | None:
+        embedding = row[f"{prefix}_embedding"]
+        dimensions = row[f"{prefix}_dimensions"]
+        if embedding is None:
+            if required:
+                raise ClusterError(
+                    f"{prefix} vector basis has missing embeddings",
+                    code="CLUSTER_VECTOR_BASIS_UNAVAILABLE",
+                    status_code=422,
+                )
+            return None
+        if not isinstance(embedding, Vector):
+            raise ClusterError(
+                "Cluster-Set contains a non-native embedding vector",
+                code="CLUSTER_VECTOR_BASIS_UNAVAILABLE",
+                status_code=422,
+            )
+        try:
+            declared_dimensions = int(str(dimensions))
+        except (TypeError, ValueError) as exc:
+            raise ClusterError(
+                "embedding dimensionality metadata is invalid",
+                code="CLUSTER_VECTOR_BASIS_UNAVAILABLE",
+                status_code=422,
+            ) from exc
+        if (
+            expected_dimensions is not None
+            and declared_dimensions != expected_dimensions
+        ):
+            raise ClusterError(
+                "Cluster-Set has inconsistent embedding dimensions",
+                code="CLUSTER_VECTOR_BASIS_UNAVAILABLE",
+                status_code=422,
+            )
+        native_vector = embedding.to_numpy()
+        if native_vector.ndim != 1:
+            raise ClusterError(
+                "embedding dimensionality does not match metadata",
+                code="CLUSTER_VECTOR_BASIS_UNAVAILABLE",
+                status_code=422,
+            )
+        if (
+            expected_dimensions is not None
+            and native_vector.shape[0] != expected_dimensions
+        ):
+            raise ClusterError(
+                "embedding dimensionality does not match metadata",
+                code="CLUSTER_VECTOR_BASIS_UNAVAILABLE",
+                status_code=422,
+            )
+        if native_vector.shape[0] != declared_dimensions:
+            raise ClusterError(
+                "embedding dimensionality does not match metadata",
+                code="CLUSTER_VECTOR_BASIS_UNAVAILABLE",
+                status_code=422,
+            )
+        if not np.isfinite(native_vector).all():
+            raise ClusterError(
+                "Cluster-Set contains a non-finite embedding vector",
+                code="CLUSTER_VECTOR_BASIS_UNAVAILABLE",
+                status_code=422,
+            )
+        return native_vector.astype(np.float32, copy=False)
+
+    def _normalized_vector(
+        self, vector: np.ndarray[Any, np.dtype[np.float32]]
+    ) -> np.ndarray[Any, np.dtype[np.float32]]:
+        norm = float(np.linalg.norm(vector))
+        if not math.isfinite(norm):
+            raise ClusterError(
+                "Cluster-Set contains a non-finite embedding vector",
+                code="CLUSTER_VECTOR_BASIS_UNAVAILABLE",
+                status_code=422,
+            )
+        if norm == 0:
+            return vector
+        return (vector / norm).astype(np.float32, copy=False)
+
+    def _cosine_distance(
+        self,
+        left: np.ndarray[Any, np.dtype[np.float32]],
+        right: np.ndarray[Any, np.dtype[np.float32]],
+    ) -> float:
+        left_norm = float(np.linalg.norm(left))
+        right_norm = float(np.linalg.norm(right))
+        if left_norm == 0 and right_norm == 0:
+            return 0.0
+        if left_norm == 0 or right_norm == 0:
+            return 1.0
+        similarity = float(np.dot(left, right) / (left_norm * right_norm))
+        if not math.isfinite(similarity):
+            return 1.0
+        return max(0.0, min(2.0, 1.0 - similarity))
+
+    def _cluster_vectors(
+        self,
+        config: AlgorithmConfiguration,
+        vectors: np.ndarray[Any, np.dtype[np.float32]],
+    ) -> tuple[list[int], list[float]]:
+        outlier_threshold = cast(
+            float | None, config.parameters.get("outlier_threshold")
+        )
+        if config.name == "hdbscan":
+            estimator = HDBSCAN(
+                min_cluster_size=cast(int, config.parameters["min_cluster_size"]),
+                min_samples=config.parameters["min_samples"],  # type: ignore[arg-type]
+                cluster_selection_epsilon=cast(
+                    float, config.parameters["cluster_selection_epsilon"]
+                ),
+                copy=False,
+            )
+            labels = estimator.fit_predict(vectors)
+            probabilities = [float(value) for value in estimator.probabilities_]
+            normalized_labels = [int(label) for label in labels]
+            return (
+                _apply_outlier_threshold(
+                    normalized_labels, probabilities, outlier_threshold
+                ),
+                probabilities,
+            )
+
+        n_clusters = config.parameters["n_clusters"]
+        if isinstance(n_clusters, int) and n_clusters > len(vectors):
+            raise ClusterError("n_clusters cannot exceed the number of records")
+        if len(vectors) == 1:
+            return [0], [1.0]
+        with config_context(
+            working_memory=AGGLOMERATIVE_NEIGHBOR_WORKING_BYTES // (1024 * 1024)
+        ):
+            connectivity = kneighbors_graph(
+                vectors,
+                n_neighbors=min(AGGLOMERATIVE_NEIGHBOR_COUNT, len(vectors) - 1),
+                include_self=False,
+            )
+        component_count = connected_components(
+            connectivity,
+            directed=False,
+            return_labels=False,
+        )
+        if component_count != 1:
+            raise ClusterError(
+                "agglomerative neighbor graph has "
+                f"{component_count} disconnected components; "
+                "select HDBSCAN or adjust the dataset"
+            )
+        estimator = AgglomerativeClustering(
+            n_clusters=n_clusters,  # type: ignore[arg-type]
+            distance_threshold=config.parameters["distance_threshold"],  # type: ignore[arg-type]
+            linkage=str(config.parameters["linkage"]),
+            connectivity=connectivity,
+        )
+        labels = estimator.fit_predict(vectors)
+        normalized_labels = [int(label) for label in labels]
+        probabilities = [1.0] * len(vectors)
+        return (
+            _apply_outlier_threshold(
+                normalized_labels, probabilities, outlier_threshold
+            ),
+            probabilities,
+        )
+
+    def _insert_cluster_set_clusters(
+        self,
+        connection: Any,
+        *,
+        project_id: UUID,
+        cluster_set_id: UUID,
+        indexing_run_id: UUID,
+        dataset_version_id: UUID,
+        embedding_provider: str,
+        embedding_model: str,
+        config: AlgorithmConfiguration,
+        pair_ids: list[object],
+        labels: list[int],
+        probabilities: list[float],
+        mismatch_scores: dict[object, float],
+        expected_dimensions: int,
+        vector_basis: str,
+        message_weight: float,
+        answer_weight: float,
+    ) -> None:
+        grouped: dict[int, list[tuple[object, float]]] = {}
+        for pair_id, label, probability in zip(
+            pair_ids, labels, probabilities, strict=True
+        ):
+            grouped.setdefault(int(label), []).append((pair_id, probability))
+
+        for label in sorted(grouped):
+            members = grouped[label]
+            is_outlier = label == -1
+            cluster_id = uuid4()
+            title = "Outliers" if is_outlier else f"Cluster {label + 1}"
+            status = "outlier" if is_outlier else "unreviewed"
+            score = sum(item[1] for item in members) / len(members)
+            qa_scores = [
+                mismatch_scores[pair_id]
+                for pair_id, _ in members
+                if pair_id in mismatch_scores
+            ]
+            qa_metadata: dict[str, float] = {}
+            if qa_scores:
+                qa_metadata = {
+                    "average": sum(qa_scores) / len(qa_scores),
+                    "maximum": max(qa_scores),
+                }
+            connection.execute(
+                """
+                INSERT INTO clusters (
+                    id, project_id, analysis_run_id, dataset_version_id,
+                    cluster_set_id, auto_title, auto_category, auto_status,
+                    score, is_outlier, algorithm, metadata
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    cluster_id,
+                    project_id,
+                    indexing_run_id,
+                    dataset_version_id,
+                    cluster_set_id,
+                    title,
+                    "outlier" if is_outlier else config.name,
+                    status,
+                    score,
+                    is_outlier,
+                    config.name,
+                    Jsonb(
+                        {
+                            "label": label,
+                            "parameters": config.parameters,
+                            "provider": embedding_provider,
+                            "model": embedding_model,
+                            "dimensions": expected_dimensions,
+                            "vector_basis": vector_basis,
+                            "message_weight": message_weight,
+                            "answer_weight": answer_weight,
+                            "qa_mismatch": qa_metadata,
+                            "non_quadratic": True,
+                        }
+                    ),
+                ),
+            )
+            for pair_id, membership_score in members:
+                connection.execute(
+                    """
+                    INSERT INTO cluster_memberships (
+                        id, project_id, cluster_id, analysis_run_id,
+                        cluster_set_id, message_pair_id, membership_score,
+                        is_outlier, assignment_type, metadata
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'automatic', %s)
+                    """,
+                    (
+                        uuid4(),
+                        project_id,
+                        cluster_id,
+                        indexing_run_id,
+                        cluster_set_id,
+                        pair_id,
+                        membership_score,
+                        is_outlier,
+                        Jsonb(
+                            {"question_answer_mismatch": mismatch_scores.get(pair_id)}
+                        ),
+                    ),
+                )
+
+    def _generate_cluster_summaries(
+        self,
+        *,
+        project_id: UUID,
+        cluster_set_id: UUID,
+        llm_provider: str,
+        llm_model: str,
+        sample_strategy: dict[str, Any],
+    ) -> None:
+        with open_database_connection(self._settings) as connection:
+            rows = connection.execute(
+                """
+                SELECT c.id AS cluster_id, c.is_outlier, cm.message_pair_id,
+                       mp.message, mp.answer
+                FROM clusters c
+                JOIN cluster_memberships cm
+                  ON cm.cluster_id = c.id
+                 AND cm.project_id = c.project_id
+                 AND cm.cluster_set_id = c.cluster_set_id
+                JOIN message_pairs mp ON mp.id = cm.message_pair_id
+                WHERE c.project_id = %s AND c.cluster_set_id = %s
+                ORDER BY c.created_at ASC, cm.membership_score DESC, mp.ordinal ASC
+                """,
+                (project_id, cluster_set_id),
+            ).fetchall()
+        grouped: dict[UUID, dict[str, Any]] = {}
+        for row in rows:
+            cluster_id = UUID(str(row["cluster_id"]))
+            item = grouped.setdefault(
+                cluster_id,
+                {"is_outlier": bool(row["is_outlier"]), "examples": []},
+            )
+            cast(list[dict[str, str]], item["examples"]).append(
+                {"message": str(row["message"]), "answer": str(row["answer"])}
+            )
+        summarizable = [
+            (cluster_id, item)
+            for cluster_id, item in grouped.items()
+            if not bool(item["is_outlier"]) and item["examples"]
+        ]
+        if not summarizable:
+            return
+        _validate_summary_call_budget(len(summarizable))
+        for index, (cluster_id, item) in enumerate(summarizable, start=1):
+            with open_database_connection(self._settings) as connection:
+                with connection.transaction():
+                    self._raise_if_cluster_set_cancelled(connection, cluster_set_id)
+            examples = cast(list[dict[str, str]], item["examples"])
+            sampled = self._sample_summary_examples(
+                examples,
+                sample_strategy=sample_strategy,
+                cluster_id=cluster_id,
+            )
+            prompt = self._cluster_summary_prompt(sampled)
+            response_text = self._provider_service.generate_text(
+                llm_provider, llm_model, prompt
+            )
+            summary = self._parse_cluster_summary_response(response_text)
+            with open_database_connection(self._settings) as connection:
+                with connection.transaction():
+                    self._raise_if_cluster_set_cancelled(connection, cluster_set_id)
+                    connection.execute(
+                        """
+                        UPDATE clusters
+                        SET auto_title = %s,
+                            auto_category = %s,
+                            auto_summary_question = %s,
+                            auto_summary_answer = %s,
+                            metadata = metadata || %s,
+                            updated_at = now()
+                        WHERE id = %s AND project_id = %s AND cluster_set_id = %s
+                        """,
+                        (
+                            summary["title"],
+                            summary.get("category"),
+                            summary["question"],
+                            summary["answer"],
+                            Jsonb(
+                                {
+                                    "llm_summary": {
+                                        "provider": llm_provider,
+                                        "model": llm_model,
+                                        "sample_count": len(sampled),
+                                        "rationale": summary.get("rationale"),
+                                    }
+                                }
+                            ),
+                            cluster_id,
+                            project_id,
+                            cluster_set_id,
+                        ),
+                    )
+            progress = min(
+                99,
+                CLUSTER_SET_SUMMARY_PROGRESS
+                + (14 * index // max(len(summarizable), 1)),
+            )
+            self._publish_cluster_set_progress(cluster_set_id, progress, "summarizing")
+
+    def _sample_summary_examples(
+        self,
+        examples: list[dict[str, str]],
+        *,
+        sample_strategy: dict[str, Any],
+        cluster_id: UUID,
+    ) -> list[dict[str, str]]:
+        requested = sample_strategy.get("requested", 10)
+        if requested == "all":
+            sample_count = len(examples)
+        elif isinstance(requested, int) and not isinstance(requested, bool):
+            sample_count = min(requested, len(examples))
+        else:
+            raise ClusterError(
+                "summary sample count is invalid",
+                code="CLUSTER_SUMMARY_SAMPLE_COUNT_INVALID",
+                status_code=422,
+            )
+        if sample_count < 1:
+            raise ClusterError(
+                "summary sample count is invalid",
+                code="CLUSTER_SUMMARY_SAMPLE_COUNT_INVALID",
+                status_code=422,
+            )
+        seed = sample_strategy.get("seed", 0)
+        seed_int = (
+            int(seed) if isinstance(seed, int) and not isinstance(seed, bool) else 0
+        )
+        # Deterministic sampling seed is persisted provenance, not security.
+        rng = Random(seed_int ^ (cluster_id.int & ((1 << 63) - 1)))  # nosec B311
+        if sample_count >= len(examples):
+            return list(examples)
+        return rng.sample(examples, sample_count)
+
+    def _cluster_summary_prompt(self, examples: list[dict[str, str]]) -> str:
+        lines = [
+            "Analysiere die Support-Beispiele und gib ausschließlich JSON zurück.",
+            'Schema: {"title": string, "category": string|null, '
+            '"question": string, "answer": string, "rationale": string|null}.',
+            "Keine Markdown-Fences, keine Zusatztexte.",
+            "Beispiele:",
+        ]
+        for index, example in enumerate(examples, start=1):
+            lines.append(f"#{index} Nachricht: {example['message']}")
+            lines.append(f"#{index} Antwort: {example['answer']}")
+        prompt = "\n".join(lines)
+        if len(prompt) > MAX_SUMMARY_PROMPT_CHARACTERS:
+            raise ClusterError(
+                "Cluster summary budget exceeded",
+                code="CLUSTER_BUDGET_EXCEEDED",
+                status_code=422,
+                field_errors={
+                    "llm_sample_count": "summary examples exceed the allowed budget"
+                },
+            )
+        return prompt
+
+    def _parse_cluster_summary_response(self, text: str) -> dict[str, str | None]:
+        candidate = text.strip()
+        if candidate.startswith("```"):
+            lines = candidate.splitlines()
+            if lines and lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].startswith("```"):
+                lines = lines[:-1]
+            candidate = "\n".join(lines).strip()
+        try:
+            payload = json.loads(candidate)
+        except json.JSONDecodeError as exc:
+            raise ClusterError(
+                "Cluster summary response is invalid",
+                code="CLUSTER_SUMMARY_FAILED",
+                status_code=422,
+                retryable=True,
+            ) from exc
+        if not isinstance(payload, dict):
+            raise ClusterError(
+                "Cluster summary response is invalid",
+                code="CLUSTER_SUMMARY_FAILED",
+                status_code=422,
+                retryable=True,
+            )
+        return {
+            "title": self._summary_field(payload.get("title"), "title", required=True),
+            "category": self._summary_field(
+                payload.get("category"), "category", required=False
+            ),
+            "question": self._summary_field(
+                payload.get("question"), "question", required=True
+            ),
+            "answer": self._summary_field(
+                payload.get("answer"), "answer", required=True
+            ),
+            "rationale": self._summary_field(
+                payload.get("rationale"), "rationale", required=False
+            ),
+        }
+
+    def _summary_field(
+        self, value: object, field: str, *, required: bool
+    ) -> str | None:
+        if value is None and not required:
+            return None
+        if not isinstance(value, str) or not value.strip():
+            raise ClusterError(
+                f"Cluster summary field {field} is invalid",
+                code="CLUSTER_SUMMARY_FAILED",
+                status_code=422,
+                retryable=True,
+            )
+        cleaned = value.strip()
+        return cleaned[:MAX_SUMMARY_FIELD_CHARACTERS]
 
     def _validate_and_insert_clusters(
         self,

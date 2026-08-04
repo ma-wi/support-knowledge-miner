@@ -12,8 +12,6 @@ backend/audit/service.py
 backend/auth/__init__.py
 backend/auth/passwords.py
 backend/auth/service.py
-backend/candidates/__init__.py
-backend/candidates/service.py
 backend/clusters/__init__.py
 backend/clusters/service.py
 backend/db/__init__.py
@@ -34,6 +32,8 @@ backend/db/migrations/0011_email_identity.sql
 backend/db/migrations/0012_import_snake_case_fields.sql
 backend/db/migrations/0013_remove_prompt_identifier_run_mode.sql
 backend/db/migrations/0014_indexing_runs_without_profiles.sql
+backend/db/migrations/0015_cluster_sets_llm_summaries.sql
+backend/db/migrations/0016_explorer_exports.sql
 backend/db/migrations/__init__.py
 backend/exports/__init__.py
 backend/exports/service.py

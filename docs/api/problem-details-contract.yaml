@@ -1,0 +1,186 @@
+openapi: 3.1.0
+info:
+  title: Support Knowledge Miner local API error contract
+  version: 1.0.0
+components:
+  schemas:
+    ProblemDetails:
+      type: object
+      additionalProperties: false
+      required:
+        - type
+        - title
+        - status
+        - detail
+        - code
+        - correlationId
+        - retryable
+        - suggestedAction
+      properties:
+        type:
+          type: string
+          format: uri-reference
+        title:
+          type: string
+        status:
+          type: integer
+        detail:
+          type: string
+        code:
+          type: string
+        correlationId:
+          type:
+            - string
+            - "null"
+        retryable:
+          type: boolean
+        suggestedAction:
+          type: string
+        fieldErrors:
+          type: array
+          items:
+            $ref: "#/components/schemas/FieldError"
+    FieldError:
+      type: object
+      additionalProperties: false
+      required:
+        - field
+        - message
+      properties:
+        field:
+          type: string
+        message:
+          type: string
+x-skm-problem-codes:
+  INDEXING_NOT_COMPLETE:
+    type: urn:skm:error:INDEXING_NOT_COMPLETE
+    title: Diese Indizierung ist noch nicht fertig.
+    status: 422
+    detail: Nur fertige Indizierungen können als Basis verwendet werden.
+    suggestedAction: choose-completed-indexing
+  CLUSTER_VECTOR_BASIS_UNAVAILABLE:
+    type: urn:skm:error:CLUSTER_VECTOR_BASIS_UNAVAILABLE
+    title: Die Vektorbasis ist nicht verfügbar.
+    status: 422
+    detail: Die gewählte Vektorbasis fehlt in dieser Indizierung.
+    suggestedAction: choose-vector-basis
+  CLUSTER_SUMMARY_SAMPLE_COUNT_INVALID:
+    type: urn:skm:error:CLUSTER_SUMMARY_SAMPLE_COUNT_INVALID
+    title: Die Beispielanzahl ist ungültig.
+    status: 422
+    detail: Die Anzahl der LLM-Beispiele muss mindestens 1 sein.
+    suggestedAction: correct-input
+  CLUSTER_BUDGET_EXCEEDED:
+    type: urn:skm:error:CLUSTER_BUDGET_EXCEEDED
+    title: Die Clusterung ist zu groß.
+    status: 422
+    detail: Die aktuelle Datenmenge oder Dimension überschreitet das Clusterbudget.
+    suggestedAction: reduce-scope
+  LLM_PROVIDER_UNAVAILABLE:
+    type: urn:skm:error:LLM_PROVIDER_UNAVAILABLE
+    title: Das LLM ist nicht erreichbar.
+    status: 503
+    detail: Die Cluster wurden nicht vollständig zusammengefasst, weil der LLM-Provider nicht erreichbar ist.
+    suggestedAction: check-provider
+  LLM_CLOUD_CONFIRMATION_REQUIRED:
+    type: urn:skm:error:LLM_CLOUD_CONFIRMATION_REQUIRED
+    title: Cloud-Nutzung muss bestätigt werden.
+    status: 422
+    detail: Diese Zusammenfassung würde Originaltexte an OpenAI senden.
+    suggestedAction: confirm-cloud-use
+  CLUSTER_SUMMARY_FAILED:
+    type: urn:skm:error:CLUSTER_SUMMARY_FAILED
+    title: Die Zusammenfassung konnte nicht erzeugt werden.
+    status: 422
+    detail: Die Cluster wurden berechnet, aber die LLM-Zusammenfassung ist nicht sicher verwendbar.
+    suggestedAction: retry-summary
+  CLUSTER_SET_CANCEL_NOT_AVAILABLE:
+    type: urn:skm:error:CLUSTER_SET_CANCEL_NOT_AVAILABLE
+    title: Das Cluster-Set kann nicht abgebrochen werden.
+    status: 409
+    detail: Der Job ist bereits fertig, fehlgeschlagen oder abgebrochen.
+    suggestedAction: reload
+  CLUSTER_SET_NOT_FOUND:
+    type: urn:skm:error:CLUSTER_SET_NOT_FOUND
+    title: Das Cluster-Set wurde nicht gefunden.
+    status: 404
+    detail: Das Cluster-Set wurde gelöscht oder gehört nicht zu diesem Projekt.
+    suggestedAction: reload
+  CLUSTER_SET_NOT_COMPLETE:
+    type: urn:skm:error:CLUSTER_SET_NOT_COMPLETE
+    title: Das Cluster-Set ist noch nicht fertig.
+    status: 409
+    detail: Das Cluster-Set kann erst nach Abschluss geladen werden.
+    suggestedAction: wait
+  CLUSTER_SOURCE_NOT_FOUND:
+    type: urn:skm:error:CLUSTER_SOURCE_NOT_FOUND
+    title: Die Quellen konnten nicht geladen werden.
+    status: 404
+    detail: Der Cluster wurde nicht gefunden oder gehört nicht zum geladenen Set.
+    suggestedAction: reload
+  CLUSTER_SOURCE_PAGE_INVALID:
+    type: urn:skm:error:CLUSTER_SOURCE_PAGE_INVALID
+    title: Die Quellen-Seite ist ungültig.
+    status: 422
+    detail: Die Quellen konnten mit diesen Seitenparametern nicht geladen werden.
+    suggestedAction: correct-input
+  CLUSTER_RUN_BOUND_API_REPLACED:
+    type: urn:skm:error:CLUSTER_RUN_BOUND_API_REPLACED
+    title: Run-bound Clustering wurde ersetzt.
+    status: 410
+    detail: Cluster werden jetzt ausschließlich über Cluster-Sets erzeugt und geladen.
+    suggestedAction: create-cluster-set
+  CLUSTER_REFINEMENT_EMPTY_SOURCE:
+    type: urn:skm:error:CLUSTER_REFINEMENT_EMPTY_SOURCE
+    title: Keine Quellen für die Verfeinerung.
+    status: 422
+    detail: Für die Verfeinerung ist mindestens ein eingeschlossener Cluster erforderlich.
+    suggestedAction: select-sources
+  CLUSTER_MANUAL_UPDATE_INVALID:
+    type: urn:skm:error:CLUSTER_MANUAL_UPDATE_INVALID
+    title: Cluster-Änderung ist ungültig.
+    status: 422
+    detail: Die manuellen Clusterwerte konnten nicht gespeichert werden.
+    suggestedAction: correct-input
+  EXPLORER_EXPORT_EMPTY:
+    type: urn:skm:error:EXPLORER_EXPORT_EMPTY
+    title: Es gibt nichts zu exportieren.
+    status: 422
+    detail: Im aktuellen Filterstand gibt es keine exportierbaren Zeilen.
+    suggestedAction: adjust-filter
+  EXPLORER_EXPORT_FORMAT_INVALID:
+    type: urn:skm:error:EXPLORER_EXPORT_FORMAT_INVALID
+    title: Das Exportformat ist ungültig.
+    status: 422
+    detail: Der Explorer kann nur als CSV oder JSON exportiert werden.
+    suggestedAction: choose-format
+  EXPLORER_EXPORT_SELECTION_TOO_LARGE:
+    type: urn:skm:error:EXPLORER_EXPORT_SELECTION_TOO_LARGE
+    title: Die Exportauswahl ist zu groß.
+    status: 422
+    detail: Die aktuelle Explorer-Auswahl enthält zu viele Cluster.
+    suggestedAction: reduce-scope
+  EXPLORER_EXPORT_FAILED:
+    type: urn:skm:error:EXPLORER_EXPORT_FAILED
+    title: Der Export konnte nicht erstellt werden.
+    status: 500
+    detail: Die gefilterte Explorer-Ansicht konnte nicht als Datei erzeugt werden.
+    suggestedAction: retry
+  CLUSTER_OUTLIER_EMPTY_RESULT:
+    type: urn:skm:error:CLUSTER_OUTLIER_EMPTY_RESULT
+    title: Keine Quellen nach Ausreißer-Ausschluss.
+    status: 422
+    detail: Mit diesem Threshold bleiben keine auswertbaren Quellen übrig.
+    suggestedAction: adjust-threshold
+  CLUSTER_OUTLIER_RECALCULATION_FAILED:
+    type: urn:skm:error:CLUSTER_OUTLIER_RECALCULATION_FAILED
+    title: Ausreißer konnten nicht ausgeschlossen werden.
+    status: 500
+    detail: Der Ausreißer-Ausschluss konnte nicht abgeschlossen werden.
+    suggestedAction: retry
+  CLUSTER_SET_LINEAGE_UNAVAILABLE:
+    type: urn:skm:error:CLUSTER_SET_LINEAGE_UNAVAILABLE
+    title: Die Herkunft konnte nicht geladen werden.
+    status: 503
+    detail: Das Cluster-Set bleibt nutzbar, aber die Historie konnte nicht geladen werden.
+    suggestedAction: retry

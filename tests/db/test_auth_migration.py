@@ -23,6 +23,8 @@ def test_auth_migration_is_ordered_after_foundation() -> None:
         "0012_import_snake_case_fields.sql",
         "0013_remove_prompt_identifier_run_mode.sql",
         "0014_indexing_runs_without_profiles.sql",
+        "0015_cluster_sets_llm_summaries.sql",
+        "0016_explorer_exports.sql",
     ]
 
 
