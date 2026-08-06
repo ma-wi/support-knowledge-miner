@@ -11,6 +11,11 @@ import { afterEach, expect, test, vi } from "vitest";
 import userEvent from "@testing-library/user-event";
 import App from "./App";
 
+type ApiActiveJobs = {
+  indexing_active: boolean;
+  cluster_set_active: boolean;
+};
+
 const owner = {
   id: "local-owner",
   first_name: "Local",
@@ -48,6 +53,7 @@ const importLog = {
   total_records: 2,
   valid_records: 1,
   skipped_records: 1,
+  skipped_detail_count: 1,
   dataset_version_id: "dataset-1",
   dataset_display_name: "Fixture dataset",
   dataset_deleted_at: null,
@@ -55,24 +61,33 @@ const importLog = {
   completed_at: "2026-07-22T00:00:00Z",
 };
 const openAiProvider = {
+  id: "provider-openai",
   provider: "openai",
+  display_name: "OpenAI",
   endpoint_url: null,
-  manual_models: ["gpt-4.1-mini"],
+  available_models: ["text-embedding-3-small", "gpt-4.1-mini"],
+  manual_models: ["text-embedding-3-small"],
   llm_models: ["gpt-4.1-mini"],
   api_key_set: true,
   updated_at: "2026-07-22T00:00:00Z",
 };
-const vllmProvider = {
-  provider: "vllm",
-  endpoint_url: "http://localhost:8000",
+const localOllamaProvider = {
+  id: "provider-local-ollama",
+  provider: "ollama",
+  display_name: "Lokales Ollama",
+  endpoint_url: "http://localhost:11434",
+  available_models: ["local-embed"],
   manual_models: ["local-embed"],
   llm_models: [],
   api_key_set: false,
   updated_at: "2026-07-22T00:00:00Z",
 };
 const ollamaProvider = {
+  id: "provider-ollama",
   provider: "ollama",
+  display_name: "Ollama",
   endpoint_url: "http://localhost:11434",
+  available_models: ["nomic-embed-text", "llama3.1"],
   manual_models: ["nomic-embed-text"],
   llm_models: ["llama3.1"],
   api_key_set: false,
@@ -87,7 +102,9 @@ const analysisRun = {
   status: "queued",
   progress: 0,
   phase: "queued",
-  provider: "vllm",
+  provider: "ollama",
+  provider_configuration_id: "provider-local-ollama",
+  provider_display_name: "Lokales Ollama",
   model: "local-embed",
   parameters: {},
   error_code: null,
@@ -151,9 +168,21 @@ const clusterSet = {
   message_weight: 0.4,
   answer_weight: 0.6,
   algorithm: "hdbscan",
-  parameters: { min_cluster_size: 2, outlier_threshold: 0.72 },
+  parameters: {
+    min_cluster_size: 2,
+    min_samples: 12,
+    cluster_selection_epsilon: 0.1,
+    reduction_method: "pca",
+    reduction_dimensions: 100,
+    execution_backend: "auto",
+    umap_n_neighbors: null,
+    umap_min_dist: null,
+    outlier_threshold: 0.72,
+  },
   source_snapshot: { type: "all_dataset_pairs", source_pair_count: 1 },
   llm_provider: "ollama",
+  llm_provider_configuration_id: "provider-ollama",
+  llm_provider_display_name: "Ollama",
   llm_model: "llama3.1",
   llm_parameters: { enabled: true },
   llm_sample_strategy: { strategy: "random", requested: 2, seed: 7 },
@@ -213,10 +242,21 @@ function mockFetch(
     input: RequestInfo | URL,
     init?: RequestInit,
   ) => Response | Promise<Response>,
+  activeJobStatus: ApiActiveJobs = {
+    indexing_active: false,
+    cluster_set_active: false,
+  },
 ) {
   return vi
     .spyOn(globalThis, "fetch")
-    .mockImplementation(async (input, init) => handler(input, init));
+    .mockImplementation(async (input, init) => {
+      const path = String(input);
+      const method = init?.method ?? "GET";
+      if (path === "/api/jobs/active" && method === "GET") {
+        return jsonResponse(activeJobStatus);
+      }
+      return handler(input, init);
+    });
 }
 
 function mockProjectFetch(
@@ -225,6 +265,7 @@ function mockProjectFetch(
     method: string,
     init?: RequestInit,
   ) => Response | Promise<Response> | undefined,
+  activeJobStatus?: ApiActiveJobs,
 ) {
   return mockFetch((input, init) => {
     const path = String(input);
@@ -246,7 +287,13 @@ function mockProjectFetch(
       return jsonResponse([alphaProject, betaProject]);
     }
     if (path === "/api/providers" && method === "GET") {
-      return jsonResponse([vllmProvider]);
+      return jsonResponse([localOllamaProvider]);
+    }
+    if (path === "/api/jobs/active" && method === "GET") {
+      return jsonResponse({
+        indexing_active: false,
+        cluster_set_active: false,
+      });
     }
     if (path === "/api/projects/project-alpha" && method === "GET") {
       return jsonResponse(alphaProject);
@@ -261,7 +308,7 @@ function mockProjectFetch(
       return jsonResponse([]);
     }
     throw new Error(`unexpected request ${method} ${path}`);
-  });
+  }, activeJobStatus);
 }
 
 async function signIn(user: ReturnType<typeof userEvent.setup>) {
@@ -284,11 +331,39 @@ async function signIn(user: ReturnType<typeof userEvent.setup>) {
   );
 }
 
+async function openGlobalMenu(user: ReturnType<typeof userEvent.setup>) {
+  const menuButton = screen.getByRole("button", {
+    name: "Hauptmenü öffnen",
+  });
+  await user.click(menuButton);
+  expect(menuButton).toHaveAttribute("aria-haspopup", "menu");
+  expect(menuButton).toHaveAttribute("aria-expanded", "true");
+  return {
+    menuButton,
+    menu: await screen.findByRole("menu"),
+  };
+}
+
+async function signOutThroughGlobalMenu(
+  user: ReturnType<typeof userEvent.setup>,
+) {
+  const { menu } = await openGlobalMenu(user);
+  await user.click(within(menu).getByRole("menuitem", { name: "Abmelden" }));
+}
+
+async function openProjectsPage(user: ReturnType<typeof userEvent.setup>) {
+  const { menu } = await openGlobalMenu(user);
+  await user.click(within(menu).getByRole("menuitem", { name: "Projekte" }));
+}
+
 async function openSettingsTab(
   user: ReturnType<typeof userEvent.setup>,
-  tabName: "Embedding-Provider" | "Nutzer",
+  tabName: "Provider" | "Nutzer",
 ) {
-  await user.click(screen.getByRole("button", { name: "Einstellungen" }));
+  const { menu } = await openGlobalMenu(user);
+  await user.click(
+    within(menu).getByRole("menuitem", { name: "Einstellungen" }),
+  );
   await user.click(await screen.findByRole("tab", { name: tabName }));
 }
 
@@ -354,6 +429,12 @@ test("restores a tab session only after the stored token is validated by the ser
     }
     if (path === "/api/providers" && method === "GET") {
       return jsonResponse([]);
+    }
+    if (path === "/api/jobs/active" && method === "GET") {
+      return jsonResponse({
+        indexing_active: false,
+        cluster_set_active: false,
+      });
     }
     throw new Error(`unexpected request ${method} ${path}`);
   });
@@ -539,7 +620,7 @@ test("clears local session state even when server sign-out is unavailable", asyn
   await signIn(user);
   await screen.findByRole("heading", { name: "Projekte & Analysen" });
 
-  await user.click(screen.getByRole("button", { name: "Abmelden" }));
+  await signOutThroughGlobalMenu(user);
 
   expect(
     await screen.findByRole("heading", { name: "Lokaler Zugriff" }),
@@ -586,7 +667,7 @@ test("shows a sanitized API detail when server-side sign-out revocation fails", 
   await signIn(user);
   await screen.findByRole("heading", { name: "Projekte & Analysen" });
 
-  await user.click(screen.getByRole("button", { name: "Abmelden" }));
+  await signOutThroughGlobalMenu(user);
 
   expect(
     await screen.findByRole("heading", { name: "Lokaler Zugriff" }),
@@ -770,7 +851,7 @@ test("opens user management only after API sign-in and uses bearer token for use
   );
 });
 
-test("shows sidebar navigation and settings tabs after sign-in", async () => {
+test("uses only the topbar global menu after sign-in", async () => {
   const user = userEvent.setup();
   mockFetch((input, init) => {
     const path = String(input);
@@ -793,25 +874,32 @@ test("shows sidebar navigation and settings tabs after sign-in", async () => {
 
   await signIn(user);
 
-  const navigation = await screen.findByRole("navigation", {
-    name: "Hauptnavigation",
-  });
   expect(
-    within(navigation).getByRole("button", { name: "Projekte" }),
+    screen.queryByRole("navigation", { name: "Hauptnavigation" }),
+  ).not.toBeInTheDocument();
+  expect(screen.queryByLabelText("Projektliste")).not.toBeInTheDocument();
+  const { menu, menuButton } = await openGlobalMenu(user);
+  expect(
+    within(menu).getByRole("menuitem", { name: "Projekte" }),
   ).toBeInTheDocument();
   expect(
-    within(navigation).getByRole("button", { name: "Einstellungen" }),
+    within(menu).getByRole("menuitem", { name: "Einstellungen" }),
   ).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "Abmelden" })).toBeInTheDocument();
+  expect(
+    within(menu).getByRole("menuitem", { name: "Abmelden" }),
+  ).toBeInTheDocument();
+  fireEvent.keyDown(window, { key: "Escape" });
+  await waitFor(() =>
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument(),
+  );
+  expect(menuButton).toHaveFocus();
+  expect(menuButton).toHaveAttribute("aria-expanded", "false");
 
-  await openSettingsTab(user, "Embedding-Provider");
-  expect(screen.getByRole("tab", { name: "Embedding-Provider" })).toHaveClass(
-    "selected",
-  );
-  await user.click(screen.getByRole("tab", { name: "LLM-Provider" }));
-  expect(screen.getByRole("tab", { name: "LLM-Provider" })).toHaveClass(
-    "selected",
-  );
+  await openSettingsTab(user, "Provider");
+  expect(screen.getByRole("tab", { name: "Provider" })).toHaveClass("selected");
+  expect(
+    screen.queryByRole("tab", { name: "LLM-Provider" }),
+  ).not.toBeInTheDocument();
   await user.click(screen.getByRole("tab", { name: "Nutzer" }));
   expect(screen.getByRole("tab", { name: "Nutzer" })).toHaveClass("selected");
   expect(
@@ -840,25 +928,19 @@ test("refreshes OpenAI models for an already stored API key", async () => {
     if (path === "/api/providers" && method === "GET") {
       return jsonResponse([openAiProvider]);
     }
-    if (path === "/api/providers/openai/check" && method === "POST") {
+    if (path === "/api/providers/provider-openai/check" && method === "POST") {
       openAiCheckCount += 1;
       expect(new Headers(init?.headers).get("Authorization")).toBe(
         "Bearer api-token",
       );
       return jsonResponse({
+        id: "provider-openai",
         provider: "openai",
         ok: true,
-        models: ["text-embedding-3-large"],
+        models: ["text-embedding-3-large", "gpt-4.1-mini"],
+        embedding_models: ["text-embedding-3-large"],
+        llm_models: ["gpt-4.1-mini"],
         message: "live calls are not required",
-      });
-    }
-    if (path === "/api/providers/openai" && method === "PUT") {
-      const body = JSON.parse(String(init?.body));
-      expect(body.api_key).toBeUndefined();
-      expect(body.manual_models).toEqual(["text-embedding-3-large"]);
-      return jsonResponse({
-        ...openAiProvider,
-        manual_models: ["text-embedding-3-large"],
       });
     }
     throw new Error(`unexpected request ${method} ${path}`);
@@ -866,7 +948,7 @@ test("refreshes OpenAI models for an already stored API key", async () => {
   render(<App />);
 
   await signIn(user);
-  await openSettingsTab(user, "Embedding-Provider");
+  await openSettingsTab(user, "Provider");
 
   const openAiForm = await screen.findByRole("form", {
     name: "OpenAI Provider konfigurieren",
@@ -875,16 +957,223 @@ test("refreshes OpenAI models for an already stored API key", async () => {
     within(openAiForm).getByRole("button", { name: "Modelle abrufen" }),
   );
 
+  const discoveredEmbeddingInput = await within(openAiForm).findByLabelText(
+    "text-embedding-3-large",
+  );
+  expect(discoveredEmbeddingInput).toBeInstanceOf(HTMLInputElement);
+  expect((discoveredEmbeddingInput as HTMLInputElement).checked).toBe(false);
+  expect(within(openAiForm).getByLabelText("gpt-4.1-mini")).toBeChecked();
   expect(
-    await within(openAiForm).findByLabelText("text-embedding-3-large"),
-  ).toBeChecked();
-  expect(
-    await screen.findByText("1 OpenAI Modell(e) abgerufen."),
+    await screen.findByText("2 Modell(e) für OpenAI abgerufen."),
   ).toBeInTheDocument();
   expect(
     screen.queryByText("live calls are not required"),
   ).not.toBeInTheDocument();
   expect(openAiCheckCount).toBeGreaterThanOrEqual(1);
+});
+
+test("tests provider connections without changing model selections", async () => {
+  const user = userEvent.setup();
+  let checkCount = 0;
+  mockFetch((input, init) => {
+    const path = String(input);
+    const method = init?.method ?? "GET";
+    if (path === "/api/auth/sign-in" && method === "POST") {
+      return jsonResponse({ access_token: "api-token", user: owner });
+    }
+    if (path === "/api/users" && method === "GET") {
+      return jsonResponse([owner]);
+    }
+    if (path === "/api/projects" && method === "GET") {
+      return jsonResponse([]);
+    }
+    if (path === "/api/providers" && method === "GET") {
+      return jsonResponse([openAiProvider]);
+    }
+    if (path === "/api/providers/provider-openai/check" && method === "POST") {
+      checkCount += 1;
+      return jsonResponse({
+        id: "provider-openai",
+        provider: "openai",
+        ok: true,
+        models: ["text-embedding-3-large"],
+        embedding_models: ["text-embedding-3-large"],
+        llm_models: [],
+        message: "provider reachable",
+      });
+    }
+    throw new Error(`unexpected request ${method} ${path}`);
+  });
+  render(<App />);
+
+  await signIn(user);
+  await openSettingsTab(user, "Provider");
+  const openAiForm = await screen.findByRole("form", {
+    name: "OpenAI Provider konfigurieren",
+  });
+
+  await user.click(
+    within(openAiForm).getByRole("button", { name: "Verbindung testen" }),
+  );
+
+  expect(
+    await screen.findByText("Verbindung zu OpenAI erfolgreich geprüft."),
+  ).toBeInTheDocument();
+  expect(checkCount).toBe(1);
+  expect(
+    within(openAiForm).queryByLabelText("text-embedding-3-large"),
+  ).not.toBeInTheDocument();
+  expect(
+    within(openAiForm).getByLabelText("text-embedding-3-small"),
+  ).toBeChecked();
+  expect(within(openAiForm).getByLabelText("gpt-4.1-mini")).toBeChecked();
+});
+
+test("keeps unchecked provider models visible and in their original order", async () => {
+  const user = userEvent.setup();
+  const orderedProvider = {
+    ...ollamaProvider,
+    available_models: ["embed-a", "shared-model", "embed-b"],
+    manual_models: ["embed-a", "shared-model", "embed-b"],
+    llm_models: ["embed-a", "shared-model", "embed-b"],
+  };
+  let savedBody: Record<string, unknown> | null = null;
+  mockFetch((input, init) => {
+    const path = String(input);
+    const method = init?.method ?? "GET";
+    if (path === "/api/auth/sign-in" && method === "POST") {
+      return jsonResponse({ access_token: "api-token", user: owner });
+    }
+    if (path === "/api/users" && method === "GET") {
+      return jsonResponse([owner]);
+    }
+    if (path === "/api/projects" && method === "GET") {
+      return jsonResponse([]);
+    }
+    if (path === "/api/providers" && method === "GET") {
+      return jsonResponse([orderedProvider]);
+    }
+    if (path === "/api/providers/provider-ollama" && method === "PUT") {
+      savedBody = JSON.parse(String(init?.body));
+      return jsonResponse({
+        ...orderedProvider,
+        available_models: savedBody?.available_models,
+        manual_models: savedBody?.manual_models,
+        llm_models: savedBody?.llm_models,
+      });
+    }
+    throw new Error(`unexpected request ${method} ${path}`);
+  });
+  render(<App />);
+
+  await signIn(user);
+  await openSettingsTab(user, "Provider");
+  const ollamaForm = await screen.findByRole("form", {
+    name: "Ollama Provider konfigurieren",
+  });
+  const modelSections = ollamaForm.querySelectorAll(".model-selection");
+  const embeddingSection = modelSections[0] as HTMLElement;
+  const llmSection = modelSections[1] as HTMLElement;
+  const sectionLabels = (section: HTMLElement) =>
+    Array.from(section.querySelectorAll("label")).map((label) =>
+      label.textContent?.trim(),
+    );
+
+  expect(sectionLabels(embeddingSection)).toEqual([
+    "embed-a",
+    "shared-model",
+    "embed-b",
+  ]);
+  const sharedInputs = within(ollamaForm).getAllByLabelText("shared-model");
+  await user.click(sharedInputs[0]);
+  await user.click(sharedInputs[1]);
+
+  expect(sectionLabels(embeddingSection)).toEqual([
+    "embed-a",
+    "shared-model",
+    "embed-b",
+  ]);
+  expect(sectionLabels(llmSection)).toEqual([
+    "embed-a",
+    "shared-model",
+    "embed-b",
+  ]);
+  const uncheckedSharedInputs =
+    within(ollamaForm).getAllByLabelText("shared-model");
+  expect(uncheckedSharedInputs).toHaveLength(2);
+  expect(uncheckedSharedInputs[0]).not.toBeChecked();
+  expect(uncheckedSharedInputs[1]).not.toBeChecked();
+
+  await user.click(
+    within(ollamaForm).getByRole("button", { name: "Provider speichern" }),
+  );
+
+  await waitFor(() => {
+    expect(savedBody).toMatchObject({
+      available_models: ["embed-a", "shared-model", "embed-b"],
+      manual_models: ["embed-a", "embed-b"],
+      llm_models: ["embed-a", "embed-b"],
+    });
+  });
+});
+
+test("removes unavailable models after successful provider discovery", async () => {
+  const user = userEvent.setup();
+  const staleProvider = {
+    ...ollamaProvider,
+    available_models: ["nomic-embed-text", "removed-model"],
+    manual_models: ["nomic-embed-text", "removed-model"],
+    llm_models: ["removed-model"],
+  };
+  mockFetch((input, init) => {
+    const path = String(input);
+    const method = init?.method ?? "GET";
+    if (path === "/api/auth/sign-in" && method === "POST") {
+      return jsonResponse({ access_token: "api-token", user: owner });
+    }
+    if (path === "/api/users" && method === "GET") {
+      return jsonResponse([owner]);
+    }
+    if (path === "/api/projects" && method === "GET") {
+      return jsonResponse([]);
+    }
+    if (path === "/api/providers" && method === "GET") {
+      return jsonResponse([staleProvider]);
+    }
+    if (path === "/api/providers/provider-ollama/check" && method === "POST") {
+      return jsonResponse({
+        id: "provider-ollama",
+        provider: "ollama",
+        ok: true,
+        models: ["nomic-embed-text"],
+        embedding_models: ["nomic-embed-text"],
+        llm_models: ["nomic-embed-text"],
+        message: "Ollama models discovered",
+      });
+    }
+    throw new Error(`unexpected request ${method} ${path}`);
+  });
+  render(<App />);
+
+  await signIn(user);
+  await openSettingsTab(user, "Provider");
+  const ollamaForm = await screen.findByRole("form", {
+    name: "Ollama Provider konfigurieren",
+  });
+  expect(within(ollamaForm).getAllByLabelText("removed-model")).toHaveLength(2);
+
+  await user.click(
+    within(ollamaForm).getByRole("button", { name: "Modelle abrufen" }),
+  );
+
+  await waitFor(() =>
+    expect(
+      within(ollamaForm).queryByLabelText("removed-model"),
+    ).not.toBeInTheDocument(),
+  );
+  expect(within(ollamaForm).getAllByLabelText("nomic-embed-text")).toHaveLength(
+    2,
+  );
 });
 
 test("configures Ollama and refreshes local models", async () => {
@@ -903,38 +1192,58 @@ test("configures Ollama and refreshes local models", async () => {
       return jsonResponse([]);
     }
     if (path === "/api/providers" && method === "GET") {
-      return jsonResponse([]);
+      return jsonResponse([
+        {
+          ...ollamaProvider,
+          available_models: [],
+          manual_models: [],
+          llm_models: [],
+        },
+      ]);
     }
-    if (path === "/api/providers/ollama" && method === "PUT") {
+    if (path === "/api/providers/provider-ollama" && method === "PUT") {
       ollamaSaveCount += 1;
       const body = JSON.parse(String(init?.body));
       expect(body.endpoint_url).toBe("http://localhost:11434");
+      expect(body.available_models).toEqual(
+        ollamaSaveCount === 1 ? [] : ["nomic-embed-text", "mxbai-embed-large"],
+      );
       expect(body.manual_models).toEqual(
         ollamaSaveCount === 1 ? [] : ["nomic-embed-text", "mxbai-embed-large"],
       );
       return jsonResponse({
         ...ollamaProvider,
+        available_models: body.available_models,
         manual_models: body.manual_models,
+        llm_models: body.llm_models,
       });
     }
-    if (path === "/api/providers/ollama/check" && method === "POST") {
+    if (path === "/api/providers/provider-ollama/check" && method === "POST") {
       return jsonResponse({
+        id: "provider-ollama",
         provider: "ollama",
         ok: true,
         models: ["nomic-embed-text", "mxbai-embed-large"],
+        embedding_models: ["nomic-embed-text", "mxbai-embed-large"],
+        llm_models: ["nomic-embed-text", "mxbai-embed-large"],
         message: "Ollama models discovered",
       });
     }
-    if (path === "/api/providers/ollama/pull" && method === "POST") {
+    if (
+      path === "/api/providers/provider-ollama/ollama/pull" &&
+      method === "POST"
+    ) {
       const body = JSON.parse(String(init?.body));
       expect(body.model).toBe("embeddinggemma");
       return jsonResponse({
         ...ollamaProvider,
-        manual_models: [
+        available_models: [
           "nomic-embed-text",
           "mxbai-embed-large",
           "embeddinggemma",
         ],
+        manual_models: ["nomic-embed-text", "mxbai-embed-large"],
+        llm_models: [],
       });
     }
     throw new Error(`unexpected request ${method} ${path}`);
@@ -942,29 +1251,31 @@ test("configures Ollama and refreshes local models", async () => {
   render(<App />);
 
   await signIn(user);
-  await openSettingsTab(user, "Embedding-Provider");
+  await openSettingsTab(user, "Provider");
 
   const ollamaForm = await screen.findByRole("form", {
     name: "Ollama Provider konfigurieren",
   });
-  await user.type(
-    within(ollamaForm).getByLabelText("Endpoint URL"),
+  expect(within(ollamaForm).getByLabelText("Endpoint URL")).toHaveValue(
     "http://localhost:11434",
   );
   expect(within(ollamaForm).queryByLabelText("Ollama Modelle")).toBeNull();
   await user.click(
-    within(ollamaForm).getByRole("button", { name: "Ollama speichern" }),
+    within(ollamaForm).getByRole("button", { name: "Provider speichern" }),
   );
 
-  expect(
-    await screen.findByText("Ollama Provider gespeichert."),
-  ).toBeInTheDocument();
+  expect(await screen.findByText("Ollama gespeichert.")).toBeInTheDocument();
   await user.click(
     within(ollamaForm).getByRole("button", { name: "Modelle abrufen" }),
   );
-  expect(
-    await screen.findByText(/nomic-embed-text, mxbai-embed-large/),
-  ).toBeInTheDocument();
+  await waitFor(() => {
+    expect(
+      within(ollamaForm).getAllByLabelText("nomic-embed-text").length,
+    ).toBeGreaterThan(0);
+    expect(
+      within(ollamaForm).getAllByLabelText("mxbai-embed-large").length,
+    ).toBeGreaterThan(0);
+  });
   await user.type(
     within(ollamaForm).getByLabelText("Neues Ollama Modell"),
     "embeddinggemma",
@@ -977,11 +1288,11 @@ test("configures Ollama and refreshes local models", async () => {
   expect(
     await screen.findByText("Ollama Modell embeddinggemma wurde hinzugefügt."),
   ).toBeInTheDocument();
-  expect(
-    await screen.findByText(
-      /nomic-embed-text, mxbai-embed-large, embeddinggemma/,
-    ),
-  ).toBeInTheDocument();
+  await waitFor(() => {
+    expect(
+      within(ollamaForm).getAllByLabelText("embeddinggemma").length,
+    ).toBeGreaterThan(0);
+  });
 });
 
 test("allows signed-in users to create open rename and delete projects with confirmation", async () => {
@@ -1092,10 +1403,11 @@ test("allows signed-in users to create open rename and delete projects with conf
     "Projekt löschen",
   ]);
 
-  const sidebarProjectList = screen.getByLabelText("Projektliste");
-  await user.click(
-    within(sidebarProjectList).getByRole("button", { name: "Alpha" }),
-  );
+  await openProjectsPage(user);
+  const switchProjectList = await screen.findByRole("region", {
+    name: "Bestehende Projekte",
+  });
+  await user.click(getProjectRow(switchProjectList, "Alpha"));
   expect(
     await screen.findByRole("heading", { name: "Alpha" }),
   ).toBeInTheDocument();
@@ -1105,9 +1417,11 @@ test("allows signed-in users to create open rename and delete projects with conf
     ).getByLabelText("Projektname"),
   ).toHaveValue("Alpha");
 
-  await user.click(
-    within(sidebarProjectList).getByRole("button", { name: "Beta" }),
-  );
+  await openProjectsPage(user);
+  const updatedProjectList = await screen.findByRole("region", {
+    name: "Bestehende Projekte",
+  });
+  await user.click(getProjectRow(updatedProjectList, "Beta"));
   expect(
     await screen.findByRole("heading", { name: "Beta" }),
   ).toBeInTheDocument();
@@ -1133,7 +1447,7 @@ test("allows signed-in users to create open rename and delete projects with conf
     screen.queryByRole("region", { name: "Bestehende Projekte" }),
   ).not.toBeInTheDocument();
 
-  await user.click(screen.getByRole("button", { name: "Projekte" }));
+  await openProjectsPage(user);
   const reopenedProjectList = await screen.findByRole("region", {
     name: "Bestehende Projekte",
   });
@@ -1293,6 +1607,41 @@ test("imports a selected CSV file and shows persisted log details", async () => 
   expect(importPostCount).toBe(1);
 });
 
+test("hides import log details when no persisted detail rows exist", async () => {
+  const user = userEvent.setup();
+  mockProjectFetch((path, method) => {
+    if (path === "/api/projects/project-alpha/imports" && method === "GET") {
+      return jsonResponse([
+        {
+          ...importLog,
+          skipped_records: 1,
+          skipped_detail_count: 0,
+        },
+      ]);
+    }
+    return undefined;
+  });
+  render(<App />);
+
+  await signIn(user);
+  const projectList = await screen.findByRole("region", {
+    name: "Bestehende Projekte",
+  });
+  await user.click(getProjectRow(projectList, "Alpha"));
+
+  const importLogsRegion = await screen.findByRole("region", {
+    name: "Importprotokolle",
+  });
+  expect(
+    within(importLogsRegion).queryByRole("button", {
+      name: "Logdetails anzeigen",
+    }),
+  ).not.toBeInTheDocument();
+  expect(
+    within(importLogsRegion).getByText("Keine Validierungsdetails vorhanden."),
+  ).toBeInTheDocument();
+});
+
 test("configures providers and starts a project indexing run", async () => {
   const user = userEvent.setup();
   let openAiSaveCount = 0;
@@ -1309,9 +1658,15 @@ test("configures providers and starts a project indexing run", async () => {
       return jsonResponse([alphaProject]);
     }
     if (path === "/api/providers" && method === "GET") {
-      return jsonResponse([]);
+      return jsonResponse([
+        localOllamaProvider,
+        {
+          ...openAiProvider,
+          manual_models: ["text-embedding-3-small", "gpt-4.1-mini"],
+        },
+      ]);
     }
-    if (path === "/api/providers/openai" && method === "PUT") {
+    if (path === "/api/providers/provider-openai" && method === "PUT") {
       openAiSaveCount += 1;
       expect(new Headers(init?.headers).get("Authorization")).toBe(
         "Bearer api-token",
@@ -1319,7 +1674,12 @@ test("configures providers and starts a project indexing run", async () => {
       const body = JSON.parse(String(init?.body));
       if (openAiSaveCount === 1) {
         expect(body.api_key).toBe("sk-test-secret");
-        expect(body.manual_models).toEqual([]);
+        expect(body.available_models).toEqual([
+          "text-embedding-3-small",
+          "gpt-4.1-mini",
+        ]);
+        expect(body.manual_models).toEqual(["text-embedding-3-small"]);
+        expect(body.llm_models).toEqual(["gpt-4.1-mini"]);
         return jsonResponse(openAiProvider);
       }
       expect(body.api_key).toBeUndefined();
@@ -1329,17 +1689,16 @@ test("configures providers and starts a project indexing run", async () => {
         manual_models: ["text-embedding-3-small"],
       });
     }
-    if (path === "/api/providers/openai/check" && method === "POST") {
+    if (path === "/api/providers/provider-openai/check" && method === "POST") {
       return jsonResponse({
+        id: "provider-openai",
         provider: "openai",
         ok: true,
         models: ["text-embedding-3-small"],
+        embedding_models: ["text-embedding-3-small"],
+        llm_models: [],
         message: "OpenAI embedding models discovered",
       });
-    }
-    if (path === "/api/providers/vllm" && method === "PUT") {
-      expect(String(init?.body)).toContain("http://localhost:8000");
-      return jsonResponse(vllmProvider);
     }
     if (path === "/api/projects/project-alpha" && method === "GET") {
       return jsonResponse(alphaProject);
@@ -1363,7 +1722,7 @@ test("configures providers and starts a project indexing run", async () => {
       const body = JSON.parse(String(init?.body));
       expect(body).toMatchObject({
         dataset_version_id: "dataset-1",
-        provider: "vllm",
+        provider_id: "provider-local-ollama",
         model: "local-embed",
       });
       expect(body.analysis_profile_id).toBeUndefined();
@@ -1476,41 +1835,30 @@ test("configures providers and starts a project indexing run", async () => {
   render(<App />);
 
   await signIn(user);
-  await openSettingsTab(user, "Embedding-Provider");
+  await openSettingsTab(user, "Provider");
 
   const openAiForm = await screen.findByRole("form", {
     name: "OpenAI Provider konfigurieren",
   });
   await user.type(
-    within(openAiForm).getByLabelText("Neuer OpenAI API-Key"),
+    within(openAiForm).getByLabelText("OpenAI API-Key"),
     "sk-test-secret",
   );
   await user.click(
-    within(openAiForm).getByRole("button", { name: "OpenAI speichern" }),
+    within(openAiForm).getByRole("button", { name: "Provider speichern" }),
   );
 
-  expect(await screen.findByText("API-Key gesetzt")).toBeInTheDocument();
+  expect(await screen.findByText("OpenAI gespeichert.")).toBeInTheDocument();
+  const savedOpenAiInputs =
+    within(openAiForm).getAllByLabelText("gpt-4.1-mini");
   expect(
-    await within(openAiForm).findByLabelText("text-embedding-3-small"),
-  ).toBeChecked();
+    savedOpenAiInputs.every(
+      (input) => input instanceof HTMLInputElement && input.checked,
+    ),
+  ).toBe(true);
   expect(screen.queryByText("sk-test-secret")).not.toBeInTheDocument();
 
-  const vllmForm = screen.getByRole("form", {
-    name: "vLLM Provider konfigurieren",
-  });
-  await user.type(
-    within(vllmForm).getByLabelText("Endpoint URL"),
-    "http://localhost:8000",
-  );
-  await user.type(
-    within(vllmForm).getByLabelText("vLLM Modelle"),
-    "local-embed",
-  );
-  await user.click(
-    within(vllmForm).getByRole("button", { name: "vLLM speichern" }),
-  );
-
-  await user.click(screen.getByRole("button", { name: "Projekte" }));
+  await openProjectsPage(user);
 
   const projectList = await screen.findByRole("region", {
     name: "Bestehende Projekte",
@@ -1528,7 +1876,7 @@ test("configures providers and starts a project indexing run", async () => {
     within(runForm).queryByLabelText("Analyseprofil"),
   ).not.toBeInTheDocument();
   expect(within(runForm).getByLabelText("Embedding-Provider")).toHaveValue(
-    "vllm",
+    "provider-local-ollama",
   );
   expect(within(runForm).getByLabelText("Embedding-Modell")).toHaveValue(
     "local-embed",
@@ -1543,7 +1891,9 @@ test("configures providers and starts a project indexing run", async () => {
   expect(await within(runsRegion).findByText("queued")).toBeInTheDocument();
   expect(within(runsRegion).getAllByText("0%").length).toBeGreaterThan(0);
   expect(
-    within(runsRegion).getAllByText("Provider/Modell: vllm/local-embed").length,
+    within(runsRegion).getAllByText(
+      "Provider/Modell: Lokales Ollama/local-embed",
+    ).length,
   ).toBeGreaterThan(0);
   expect(
     within(runsRegion).getAllByText(/Version: dataset-1/).length,
@@ -1563,6 +1913,13 @@ test("configures providers and starts a project indexing run", async () => {
   expect(
     within(clusterSets).getByRole("button", { name: "Cluster verfeinern" }),
   ).toBeEnabled();
+  expect(within(clusterSets).getByText("min_samples")).toBeInTheDocument();
+  expect(within(clusterSets).getByText("Ziel-Dimensionen")).toBeInTheDocument();
+  expect(within(clusterSets).getByText("100")).toBeInTheDocument();
+  expect(within(clusterSets).getByText("UMAP n_neighbors")).toBeInTheDocument();
+  expect(
+    within(clusterSets).getAllByText("nicht aktiv").length,
+  ).toBeGreaterThan(0);
   await user.click(
     within(clusterSets).getByRole("button", { name: "Cluster verfeinern" }),
   );
@@ -1596,6 +1953,15 @@ test("configures providers and starts a project indexing run", async () => {
     within(clusterExplorer).getByText("Use the reset link."),
   ).toBeVisible();
   expect(within(clusterExplorer).getByText(/Q\/A-Mismatch 0.44/)).toBeVisible();
+  const explorerParameters = within(clusterExplorer).getByRole("region", {
+    name: "Cluster-Set Parameter",
+  });
+  expect(within(explorerParameters).getByText("min_samples")).toBeVisible();
+  expect(within(explorerParameters).getByText("12")).toBeVisible();
+  expect(
+    within(explorerParameters).getByText("Ziel-Dimensionen"),
+  ).toBeVisible();
+  expect(within(explorerParameters).getByText("100")).toBeVisible();
 
   const searchInput = within(clusterExplorer).getByPlaceholderText(
     "Titel, Kategorie, Summary oder Status",
@@ -1705,8 +2071,14 @@ test("configures providers and starts a project indexing run", async () => {
     within(explorerExport).getByLabelText("Letzter Explorer Export"),
   ).toBeInTheDocument();
 
+  const explorerRail = within(clusterExplorer).getByRole("complementary", {
+    name: "Explorer Kontrollleiste",
+  });
+  const refinementGroup = within(explorerRail).getByRole("region", {
+    name: "Explorer Verfeinerung",
+  });
   await user.click(
-    within(clusterExplorer).getByRole("button", {
+    within(refinementGroup).getByRole("button", {
       name: "Eingeschlossene Cluster verfeinern",
     }),
   );
@@ -1770,6 +2142,304 @@ test("hides run-bound clustering and gates Cluster-Set loading until completion"
   await openProjectTab(user, "Explorer");
   expect(
     screen.getByText(/Noch kein abgeschlossenes Cluster-Set geladen/),
+  ).toBeInTheDocument();
+});
+
+test("regenerates summaries through the summary-only Cluster-Set endpoint", async () => {
+  const user = userEvent.setup();
+  let summaryPostCount = 0;
+  let createPostCount = 0;
+  mockProjectFetch((path, method, init) => {
+    if (path === "/api/providers" && method === "GET") {
+      return jsonResponse([ollamaProvider]);
+    }
+    if (
+      path === "/api/projects/project-alpha/indexing-runs" &&
+      method === "GET"
+    ) {
+      return jsonResponse([completedAnalysisRun]);
+    }
+    if (
+      path === "/api/projects/project-alpha/cluster-sets" &&
+      method === "GET"
+    ) {
+      return jsonResponse([
+        {
+          ...clusterSet,
+          status: "completed",
+          progress: 100,
+          phase: "completed",
+        },
+      ]);
+    }
+    if (
+      path ===
+        "/api/projects/project-alpha/cluster-sets/cluster-set-1/summaries" &&
+      method === "POST"
+    ) {
+      const body = JSON.parse(String(init?.body));
+      expect(body).toMatchObject({
+        llm_provider_id: "provider-ollama",
+        llm_model: "llama3.1",
+        llm_sample_count: 2,
+        llm_sample_all: false,
+        llm_cloud_use_confirmed: false,
+      });
+      summaryPostCount += 1;
+      return jsonResponse(
+        {
+          ...clusterSet,
+          status: "queued",
+          progress: 85,
+          phase: "queued_summary",
+        },
+        { status: 202 },
+      );
+    }
+    if (
+      path === "/api/projects/project-alpha/cluster-sets" &&
+      method === "POST"
+    ) {
+      createPostCount += 1;
+      return jsonResponse(clusterSet, { status: 201 });
+    }
+    return undefined;
+  });
+  render(<App />);
+
+  await signIn(user);
+  const projectList = await screen.findByRole("region", {
+    name: "Bestehende Projekte",
+  });
+  await user.click(getProjectRow(projectList, "Alpha"));
+  await openProjectTab(user, "Cluster-Sets");
+
+  const clusterSets = await screen.findByRole("region", {
+    name: "Cluster-Sets",
+  });
+  await user.click(
+    within(clusterSets).getByRole("button", {
+      name: "Summaries neu erstellen",
+    }),
+  );
+  const summaryDialog = await screen.findByRole("dialog", {
+    name: "Summaries neu erstellen",
+  });
+  expect(
+    within(summaryDialog).getByText(/Clusterzuordnung.*bleiben unverändert/),
+  ).toBeInTheDocument();
+  expect(within(summaryDialog).getByLabelText("LLM-Provider")).toHaveValue(
+    "provider-ollama",
+  );
+  expect(within(summaryDialog).getByLabelText("Modell")).toHaveValue(
+    "llama3.1",
+  );
+  expect(
+    within(summaryDialog).getByLabelText("Beispiele je Cluster"),
+  ).toHaveValue(2);
+  expect(within(summaryDialog).getByLabelText("Ergebnis")).toHaveValue(
+    "replace",
+  );
+  expect(summaryPostCount).toBe(0);
+  await user.click(
+    within(summaryDialog).getByRole("button", { name: "Summary-Job starten" }),
+  );
+
+  await waitFor(() => expect(summaryPostCount).toBe(1));
+  expect(createPostCount).toBe(0);
+  expect(
+    await screen.findByText(
+      "Summary-Neuerstellung gestartet. Status wird aktualisiert.",
+    ),
+  ).toBeInTheDocument();
+});
+
+test("regenerates summaries from the Explorer rail without full reclustering", async () => {
+  const user = userEvent.setup();
+  let summaryPostCount = 0;
+  let createPostCount = 0;
+  mockProjectFetch((path, method, init) => {
+    if (path === "/api/providers" && method === "GET") {
+      return jsonResponse([ollamaProvider]);
+    }
+    if (
+      path === "/api/projects/project-alpha/indexing-runs" &&
+      method === "GET"
+    ) {
+      return jsonResponse([completedAnalysisRun]);
+    }
+    if (
+      path === "/api/projects/project-alpha/cluster-sets" &&
+      method === "GET"
+    ) {
+      return jsonResponse([
+        {
+          ...clusterSet,
+          status: "completed",
+          progress: 100,
+          phase: "completed",
+        },
+      ]);
+    }
+    if (
+      path ===
+        "/api/projects/project-alpha/cluster-sets/cluster-set-1/clusters" &&
+      method === "GET"
+    ) {
+      return jsonResponse([cluster]);
+    }
+    if (
+      path ===
+        "/api/projects/project-alpha/cluster-sets/cluster-set-1/summaries" &&
+      method === "POST"
+    ) {
+      const body = JSON.parse(String(init?.body));
+      expect(body).toMatchObject({
+        llm_provider_id: "provider-ollama",
+        llm_model: "llama3.1",
+        llm_sample_count: 2,
+        llm_sample_all: false,
+        llm_cloud_use_confirmed: false,
+      });
+      summaryPostCount += 1;
+      return jsonResponse(
+        {
+          ...clusterSet,
+          status: "queued",
+          progress: 85,
+          phase: "queued_summary",
+        },
+        { status: 202 },
+      );
+    }
+    if (
+      path === "/api/projects/project-alpha/cluster-sets" &&
+      method === "POST"
+    ) {
+      createPostCount += 1;
+      return jsonResponse(clusterSet, { status: 201 });
+    }
+    return undefined;
+  });
+  render(<App />);
+
+  await signIn(user);
+  const projectList = await screen.findByRole("region", {
+    name: "Bestehende Projekte",
+  });
+  await user.click(getProjectRow(projectList, "Alpha"));
+  await openProjectTab(user, "Explorer");
+
+  const clusterExplorer = await screen.findByRole("region", {
+    name: "Cluster Explorer",
+  });
+  await within(clusterExplorer).findByText("Cluster H");
+  const explorerRail = within(clusterExplorer).getByRole("complementary", {
+    name: "Explorer Kontrollleiste",
+  });
+  const summaryGroup = within(explorerRail).getByRole("region", {
+    name: "Explorer Summary",
+  });
+  expect(
+    within(summaryGroup).getByText(/Summary-Felder dieses Cluster-Sets/),
+  ).toBeInTheDocument();
+  await user.click(
+    within(summaryGroup).getByRole("button", {
+      name: "Summaries neu erstellen",
+    }),
+  );
+  const summaryDialog = await screen.findByRole("dialog", {
+    name: "Summaries neu erstellen",
+  });
+  expect(within(summaryDialog).getByLabelText("LLM-Provider")).toHaveValue(
+    "provider-ollama",
+  );
+  await user.click(
+    within(summaryDialog).getByRole("button", { name: "Summary-Job starten" }),
+  );
+
+  await waitFor(() => expect(summaryPostCount).toBe(1));
+  expect(createPostCount).toBe(0);
+  expect(
+    await screen.findByText(
+      "Summary-Neuerstellung gestartet. Status wird aktualisiert.",
+    ),
+  ).toBeInTheDocument();
+});
+
+test("allows Explorer outlier recalculation while another Cluster-Set job is active", async () => {
+  const user = userEvent.setup();
+  let outlierPostCount = 0;
+  mockProjectFetch((path, method) => {
+    if (
+      path === "/api/projects/project-alpha/indexing-runs" &&
+      method === "GET"
+    ) {
+      return jsonResponse([completedAnalysisRun]);
+    }
+    if (
+      path === "/api/projects/project-alpha/cluster-sets" &&
+      method === "GET"
+    ) {
+      return jsonResponse([
+        {
+          ...clusterSet,
+          status: "completed",
+          progress: 100,
+          phase: "completed",
+        },
+      ]);
+    }
+    if (
+      path ===
+        "/api/projects/project-alpha/cluster-sets/cluster-set-1/clusters" &&
+      method === "GET"
+    ) {
+      return jsonResponse([cluster]);
+    }
+    if (
+      path === "/api/projects/project-alpha/cluster-sets" &&
+      method === "POST"
+    ) {
+      outlierPostCount += 1;
+      return jsonResponse(
+        {
+          ...clusterSet,
+          id: "cluster-set-outliers",
+          parent_cluster_set_id: "cluster-set-1",
+          derivation_type: "outlier_exclusion",
+          display_name: "Antworten fein ohne Ausreißer",
+          status: "queued",
+          progress: 0,
+          phase: "queued",
+        },
+        { status: 201 },
+      );
+    }
+    return undefined;
+  });
+  render(<App />);
+
+  await signIn(user);
+  const projectList = await screen.findByRole("region", {
+    name: "Bestehende Projekte",
+  });
+  await user.click(getProjectRow(projectList, "Alpha"));
+  await openProjectTab(user, "Explorer");
+
+  const clusterExplorer = await screen.findByRole("region", {
+    name: "Cluster Explorer",
+  });
+  const outlierButton = within(clusterExplorer).getByRole("button", {
+    name: "Ausreißer berechnen",
+  });
+  expect(outlierButton).toBeEnabled();
+  await user.click(outlierButton);
+  await waitFor(() => expect(outlierPostCount).toBe(1));
+  expect(
+    await screen.findByText(
+      "Ausreißer-Neuberechnung als Child-Cluster-Set gestartet.",
+    ),
   ).toBeInTheDocument();
 });
 
@@ -1913,7 +2583,7 @@ test("creates a Cluster-Set with vector basis and bounded LLM sampling", async (
   mockProjectFetch((path, method, init) => {
     if (path === "/api/providers" && method === "GET") {
       return jsonResponse([
-        vllmProvider,
+        localOllamaProvider,
         { ...ollamaProvider, llm_models: ["llama3.1"] },
       ]);
     }
@@ -1965,7 +2635,7 @@ test("creates a Cluster-Set with vector basis and bounded LLM sampling", async (
   );
   await user.selectOptions(
     within(form).getByLabelText("LLM-Zusammenfassung"),
-    "ollama",
+    "provider-ollama",
   );
   await user.clear(within(form).getByLabelText("Beispiele pro Cluster"));
   await user.type(within(form).getByLabelText("Beispiele pro Cluster"), "2");
@@ -1981,7 +2651,7 @@ test("creates a Cluster-Set with vector basis and bounded LLM sampling", async (
     message_weight: 0.4,
     answer_weight: 0.6,
     outlier_threshold: 0.72,
-    llm_provider: "ollama",
+    llm_provider_id: "provider-ollama",
     llm_model: "llama3.1",
     llm_sample_count: 2,
   });
@@ -1992,11 +2662,12 @@ test("creates a Cluster-Set with vector basis and bounded LLM sampling", async (
     within(clusterSetsRegion).getByText(/queued · 0%/),
   ).toBeInTheDocument();
   expect(
-    within(clusterSetsRegion).getByText(/ollama\/llama3.1/),
+    within(clusterSetsRegion).getByText(/Ollama\/llama3.1/),
   ).toBeInTheDocument();
   expect(
-    within(clusterSetsRegion).getByText(/Outlier-Schwelle: 0.72/),
+    within(clusterSetsRegion).getByText("Outlier-Schwelle"),
   ).toBeInTheDocument();
+  expect(within(clusterSetsRegion).getByText("0.72")).toBeInTheDocument();
 });
 
 test("rejects non-integer Cluster-Set LLM sample counts before submitting", async () => {
@@ -2005,7 +2676,7 @@ test("rejects non-integer Cluster-Set LLM sample counts before submitting", asyn
   mockProjectFetch((path, method) => {
     if (path === "/api/providers" && method === "GET") {
       return jsonResponse([
-        vllmProvider,
+        localOllamaProvider,
         { ...ollamaProvider, llm_models: ["llama3.1"] },
       ]);
     }
@@ -2044,7 +2715,7 @@ test("rejects non-integer Cluster-Set LLM sample counts before submitting", asyn
   });
   await user.selectOptions(
     within(form).getByLabelText("LLM-Zusammenfassung"),
-    "ollama",
+    "provider-ollama",
   );
   await user.clear(within(form).getByLabelText("Beispiele pro Cluster"));
   await user.type(within(form).getByLabelText("Beispiele pro Cluster"), "1.5");
@@ -2112,10 +2783,11 @@ test("ignores delayed Cluster-Set creation after switching projects", async () =
     within(form).getByRole("button", { name: "Cluster-Set erstellen" }),
   );
 
-  const navigation = screen.getByRole("navigation", {
-    name: "Hauptnavigation",
+  await openProjectsPage(user);
+  const switchProjectList = await screen.findByRole("region", {
+    name: "Bestehende Projekte",
   });
-  await user.click(within(navigation).getByRole("button", { name: "Beta" }));
+  await user.click(getProjectRow(switchProjectList, "Beta"));
   await waitFor(() =>
     expect(screen.getByLabelText("Projektname")).toHaveValue("Beta"),
   );
@@ -2232,9 +2904,9 @@ test("renders safe error feedback for user, provider, import, indexing, explorer
       return jsonResponse([alphaProject]);
     }
     if (path === "/api/providers" && method === "GET") {
-      return jsonResponse([vllmProvider]);
+      return jsonResponse([localOllamaProvider]);
     }
-    if (path === "/api/providers/vllm" && method === "PUT") {
+    if (path === "/api/providers/provider-local-ollama" && method === "PUT") {
       return jsonResponse(
         { detail: "provider endpoint is not reachable" },
         { status: 400 },
@@ -2363,19 +3035,19 @@ test("renders safe error feedback for user, provider, import, indexing, explorer
     "raw exception",
   );
 
-  await openSettingsTab(user, "Embedding-Provider");
+  await openSettingsTab(user, "Provider");
   const providerForm = await screen.findByRole("form", {
-    name: "vLLM Provider konfigurieren",
+    name: "Lokales Ollama Provider konfigurieren",
   });
   await user.click(
-    within(providerForm).getByRole("button", { name: "vLLM speichern" }),
+    within(providerForm).getByRole("button", { name: "Provider speichern" }),
   );
   await expectErrorFeedback(
     "provider endpoint is not reachable",
     "raw exception",
   );
 
-  await user.click(screen.getByRole("button", { name: "Projekte" }));
+  await openProjectsPage(user);
   const projectList = await screen.findByRole("region", {
     name: "Bestehende Projekte",
   });
@@ -2519,8 +3191,12 @@ test("keeps indexing requests project-local and sends only selected provider and
     }
     if (path === "/api/providers" && method === "GET") {
       return jsonResponse([
-        { ...vllmProvider, manual_models: [] },
-        { ...ollamaProvider, manual_models: ["embed-a", "embed-b"] },
+        { ...localOllamaProvider, manual_models: [] },
+        {
+          ...ollamaProvider,
+          available_models: ["embed-a", "embed-b", "llama3.1"],
+          manual_models: ["embed-a", "embed-b"],
+        },
         openAiProvider,
       ]);
     }
@@ -2545,7 +3221,9 @@ test("keeps indexing requests project-local and sends only selected provider and
       return jsonResponse(
         {
           ...analysisRun,
-          provider: body.provider,
+          provider: "ollama",
+          provider_configuration_id: body.provider_id,
+          provider_display_name: "Ollama",
           model: body.model,
           parameters: {},
         },
@@ -2578,18 +3256,11 @@ test("keeps indexing requests project-local and sends only selected provider and
   const indexingForm = await screen.findByRole("form", {
     name: "Indizierung starten",
   });
-  expect(
-    within(indexingForm).getByText(/noch kein Modell konfiguriert/i),
-  ).toBeInTheDocument();
-  expect(
-    within(indexingForm).getByRole("button", { name: "Indizierung starten" }),
-  ).toBeDisabled();
+  expect(within(indexingForm).getByLabelText("Embedding-Provider")).toHaveValue(
+    "provider-ollama",
+  );
   expect(screen.queryByText(/historical-legacy/)).not.toBeInTheDocument();
 
-  await user.selectOptions(
-    within(indexingForm).getByLabelText("Embedding-Provider"),
-    "ollama",
-  );
   const modelSelect = within(indexingForm).getByLabelText("Embedding-Modell");
   await waitFor(() => expect(modelSelect).toHaveValue("embed-a"));
   expect(
@@ -2606,20 +3277,18 @@ test("keeps indexing requests project-local and sends only selected provider and
   expect(indexingBodies).toHaveLength(1);
   expect(indexingBodies[0]).toMatchObject({
     dataset_version_id: "dataset-1",
-    provider: "ollama",
+    provider_id: "provider-ollama",
     model: "embed-a",
   });
   expect(indexingBodies[0].analysis_profile_id).toBeUndefined();
   expect(indexingBodies[0].algorithm_settings).toBeUndefined();
+  expect(indexingBodies[0].parameters).toBeUndefined();
 
-  const navigation = screen.getByRole("navigation", {
-    name: "Hauptnavigation",
+  await openProjectsPage(user);
+  const switchProjectList = await screen.findByRole("region", {
+    name: "Bestehende Projekte",
   });
-  await user.click(
-    within(navigation).getByRole("button", {
-      name: "Beta",
-    }),
-  );
+  await user.click(getProjectRow(switchProjectList, "Beta"));
   expect(
     screen.queryByRole("region", { name: "Aktuelles Projekt" }),
   ).not.toBeInTheDocument();
@@ -2646,11 +3315,11 @@ test("keeps indexing requests project-local and sends only selected provider and
     within(betaIndexingForm).queryByText(/dataset-1/),
   ).not.toBeInTheDocument();
 
-  await user.click(
-    within(navigation).getByRole("button", {
-      name: "Alpha",
-    }),
-  );
+  await openProjectsPage(user);
+  const alphaProjectList = await screen.findByRole("region", {
+    name: "Bestehende Projekte",
+  });
+  await user.click(getProjectRow(alphaProjectList, "Alpha"));
   await waitFor(() =>
     expect(screen.getByLabelText("Projektname")).toHaveValue("Alpha"),
   );
@@ -2660,7 +3329,7 @@ test("keeps indexing requests project-local and sends only selected provider and
   });
   await user.selectOptions(
     within(runForm).getByLabelText("Embedding-Provider"),
-    "ollama",
+    "provider-ollama",
   );
   await user.click(
     within(runForm).getByRole("button", { name: "Indizierung starten" }),
@@ -2668,8 +3337,101 @@ test("keeps indexing requests project-local and sends only selected provider and
   await waitFor(() => expect(indexingBodies).toHaveLength(2));
   expect(indexingBodies[1]).toMatchObject({
     dataset_version_id: "dataset-1",
-    provider: "ollama",
+    provider_id: "provider-ollama",
     model: "embed-a",
+  });
+});
+
+test("sends selected line-break normalization parameters for indexing", async () => {
+  const user = userEvent.setup();
+  let indexingBody: Record<string, unknown> | null = null;
+
+  mockFetch((input, init) => {
+    const path = String(input);
+    const method = init?.method ?? "GET";
+    if (path === "/api/auth/sign-in" && method === "POST") {
+      return jsonResponse({ access_token: "api-token", user: owner });
+    }
+    if (path === "/api/users" && method === "GET") {
+      return jsonResponse([owner]);
+    }
+    if (path === "/api/projects" && method === "GET") {
+      return jsonResponse([alphaProject]);
+    }
+    if (path === "/api/providers" && method === "GET") {
+      return jsonResponse([localOllamaProvider]);
+    }
+    if (path === "/api/projects/project-alpha" && method === "GET") {
+      return jsonResponse(alphaProject);
+    }
+    if (path === "/api/projects/project-alpha/imports" && method === "GET") {
+      return jsonResponse([importLog]);
+    }
+    if (
+      path === "/api/projects/project-alpha/indexing-runs" &&
+      method === "GET"
+    ) {
+      return jsonResponse([]);
+    }
+    if (path === "/api/projects/project-alpha/exports" && method === "GET") {
+      return jsonResponse([]);
+    }
+    if (
+      path === "/api/projects/project-alpha/indexing-runs" &&
+      method === "POST"
+    ) {
+      indexingBody = JSON.parse(String(init?.body));
+      return jsonResponse(
+        {
+          ...analysisRun,
+          parameters: indexingBody?.parameters ?? {},
+        },
+        { status: 201 },
+      );
+    }
+    throw new Error(`unexpected request ${method} ${path}`);
+  });
+  render(<App />);
+
+  await signIn(user);
+  const projectList = await screen.findByRole("region", {
+    name: "Bestehende Projekte",
+  });
+  await user.click(getProjectRow(projectList, "Alpha"));
+  await openProjectTab(user, "Indizieren");
+  const indexingForm = await screen.findByRole("form", {
+    name: "Indizierung starten",
+  });
+
+  await user.click(
+    within(indexingForm).getByLabelText("Zeilenumbrüche ersetzen durch"),
+  );
+  const replacementInput = within(indexingForm).getByLabelText(
+    "Ersatzzeichen für Zeilenumbrüche",
+  );
+  await user.clear(replacementInput);
+  await user.type(replacementInput, "|");
+  await user.click(
+    within(indexingForm).getByLabelText("Text in Kleinschreibung umwandeln"),
+  );
+  await user.click(
+    within(indexingForm).getByRole("button", {
+      name: "Indizierung starten",
+    }),
+  );
+
+  await waitFor(() => expect(indexingBody).not.toBeNull());
+  expect(indexingBody).toMatchObject({
+    dataset_version_id: "dataset-1",
+    provider_id: "provider-local-ollama",
+    model: "local-embed",
+    parameters: {
+      embedding_input_normalization: {
+        newline_mode: "replace",
+        newline_replacement: "|",
+        lowercase: true,
+      },
+    },
   });
 });
 
@@ -2690,7 +3452,7 @@ test("requires explicit OpenAI confirmation immediately before starting an index
       return jsonResponse([alphaProject]);
     }
     if (path === "/api/providers" && method === "GET") {
-      return jsonResponse([vllmProvider, openAiProvider]);
+      return jsonResponse([localOllamaProvider, openAiProvider]);
     }
     if (path === "/api/projects/project-alpha" && method === "GET") {
       return jsonResponse(alphaProject);
@@ -2715,8 +3477,8 @@ test("requires explicit OpenAI confirmation immediately before starting an index
       const body = JSON.parse(String(init?.body));
       expect(body).toMatchObject({
         dataset_version_id: "dataset-1",
-        provider: "openai",
-        model: "gpt-4.1-mini",
+        provider_id: "provider-openai",
+        model: "text-embedding-3-small",
         cloud_use_confirmed: true,
       });
       expect(body.analysis_profile_id).toBeUndefined();
@@ -2725,7 +3487,9 @@ test("requires explicit OpenAI confirmation immediately before starting an index
         {
           ...analysisRun,
           provider: "openai",
-          model: "gpt-4.1-mini",
+          provider_configuration_id: "provider-openai",
+          provider_display_name: "OpenAI",
+          model: "text-embedding-3-small",
           parameters: {},
         },
         { status: 201 },
@@ -2750,8 +3514,16 @@ test("requires explicit OpenAI confirmation immediately before starting an index
   ).not.toBeInTheDocument();
   await user.selectOptions(
     within(runForm).getByLabelText("Embedding-Provider"),
-    "openai",
+    "provider-openai",
   );
+  expect(within(runForm).getByLabelText("Embedding-Modell")).toHaveValue(
+    "text-embedding-3-small",
+  );
+  expect(
+    within(within(runForm).getByLabelText("Embedding-Modell"))
+      .getAllByRole("option")
+      .map((option) => option.textContent),
+  ).toEqual(["text-embedding-3-small"]);
   const confirmation = within(runForm).getByLabelText(/Ich bestätige/);
   const startButton = within(runForm).getByRole("button", {
     name: "Indizierung starten",
@@ -2764,7 +3536,7 @@ test("requires explicit OpenAI confirmation immediately before starting an index
   await user.click(startButton);
 
   await waitFor(() => expect(runRequests).toBe(1));
-  expect(confirmation).not.toBeChecked();
+  await waitFor(() => expect(confirmation).not.toBeChecked());
 });
 
 test("requires confirmation before deleting dataset versions and indexing runs", async () => {
@@ -3153,10 +3925,11 @@ test("ignores a delayed poll from a previously opened project", async () => {
   await openProjectTab(user, "Indizieren");
   await waitFor(() => expect(alphaRunRequests).toBe(1));
 
-  const navigation = screen.getByRole("navigation", {
-    name: "Hauptnavigation",
+  await openProjectsPage(user);
+  const switchProjectList = await screen.findByRole("region", {
+    name: "Bestehende Projekte",
   });
-  await user.click(within(navigation).getByRole("button", { name: "Beta" }));
+  await user.click(getProjectRow(switchProjectList, "Beta"));
   await waitFor(() =>
     expect(screen.getByLabelText("Projektname")).toHaveValue("Beta"),
   );
@@ -3204,7 +3977,7 @@ test("ignores a delayed poll after logout", async () => {
   await openProjectTab(user, "Indizieren");
   await waitFor(() => expect(runRequests).toBe(1));
 
-  await user.click(screen.getByRole("button", { name: "Abmelden" }));
+  await signOutThroughGlobalMenu(user);
   resolvePoll(
     jsonResponse([
       { ...analysisRun, status: "failed", error_message: "stale" },

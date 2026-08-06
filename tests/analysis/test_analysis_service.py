@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from threading import Event
+from typing import Any
 from uuid import UUID
 
 import pytest
@@ -18,6 +19,7 @@ from backend.providers import ProviderError
 ACTOR_ID = UUID("11111111-1111-1111-1111-111111111111")
 PROJECT_ID = UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
 DATASET_ID = UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
+PROVIDER_ID = UUID("cccccccc-cccc-cccc-cccc-cccccccccccc")
 PAIR_ID = UUID("eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee")
 NOW = datetime(2026, 7, 22, tzinfo=UTC)
 
@@ -79,19 +81,21 @@ class AnalysisConnection:
     def __init__(
         self,
         *,
-        provider: str = "vllm",
+        provider: str = "ollama",
         api_key_set: bool = False,
-        endpoint_url: str | None = "http://localhost:8000/",
+        endpoint_url: str | None = "http://localhost:11434/",
         message: str = "How do I reset it?",
         answer: str = "Use the reset flow.",
         messages: list[tuple[str, str]] | None = None,
     ) -> None:
         self.run: dict[str, object] | None = None
-        self.embeddings: list[dict[str, object]] = []
+        self.embeddings: list[dict[str, Any]] = []
         self.progress_updates: list[int] = []
         self.active_server_cursor: str | None = None
         self.server_cursor_events: list[tuple[str, str]] = []
         self.provider = provider
+        self.provider_id = PROVIDER_ID
+        self.provider_display_name = "Ollama" if provider == "ollama" else "OpenAI"
         self.api_key_secret = "encrypted" if api_key_set else None
         self.endpoint_url = endpoint_url
         self.messages = messages if messages is not None else [(message, answer)]
@@ -151,11 +155,18 @@ class AnalysisConnection:
                     }
                 ]
             )
-        if normalized.startswith("SELECT manual_models, api_key_secret, endpoint_url"):
-            assert params == (self.provider,)
+        if normalized.startswith("LOCK TABLE analysis_runs"):
+            return FakeResult()
+        if normalized.startswith("SELECT id FROM analysis_runs"):
+            return FakeResult()
+        if normalized.startswith("SELECT id, provider, display_name, embedding_models"):
+            assert params in {(self.provider,), (self.provider_id,)}
             return FakeResult(
                 [
                     {
+                        "id": self.provider_id,
+                        "provider": self.provider,
+                        "display_name": self.provider_display_name,
                         "manual_models": ["local-embed"],
                         "api_key_secret": self.api_key_secret,
                         "endpoint_url": self.endpoint_url,
@@ -168,14 +179,16 @@ class AnalysisConnection:
                 "id": params[0],
                 "project_id": params[1],
                 "dataset_version_id": params[2],
-                "dataset_display_name": params[7],
+                "dataset_display_name": params[9],
                 "dataset_deleted_at": None,
                 "status": "queued",
                 "progress": 0,
                 "phase": "queued",
                 "provider": params[3],
-                "model": params[4],
-                "parameters": unwrap_json(params[5]),
+                "provider_configuration_id": params[4],
+                "provider_display_name": params[5],
+                "model": params[6],
+                "parameters": unwrap_json(params[7]),
                 "error_code": None,
                 "error_message": None,
                 "diagnostics": {},
@@ -203,7 +216,12 @@ class AnalysisConnection:
                         "project_id": self.run["project_id"],
                         "dataset_version_id": self.run["dataset_version_id"],
                         "provider": self.run["provider"],
+                        "provider_configuration_id": self.run[
+                            "provider_configuration_id"
+                        ],
+                        "provider_display_name": self.run["provider_display_name"],
                         "model": self.run["model"],
+                        "parameters": self.run["parameters"],
                     }
                 ]
             )
@@ -275,6 +293,18 @@ class AnalysisConnection:
         raise AssertionError(f"unexpected query: {normalized}")
 
 
+class AnalysisConnectionWithoutGlobalStartGuard(AnalysisConnection):
+    def execute(
+        self, query: str, params: tuple[object, ...] | None = None
+    ) -> FakeResult:
+        normalized = " ".join(query.split())
+        if normalized.startswith("LOCK TABLE analysis_runs") or normalized.startswith(
+            "SELECT id FROM analysis_runs"
+        ):
+            raise AssertionError("global indexing start guard must not be used")
+        return super().execute(query, params)
+
+
 def unwrap_json(value: object) -> object:
     return getattr(value, "obj", value)
 
@@ -335,6 +365,94 @@ def test_message_embeddings_pool_chunks_and_bound_provider_batches() -> None:
     assert embedded[1] == ([0.0, 1.0], 1, 5, "none")
 
 
+def test_message_embeddings_normalize_line_breaks_before_provider_call() -> None:
+    class RecordingProvider:
+        def __init__(self) -> None:
+            self.calls: list[list[str]] = []
+
+        def embed_texts(
+            self, provider: str, model: str, texts: list[str]
+        ) -> list[list[float]]:
+            self.calls.append(texts)
+            return [[1.0, 0.0] for _ in texts]
+
+    provider = RecordingProvider()
+
+    embedded = analysis_service_module._message_embeddings(
+        provider,  # type: ignore[arg-type]
+        "ollama",
+        "local-embed",
+        ["First Line\n\nSecond Line\r\nThird Line"],
+        normalization=analysis_service_module.EmbeddingInputNormalization(
+            newline_mode="replace",
+            newline_replacement=". ",
+            lowercase=True,
+        ),
+    )
+
+    assert provider.calls == [["first line. second line. third line"]]
+    assert embedded == [
+        (
+            [1.0, 0.0],
+            1,
+            len("First Line\n\nSecond Line\r\nThird Line".encode("utf-8")),
+            "none",
+        )
+    ]
+
+
+def test_message_embeddings_can_remove_line_breaks_before_provider_call() -> None:
+    class RecordingProvider:
+        def __init__(self) -> None:
+            self.calls: list[list[str]] = []
+
+        def embed_texts(
+            self, provider: str, model: str, texts: list[str]
+        ) -> list[list[float]]:
+            self.calls.append(texts)
+            return [[1.0, 0.0] for _ in texts]
+
+    provider = RecordingProvider()
+
+    analysis_service_module._message_embeddings(
+        provider,  # type: ignore[arg-type]
+        "ollama",
+        "local-embed",
+        ["first line\nsecond line"],
+        normalization=analysis_service_module.EmbeddingInputNormalization(
+            newline_mode="remove",
+        ),
+    )
+
+    assert provider.calls == [["first linesecond line"]]
+
+
+def test_message_embeddings_can_lowercase_before_provider_call() -> None:
+    class RecordingProvider:
+        def __init__(self) -> None:
+            self.calls: list[list[str]] = []
+
+        def embed_texts(
+            self, provider: str, model: str, texts: list[str]
+        ) -> list[list[float]]:
+            self.calls.append(texts)
+            return [[1.0, 0.0] for _ in texts]
+
+    provider = RecordingProvider()
+
+    analysis_service_module._message_embeddings(
+        provider,  # type: ignore[arg-type]
+        "ollama",
+        "local-embed",
+        ["Mixed CASE ÄÖÜ ß"],
+        normalization=analysis_service_module.EmbeddingInputNormalization(
+            lowercase=True,
+        ),
+    )
+
+    assert provider.calls == [["mixed case äöü ß"]]
+
+
 def test_message_chunks_are_consumed_only_as_provider_batches_need_them(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -387,7 +505,7 @@ def test_start_indexing_returns_queued_before_batched_embedding_completes(
         PROJECT_ID,
         IndexingRunInput(
             dataset_version_id=DATASET_ID,
-            provider="vllm",
+            provider="ollama",
             model="local-embed",
             parameters={},
         ),
@@ -397,7 +515,9 @@ def test_start_indexing_returns_queued_before_batched_embedding_completes(
     assert run.status == "queued"
     assert run.progress == 0
     assert run.phase == "queued"
-    assert run.provider == "vllm"
+    assert run.provider == "ollama"
+    assert run.provider_configuration_id == PROVIDER_ID
+    assert run.provider_display_name == "Ollama"
     assert run.model == "local-embed"
     assert run.parameters == {}
     assert fake_connection.embeddings == []
@@ -425,9 +545,100 @@ def test_start_indexing_returns_queued_before_batched_embedding_completes(
         item["source_object_id"] == PAIR_ID for item in fake_connection.embeddings
     )
     assert embedding_provider.calls == [
-        ("vllm", "local-embed", ["How do I reset it?"]),
-        ("vllm", "local-embed", ["Use the reset flow."]),
+        (PROVIDER_ID, "local-embed", ["How do I reset it?"]),
+        (PROVIDER_ID, "local-embed", ["Use the reset flow."]),
     ]
+
+
+def test_active_indexing_does_not_block_second_start(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_connection = AnalysisConnectionWithoutGlobalStartGuard()
+    monkeypatch.setattr(
+        analysis_service_module,
+        "open_database_connection",
+        lambda _: fake_connection,
+    )
+
+    service = AnalysisService(provider_service=FakeEmbeddingProvider())  # type: ignore[arg-type]
+    run = service.start_run(
+        PROJECT_ID,
+        IndexingRunInput(
+            dataset_version_id=DATASET_ID,
+            provider="ollama",
+            model="local-embed",
+            parameters={},
+        ),
+        actor_user_id=ACTOR_ID,
+    )
+
+    assert run.status == "queued"
+    assert run.phase == "queued"
+
+
+def test_start_indexing_persists_and_applies_line_break_normalization(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_connection = AnalysisConnection(
+        message="How do I\nreset it?",
+        answer="Use the\nreset flow.",
+    )
+    monkeypatch.setattr(
+        analysis_service_module,
+        "open_database_connection",
+        lambda _: fake_connection,
+    )
+
+    embedding_provider = FakeEmbeddingProvider()
+    service = AnalysisService(provider_service=embedding_provider)  # type: ignore[arg-type]
+    run = service.start_run(
+        PROJECT_ID,
+        IndexingRunInput(
+            dataset_version_id=DATASET_ID,
+            provider="ollama",
+            model="local-embed",
+            parameters={
+                "embedding_input_normalization": {
+                    "newline_mode": "replace",
+                    "newline_replacement": ". ",
+                    "lowercase": True,
+                }
+            },
+        ),
+        actor_user_id=ACTOR_ID,
+    )
+
+    assert run.parameters == {
+        "embedding_input_normalization": {
+            "newline_mode": "replace",
+            "newline_replacement": ". ",
+            "lowercase": True,
+        }
+    }
+
+    service.execute_queued_run(run.id)
+
+    assert embedding_provider.calls == [
+        (PROVIDER_ID, "local-embed", ["how do i. reset it?"]),
+        (PROVIDER_ID, "local-embed", ["use the. reset flow."]),
+    ]
+    assert len(fake_connection.embeddings) == 2
+    assert all(
+        item["metadata"]["embedding_input_normalization"]
+        == {
+            "newline_mode": "replace",
+            "newline_replacement": ". ",
+            "lowercase": True,
+        }
+        for item in fake_connection.embeddings
+    )
+    completed = service.get_run(PROJECT_ID, run.id)
+    assert completed is not None
+    assert completed.diagnostics["embedding_input_normalization"] == {
+        "newline_mode": "replace",
+        "newline_replacement": ". ",
+        "lowercase": True,
+    }
 
 
 def test_long_message_run_persists_pooled_embeddings_with_provenance(
@@ -446,7 +657,7 @@ def test_long_message_run_persists_pooled_embeddings_with_provenance(
         PROJECT_ID,
         IndexingRunInput(
             dataset_version_id=DATASET_ID,
-            provider="vllm",
+            provider="ollama",
             model="local-embed",
             parameters={},
         ),
@@ -499,7 +710,7 @@ def test_provider_failure_persists_safe_actionable_message(
         PROJECT_ID,
         IndexingRunInput(
             dataset_version_id=DATASET_ID,
-            provider="vllm",
+            provider="ollama",
             model="local-embed",
             parameters={},
         ),
@@ -534,7 +745,7 @@ def test_chunked_message_provider_batches_publish_monotone_confirmed_progress(
         PROJECT_ID,
         IndexingRunInput(
             dataset_version_id=DATASET_ID,
-            provider="vllm",
+            provider="ollama",
             model="local-embed",
             parameters={},
         ),
@@ -581,7 +792,7 @@ def test_later_chunked_message_provider_batch_failure_preserves_progress(
         PROJECT_ID,
         IndexingRunInput(
             dataset_version_id=DATASET_ID,
-            provider="vllm",
+            provider="ollama",
             model="local-embed",
             parameters={},
         ),
@@ -616,7 +827,7 @@ def test_start_indexing_rejects_removed_profile_parameters_before_insert(
             PROJECT_ID,
             IndexingRunInput(
                 dataset_version_id=DATASET_ID,
-                provider="vllm",
+                provider="ollama",
                 model="local-embed",
                 parameters={"analysis_profile_id": "legacy"},
             ),
@@ -644,7 +855,7 @@ def test_start_indexing_rejects_any_indexing_parameters_before_insert(
             PROJECT_ID,
             IndexingRunInput(
                 dataset_version_id=DATASET_ID,
-                provider="vllm",
+                provider="ollama",
                 model="local-embed",
                 parameters={"algorithm_settings": {"algorithm": "agglomerative"}},
             ),
@@ -678,7 +889,7 @@ def test_execute_queued_run_finalizes_late_cancellation_as_cancelled(
         PROJECT_ID,
         IndexingRunInput(
             dataset_version_id=DATASET_ID,
-            provider="vllm",
+            provider="ollama",
             model="local-embed",
             parameters={},
         ),
@@ -781,7 +992,7 @@ def test_enqueue_overload_marks_queued_run_failed(
         PROJECT_ID,
         IndexingRunInput(
             dataset_version_id=DATASET_ID,
-            provider="vllm",
+            provider="ollama",
             model="local-embed",
             parameters={},
         ),

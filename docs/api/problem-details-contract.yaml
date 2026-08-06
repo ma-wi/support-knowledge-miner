@@ -52,6 +52,12 @@ components:
         message:
           type: string
 x-skm-problem-codes:
+  VALIDATION_FAILED:
+    type: urn:skm:error:VALIDATION_FAILED
+    title: Die Eingaben sind ungültig.
+    status: 422
+    detail: Die Aktion wurde nicht ausgeführt, weil Eingaben korrigiert werden müssen.
+    suggestedAction: correct-input
   INDEXING_NOT_COMPLETE:
     type: urn:skm:error:INDEXING_NOT_COMPLETE
     title: Diese Indizierung ist noch nicht fertig.
@@ -184,3 +190,21 @@ x-skm-problem-codes:
     status: 503
     detail: Das Cluster-Set bleibt nutzbar, aber die Historie konnte nicht geladen werden.
     suggestedAction: retry
+  PROVIDER_MODEL_PULL_IN_PROGRESS:
+    type: urn:skm:error:PROVIDER_MODEL_PULL_IN_PROGRESS
+    title: Ein Modell-Download läuft bereits.
+    status: 409
+    detail: Ein Ollama-Modell wird bereits geladen.
+    suggestedAction: wait
+  PROVIDER_DELETE_FAILED:
+    type: urn:skm:error:PROVIDER_DELETE_FAILED
+    title: Provider konnte nicht entfernt werden.
+    status: 404
+    detail: Der Provider konnte nicht aus der aktiven Konfiguration entfernt werden.
+    suggestedAction: reload
+  PROVIDER_DELETE_BLOCKED:
+    type: urn:skm:error:PROVIDER_DELETE_BLOCKED
+    title: Provider wird noch verwendet.
+    status: 409
+    detail: Der Provider kann erst entfernt werden, wenn aktive Jobs abgeschlossen oder abgebrochen sind.
+    suggestedAction: wait

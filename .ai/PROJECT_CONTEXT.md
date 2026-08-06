@@ -18,7 +18,12 @@ Keep this document compact. It is a map for agents, not a duplicate of the sourc
 - Runtime and supported versions: CI-defined Ubuntu environment using `.python-version` and `.node-version`.
 - Deployment environment: local Docker Compose only.
 - Data stores: PostgreSQL with pgvector; local Docker volumes for database and local model caches.
-- External services: Optional OpenAI by explicit per-action confirmation; optional local Ollama and vLLM-compatible endpoints. Embedding and LLM model allow-lists are configured separately; OpenAI/Ollama can be used for bounded Cluster-Set summaries when configured.
+- Optional GPU runtime: RAPIDS/cuML is available through the mutually exclusive
+  `gpu-cu12` or `gpu-cu13` Python extras; default setup remains CPU-compatible.
+- External services: Optional OpenAI by explicit per-action confirmation; optional
+  local Ollama endpoints. OpenAI/Ollama provider instances expose separate
+  embedding and LLM model allow-lists and can be used for bounded Cluster-Set
+  summaries when configured. vLLM is not active in the current UI/API/runtime.
 
 ## Architecture map
 
@@ -31,7 +36,10 @@ Keep this document compact. It is a map for agents, not a duplicate of the sourc
   optionally generate bounded LLM summaries, curates Cluster-Set rows in the
   Explorer, inspects source dialogs, refines child Cluster-Sets, and exports the
   current Explorer table state as CSV/JSON.
-- Trust boundaries: browser to authenticated API, local backend to local PostgreSQL, optional explicit per-indexing OpenAI/Ollama/vLLM embedding provider calls, optional per-Cluster-Set OpenAI/Ollama LLM calls, local filesystem/Compose volumes.
+- Trust boundaries: browser to authenticated API, local backend to local
+  PostgreSQL, optional explicit per-indexing OpenAI/Ollama embedding provider
+  calls, optional per-Cluster-Set OpenAI/Ollama LLM calls, local filesystem/Compose
+  volumes.
 - Control plane: `.ai/tools/orchestrate.py`; policy:
   `.ai/policies/ORCHESTRATION.md`
 - Public interfaces: FastAPI `/api/*` routes, React MVP shell, Docker Compose local runtime, `.ai/tools/*` quality gates. Persisted Cluster-Set routes own clustering; obsolete run-bound cluster routes return 410 replacement Problem Details.
@@ -40,11 +48,12 @@ Keep this document compact. It is a map for agents, not a duplicate of the sourc
   session restoration and explicit revocation, project-scoped queries,
   two-slot/30-second-idle/30-minute-total-capped 512 MiB import spooling, two-pass import
   validation with byte-/record-bounded DB batches and cleanup, provider secret
-  handling, local Ollama/vLLM endpoint
+  handling, provider instance identity, local Ollama endpoint
   allow-listing, explicit per-indexing OpenAI cloud confirmation, Unicode-safe 1 KiB embedding
   chunks with byte-weighted normalized pooling, embedding validation,
   confirmed-batch run progress, five-minute Ollama batch keep-alive, visible-view
-  non-overlapping two-second run polling, bounded clustering, curation preservation,
+  non-overlapping two-second run polling, bounded parallel indexing/cluster-set
+  starts within local worker/resource limits, bounded clustering, curation preservation,
   cluster-set job progress/cancellation, OpenAI confirmation for LLM summaries,
   LLM prompt/response bounds, redacted provider diagnostics, project-scoped
   source dialogs and Explorer exports that do not implicitly include raw source

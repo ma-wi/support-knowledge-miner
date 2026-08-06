@@ -42,6 +42,7 @@ from backend.clusters import (
     ClusterSetEvent,
     ClusterSetInput,
     ClusterSetQueueFull,
+    ClusterSetSummaryInput,
     ClusterService,
     ClusterSource,
     ClusterSourcePage,
@@ -66,7 +67,9 @@ from backend.imports.service import MAX_IMPORT_BYTES
 from backend.providers import (
     ProviderCheckResult,
     ProviderConfiguration,
+    ProviderDeleteBlocked,
     ProviderError,
+    ProviderPullInProgress,
     ProviderService,
     ProviderSettingsInput,
 )
@@ -190,6 +193,7 @@ class ImportLogResponse(BaseModel):
     total_records: int
     valid_records: int
     skipped_records: int
+    skipped_detail_count: int
     dataset_version_id: UUID | None
     dataset_display_name: str | None
     dataset_deleted_at: datetime | None
@@ -224,11 +228,20 @@ class ImportResultResponse(BaseModel):
 
 
 class ProviderSettingsRequest(BaseModel):
+    provider: str | None = None
+    display_name: str | None = None
     endpoint_url: str | None = None
-    manual_models: list[str] = Field(default_factory=list)
+    available_models: list[str] | None = None
+    manual_models: list[str] | None = None
     llm_models: list[str] | None = None
     api_key: str | None = None
     remove_api_key: bool = False
+
+
+class ProviderCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    provider: str = Field(min_length=1)
 
 
 class LlmProviderSettingsRequest(BaseModel):
@@ -239,8 +252,11 @@ class LlmProviderSettingsRequest(BaseModel):
 
 
 class ProviderConfigurationResponse(BaseModel):
+    id: UUID
     provider: str
+    display_name: str
     endpoint_url: str | None
+    available_models: list[str]
     manual_models: list[str]
     llm_models: list[str]
     api_key_set: bool
@@ -248,9 +264,12 @@ class ProviderConfigurationResponse(BaseModel):
 
 
 class ProviderCheckResponse(BaseModel):
+    id: UUID
     provider: str
     ok: bool
     models: list[str]
+    embedding_models: list[str]
+    llm_models: list[str]
     message: str
 
 
@@ -262,9 +281,10 @@ class IndexingRunRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     dataset_version_id: UUID
-    provider: str = Field(min_length=1)
+    provider_id: UUID | None = None
+    provider: str | None = Field(default=None, min_length=1)
     model: str = Field(min_length=1)
-    parameters: dict[str, object] | None = Field(default=None, deprecated=True)
+    parameters: dict[str, object] | None = None
     cloud_use_confirmed: bool = False
 
 
@@ -280,6 +300,8 @@ class IndexingRunResponse(BaseModel):
     progress: int
     phase: str
     provider: str
+    provider_configuration_id: UUID | None
+    provider_display_name: str | None
     model: str
     parameters: dict[str, object]
     error_code: str | None
@@ -325,6 +347,7 @@ class ClusterSetRequest(BaseModel):
     source_cluster_ids: list[UUID] = Field(default_factory=list)
     source_pair_ids: list[UUID] = Field(default_factory=list)
     outlier_threshold: float | None = None
+    llm_provider_id: UUID | None = None
     llm_provider: str | None = None
     llm_model: str | None = None
     llm_sample_count: StrictInt | None = 10
@@ -336,6 +359,17 @@ class ClusterSetRenameRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     display_name: str = Field(min_length=1)
+
+
+class ClusterSetSummaryRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    llm_provider_id: UUID | None = None
+    llm_provider: str | None = None
+    llm_model: str | None = None
+    llm_sample_count: StrictInt | None = 10
+    llm_sample_all: bool = False
+    llm_cloud_use_confirmed: bool = False
 
 
 class ClusterSetResponse(BaseModel):
@@ -360,6 +394,8 @@ class ClusterSetResponse(BaseModel):
     parameters: dict[str, object]
     source_snapshot: dict[str, object]
     llm_provider: str | None
+    llm_provider_configuration_id: UUID | None
+    llm_provider_display_name: str | None
     llm_model: str | None
     llm_parameters: dict[str, object]
     llm_sample_strategy: dict[str, object]
@@ -384,6 +420,11 @@ class ClusterSetEventResponse(BaseModel):
     event_type: str
     metadata: dict[str, object]
     created_at: datetime
+
+
+class ActiveJobsResponse(BaseModel):
+    indexing_active: bool
+    cluster_set_active: bool
 
 
 class ClusterResponse(BaseModel):
@@ -645,8 +686,11 @@ def _provider_response(
     configuration: ProviderConfiguration,
 ) -> ProviderConfigurationResponse:
     return ProviderConfigurationResponse(
+        id=configuration.id,
         provider=configuration.provider,
+        display_name=configuration.display_name,
         endpoint_url=configuration.endpoint_url,
+        available_models=configuration.available_models,
         manual_models=configuration.manual_models,
         llm_models=configuration.llm_models,
         api_key_set=configuration.api_key_set,
@@ -656,10 +700,65 @@ def _provider_response(
 
 def _provider_check_response(result: ProviderCheckResult) -> ProviderCheckResponse:
     return ProviderCheckResponse(
+        id=result.id,
         provider=result.provider,
         ok=result.ok,
         models=result.models,
+        embedding_models=result.embedding_models,
+        llm_models=result.llm_models,
         message=result.message,
+    )
+
+
+def _provider_problem_response(
+    *,
+    code: str,
+    status_code: int,
+    retryable: bool,
+    suggested_action: str,
+    field_errors: dict[str, str] | None = None,
+) -> JSONResponse:
+    contracts = {
+        "PROVIDER_MODEL_PULL_IN_PROGRESS": {
+            "title": "Ein Modell-Download läuft bereits.",
+            "detail": "Ein Ollama-Modell wird bereits geladen.",
+        },
+        "PROVIDER_DELETE_FAILED": {
+            "title": "Provider konnte nicht entfernt werden.",
+            "detail": "Der Provider konnte nicht aus der aktiven Konfiguration entfernt werden.",
+        },
+        "PROVIDER_DELETE_BLOCKED": {
+            "title": "Provider wird noch verwendet.",
+            "detail": "Der Provider kann erst entfernt werden, wenn aktive Jobs abgeschlossen oder abgebrochen sind.",
+        },
+        "VALIDATION_FAILED": {
+            "title": "Provider-Eingaben sind ungültig.",
+            "detail": "Die Provider-Konfiguration konnte mit diesen Eingaben nicht gespeichert werden.",
+        },
+    }
+    contract = contracts.get(
+        code,
+        {
+            "title": "Die Provider-Aktion konnte nicht abgeschlossen werden.",
+            "detail": "Die Provider-Aktion ist unerwartet fehlgeschlagen.",
+        },
+    )
+    return JSONResponse(
+        status_code=status_code,
+        content={
+            "type": f"urn:skm:error:{code}",
+            "title": contract["title"],
+            "status": status_code,
+            "detail": contract["detail"],
+            "code": code,
+            "correlationId": None,
+            "retryable": retryable,
+            "suggestedAction": suggested_action,
+            "fieldErrors": [
+                {"field": field, "message": message}
+                for field, message in (field_errors or {}).items()
+            ],
+        },
     )
 
 
@@ -885,6 +984,16 @@ def _cluster_problem_contract(code: str) -> dict[str, str]:
             "detail": "Die Ausreißer-Neuberechnung konnte nicht abgeschlossen werden.",
             "suggested_action": "retry",
         },
+        "CLUSTER_REDUCTION_UNAVAILABLE": {
+            "title": "Dimensionsreduzierung ist nicht verfügbar.",
+            "detail": "Die gewählte Dimensionsreduzierung ist lokal nicht verfügbar.",
+            "suggested_action": "adjust-clustering-parameters",
+        },
+        "CLUSTER_ACCELERATOR_UNAVAILABLE": {
+            "title": "GPU-Beschleunigung ist nicht verfügbar.",
+            "detail": "cuML/RAPIDS ist in dieser lokalen Laufzeit nicht verfügbar.",
+            "suggested_action": "choose-cpu-backend",
+        },
         "CLUSTER_SET_LINEAGE_UNAVAILABLE": {
             "title": "Die Analyse-Historie ist unvollständig.",
             "detail": "Die Cluster-Set-Historie konnte nicht vollständig geladen werden.",
@@ -1004,6 +1113,18 @@ def _is_cluster_set_create_request(request: Request) -> bool:
     )
 
 
+def _is_cluster_set_summary_request(request: Request) -> bool:
+    path_parts = [part for part in request.url.path.split("/") if part]
+    return (
+        request.method == "POST"
+        and len(path_parts) == 6
+        and path_parts[0] == "api"
+        and path_parts[1] == "projects"
+        and path_parts[3] == "cluster-sets"
+        and path_parts[5] == "summaries"
+    )
+
+
 def _is_cluster_source_request(request: Request) -> bool:
     path_parts = [part for part in request.url.path.split("/") if part]
     return (
@@ -1086,8 +1207,12 @@ def create_app(
     async def request_validation_error_handler(
         request: Request, exc: RequestValidationError
     ) -> Response:
-        if _is_cluster_set_create_request(request) and _validation_error_has_body_field(
-            exc, "llm_sample_count"
+        if (
+            _is_cluster_set_create_request(request)
+            or _is_cluster_set_summary_request(request)
+        ) and _validation_error_has_body_field(
+            exc,
+            "llm_sample_count",
         ):
             return _cluster_problem_response(
                 ClusterError(
@@ -1374,6 +1499,30 @@ def create_app(
             for configuration in provider_service.list_configurations()
         ]
 
+    @app.post(
+        "/api/providers",
+        response_model=ProviderConfigurationResponse,
+        status_code=status.HTTP_201_CREATED,
+    )
+    def create_provider(
+        payload: ProviderCreateRequest,
+        actor: CurrentUser = Depends(current_user),
+    ) -> ProviderConfigurationResponse | JSONResponse:
+        try:
+            configuration = provider_service.create_configuration(
+                payload.provider,
+                actor_user_id=actor.id,
+            )
+        except ProviderError:
+            return _provider_problem_response(
+                code="VALIDATION_FAILED",
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                retryable=True,
+                suggested_action="correct-input",
+                field_errors={"provider": "provider must be openai or ollama"},
+            )
+        return _provider_response(configuration)
+
     @app.get("/api/llm-providers", response_model=list[ProviderConfigurationResponse])
     def list_llm_providers(
         _: CurrentUser = Depends(current_user),
@@ -1384,31 +1533,75 @@ def create_app(
         ]
 
     @app.put(
-        "/api/providers/{provider}",
+        "/api/providers/{provider_ref}",
         response_model=ProviderConfigurationResponse,
     )
     def upsert_provider(
-        provider: str,
+        provider_ref: str,
         payload: ProviderSettingsRequest,
         actor: CurrentUser = Depends(current_user),
-    ) -> ProviderConfigurationResponse:
+    ) -> ProviderConfigurationResponse | JSONResponse:
         try:
-            configuration = provider_service.upsert_configuration(
-                ProviderSettingsInput(
-                    provider=provider,
-                    endpoint_url=payload.endpoint_url,
-                    manual_models=payload.manual_models,
-                    llm_models=payload.llm_models,
-                    api_key=payload.api_key,
-                    remove_api_key=payload.remove_api_key,
-                ),
+            provider_id = UUID(provider_ref)
+        except ValueError:
+            return _provider_problem_response(
+                code="VALIDATION_FAILED",
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                retryable=True,
+                suggested_action="reload",
+                field_errors={"provider": "provider update requires provider id"},
+            )
+        try:
+            settings = ProviderSettingsInput(
+                provider=payload.provider or "",
+                display_name=payload.display_name,
+                endpoint_url=payload.endpoint_url,
+                preserve_endpoint_url="endpoint_url" not in payload.model_fields_set,
+                available_models=payload.available_models,
+                manual_models=payload.manual_models,
+                llm_models=payload.llm_models,
+                api_key=payload.api_key,
+                remove_api_key=payload.remove_api_key,
+            )
+            configuration = provider_service.update_configuration(
+                provider_id,
+                settings,
                 actor_user_id=actor.id,
             )
-        except ProviderError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
-            ) from exc
+        except ProviderError:
+            return _provider_problem_response(
+                code="VALIDATION_FAILED",
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                retryable=True,
+                suggested_action="correct-input",
+            )
         return _provider_response(configuration)
+
+    @app.delete("/api/providers/{provider_id}", response_model=None)
+    def delete_provider(
+        provider_id: UUID,
+        actor: CurrentUser = Depends(current_user),
+    ) -> Response | JSONResponse:
+        try:
+            provider_service.delete_configuration(
+                provider_id,
+                actor_user_id=actor.id,
+            )
+        except ProviderDeleteBlocked:
+            return _provider_problem_response(
+                code="PROVIDER_DELETE_BLOCKED",
+                status_code=status.HTTP_409_CONFLICT,
+                retryable=True,
+                suggested_action="wait",
+            )
+        except ProviderError:
+            return _provider_problem_response(
+                code="PROVIDER_DELETE_FAILED",
+                status_code=status.HTTP_404_NOT_FOUND,
+                retryable=True,
+                suggested_action="reload",
+            )
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     @app.put(
         "/api/llm-providers/{provider}",
@@ -1418,40 +1611,85 @@ def create_app(
         provider: str,
         payload: LlmProviderSettingsRequest,
         actor: CurrentUser = Depends(current_user),
-    ) -> ProviderConfigurationResponse:
-        try:
-            configuration = provider_service.upsert_configuration(
-                ProviderSettingsInput(
-                    provider=provider,
-                    endpoint_url=payload.endpoint_url,
-                    manual_models=None,
-                    llm_models=payload.llm_models,
-                    api_key=payload.api_key,
-                    remove_api_key=payload.remove_api_key,
-                ),
-                actor_user_id=actor.id,
-            )
-        except ProviderError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
-            ) from exc
-        return _provider_response(configuration)
+    ) -> ProviderConfigurationResponse | JSONResponse:
+        _ = provider, payload, actor
+        return _provider_problem_response(
+            code="VALIDATION_FAILED",
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            retryable=True,
+            suggested_action="correct-input",
+            field_errors={"provider": "provider update requires provider id"},
+        )
 
     @app.post(
-        "/api/providers/{provider}/check",
+        "/api/providers/{provider_ref}/check",
         response_model=ProviderCheckResponse,
     )
     def check_provider(
-        provider: str,
+        provider_ref: str,
         _: CurrentUser = Depends(current_user),
-    ) -> ProviderCheckResponse:
+    ) -> ProviderCheckResponse | JSONResponse:
         try:
-            result = provider_service.check_provider(provider)
-        except ProviderError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
-            ) from exc
+            provider_id = UUID(provider_ref)
+        except ValueError:
+            return _provider_problem_response(
+                code="VALIDATION_FAILED",
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                retryable=True,
+                suggested_action="reload",
+                field_errors={"provider": "provider check requires provider id"},
+            )
+        try:
+            result = provider_service.check_provider(provider_id)
+        except ProviderError:
+            return _provider_problem_response(
+                code="VALIDATION_FAILED",
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                retryable=True,
+                suggested_action="correct-input",
+            )
         return _provider_check_response(result)
+
+    @app.post(
+        "/api/providers/{provider_ref}/ollama/pull",
+        response_model=ProviderConfigurationResponse,
+    )
+    def pull_ollama_model_for_provider(
+        provider_ref: str,
+        payload: OllamaPullRequest,
+        actor: CurrentUser = Depends(current_user),
+    ) -> ProviderConfigurationResponse | JSONResponse:
+        try:
+            provider_id = UUID(provider_ref)
+        except ValueError:
+            return _provider_problem_response(
+                code="VALIDATION_FAILED",
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                retryable=True,
+                suggested_action="reload",
+                field_errors={"provider": "model pull requires provider id"},
+            )
+        try:
+            configuration = provider_service.pull_ollama_model(
+                provider_id,
+                payload.model,
+                actor_user_id=actor.id,
+            )
+        except ProviderPullInProgress:
+            return _provider_problem_response(
+                code="PROVIDER_MODEL_PULL_IN_PROGRESS",
+                status_code=status.HTTP_409_CONFLICT,
+                retryable=False,
+                suggested_action="wait",
+            )
+        except ProviderError:
+            return _provider_problem_response(
+                code="VALIDATION_FAILED",
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                retryable=True,
+                suggested_action="correct-input",
+            )
+        return _provider_response(configuration)
 
     @app.post(
         "/api/providers/ollama/pull",
@@ -1460,17 +1698,24 @@ def create_app(
     def pull_ollama_model(
         payload: OllamaPullRequest,
         actor: CurrentUser = Depends(current_user),
-    ) -> ProviderConfigurationResponse:
-        try:
-            configuration = provider_service.pull_ollama_model(
-                payload.model,
-                actor_user_id=actor.id,
-            )
-        except ProviderError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
-            ) from exc
-        return _provider_response(configuration)
+    ) -> ProviderConfigurationResponse | JSONResponse:
+        _ = payload, actor
+        return _provider_problem_response(
+            code="VALIDATION_FAILED",
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            retryable=True,
+            suggested_action="correct-input",
+            field_errors={"provider": "model pull requires provider id"},
+        )
+
+    @app.get("/api/jobs/active", response_model=ActiveJobsResponse)
+    def active_jobs(
+        _: CurrentUser = Depends(current_user),
+    ) -> ActiveJobsResponse:
+        return ActiveJobsResponse(
+            indexing_active=analysis_service.has_active_run(),
+            cluster_set_active=cluster_service.has_active_cluster_set(),
+        )
 
     @app.post(
         "/api/projects/{project_id}/indexing-runs",
@@ -1483,26 +1728,14 @@ def create_app(
         actor: CurrentUser = Depends(current_user),
     ) -> IndexingRunResponse | JSONResponse:
         try:
-            if "parameters" in payload.model_fields_set:
-                raise AnalysisError(
-                    "indexing run parameters are no longer accepted",
-                    code="INDEXING_MODEL_UNAVAILABLE",
-                    status_code=422,
-                    suggested_action="correct-input",
-                    field_errors={
-                        "parameters": (
-                            "indexing parameters are no longer accepted; "
-                            "cluster algorithm settings are set during clustering"
-                        )
-                    },
-                )
             run = analysis_service.start_run(
                 project_id,
                 IndexingRunInput(
                     dataset_version_id=payload.dataset_version_id,
+                    provider_id=payload.provider_id,
                     provider=payload.provider,
                     model=payload.model,
-                    parameters={},
+                    parameters=payload.parameters or {},
                     cloud_use_confirmed=payload.cloud_use_confirmed,
                 ),
                 actor_user_id=actor.id,
@@ -1618,6 +1851,7 @@ def create_app(
                     source_cluster_ids=payload.source_cluster_ids,
                     source_pair_ids=payload.source_pair_ids,
                     outlier_threshold=payload.outlier_threshold,
+                    llm_provider_id=payload.llm_provider_id,
                     llm_provider=payload.llm_provider,
                     llm_model=payload.llm_model,
                     llm_sample_count=payload.llm_sample_count,
@@ -1700,6 +1934,38 @@ def create_app(
             cluster_set = cluster_service.cancel_cluster_set(
                 project_id, cluster_set_id, actor_user_id=actor.id
             )
+        except ClusterError as exc:
+            return _cluster_problem_response(exc)
+        return _cluster_set_response(cluster_set)
+
+    @app.post(
+        "/api/projects/{project_id}/cluster-sets/{cluster_set_id}/summaries",
+        response_model=ClusterSetResponse,
+        status_code=status.HTTP_202_ACCEPTED,
+    )
+    def regenerate_cluster_set_summaries(
+        project_id: UUID,
+        cluster_set_id: UUID,
+        payload: ClusterSetSummaryRequest,
+        actor: CurrentUser = Depends(current_user),
+    ) -> ClusterSetResponse | JSONResponse:
+        try:
+            cluster_set = cluster_service.start_cluster_set_summary_regeneration(
+                project_id,
+                cluster_set_id,
+                ClusterSetSummaryInput(
+                    llm_provider_id=payload.llm_provider_id,
+                    llm_provider=payload.llm_provider,
+                    llm_model=payload.llm_model,
+                    llm_sample_count=payload.llm_sample_count,
+                    llm_sample_all=payload.llm_sample_all,
+                    llm_cloud_use_confirmed=payload.llm_cloud_use_confirmed,
+                ),
+                actor_user_id=actor.id,
+            )
+            cluster_service.enqueue_cluster_set_summary_regeneration(cluster_set.id)
+        except ClusterSetQueueFull as exc:
+            return _cluster_problem_response(exc)
         except ClusterError as exc:
             return _cluster_problem_response(exc)
         return _cluster_set_response(cluster_set)

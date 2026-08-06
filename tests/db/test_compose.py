@@ -17,17 +17,12 @@ def test_compose_defines_pgvector_postgres_with_persistent_volume() -> None:
     assert "pg_isready" in compose
 
 
-def test_compose_defines_vllm_gpu_and_cpu_paths_with_persistent_cache() -> None:
+def test_compose_has_no_active_vllm_runtime_path() -> None:
     compose = COMPOSE_FILE.read_text(encoding="utf-8")
-    assert "vllm-gpu:" in compose
-    assert 'profiles: ["vllm-gpu"]' in compose
-    assert "driver: nvidia" in compose
-    assert "vllm-cpu:" in compose
-    assert 'profiles: ["vllm-cpu"]' in compose
-    assert "--device" in compose
-    assert "cpu" in compose
-    assert "vllm-cache:/root/.cache/huggingface" in compose
-    assert "vllm-cache:" in compose
+    env_example = ENV_EXAMPLE_FILE.read_text(encoding="utf-8")
+
+    assert "vllm" not in compose.lower()
+    assert "skm_vllm" not in env_example.lower()
 
 
 def test_compose_defines_ollama_path_with_persistent_model_store() -> None:
@@ -57,7 +52,9 @@ def test_postgres_smoke_script_verifies_migration_health_and_restart_persistence
 def test_migration_smoke_script_executes_fresh_and_existing_database_paths() -> None:
     script = MIGRATION_SMOKE_SCRIPT.read_text(encoding="utf-8")
     assert "0010_ollama_provider.sql" in script
+    assert "0018_provider_available_models.sql" in script
     assert "0011_email_identity.sql" in script
+    assert "id, provider, display_name, manual_models, available_models" in script
     assert "legacy username column remains" in script
     assert "accepted an unsupported provider" in script
     assert "AuthService(upgrade).sign_in" in script

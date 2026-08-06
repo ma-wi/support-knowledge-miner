@@ -87,29 +87,6 @@ preserving projects, imports, dataset versions and provider configuration. Do no
 run these local migration procedures against production data, production
 credentials, production networks or any production-controlled resource.
 
-## vLLM Local Model Path
-
-The MVP local model provider path is represented as optional Compose profiles so normal database tests do not download or start model images.
-GPU is the default local model path when the host has the NVIDIA container runtime:
-
-```bash
-docker compose --env-file deployment/docker/.env.example -f deployment/docker/compose.yml --profile vllm-gpu up -d vllm-gpu
-```
-
-CPU fallback is available for hosts without GPU support or for constrained local testing:
-
-```bash
-docker compose --env-file deployment/docker/.env.example -f deployment/docker/compose.yml --profile vllm-cpu up -d vllm-cpu
-```
-
-Both profiles expose an OpenAI-compatible local endpoint at
-`http://localhost:8000/v1` by default and share the persistent `vllm-cache` volume
-for model artifacts. Configure either that loopback endpoint or the active Compose
-service name (`vllm-gpu` or `vllm-cpu`) in provider settings. URL credentials,
-redirects, and non-local hosts are rejected.
-
-`VLLM_IMAGE`, `VLLM_MODEL`, and `VLLM_PORT` are local runtime knobs. Do not use production credentials, production datasets, or production networks with these services.
-
 ## Ollama Local Model Path
 
 Ollama is available as an optional local runtime for demand-loaded local models:
@@ -134,3 +111,8 @@ The default endpoint is `http://localhost:11434`. `SKM_OLLAMA_MODELS` is a comma
 
 `OLLAMA_KEEP_ALIVE=5m` keeps the selected model warm between normal indexing
 batches and allows Ollama to unload it again after five minutes without activity.
+
+## Deferred runtimes
+
+vLLM is not exposed as an active local runtime in this MVP. It can be added later
+through a new reviewed provider/runtime change.

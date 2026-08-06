@@ -2,6 +2,7 @@
 
 - Status: accepted
 - Date: 2026-07-19
+- Last amended: 2026-08-05 by CHG-005 provider settings centralization
 - Owners: User
 - Related requirement: support-knowledge-miner-mvp1
 - External reference identifiers: none
@@ -12,7 +13,7 @@ The first delivery must run locally, not on a server. The local environment has 
 
 ## Decision
 
-Use Docker Compose as the local MVP runtime. Compose must provide PostgreSQL/pgvector with persistent volume and Ollama/vLLM services or configurable local endpoint paths. Local model/analysis workloads should use GPU by default where available, with CPU fallback required for compatibility and tests.
+Use Docker Compose as the local MVP runtime. Compose must provide PostgreSQL/pgvector with persistent volume and Ollama service or configurable local Ollama endpoint paths. vLLM is deferred and not active in the current MVP UI/API/runtime. Local model/analysis workloads should use GPU by default where available, with CPU fallback required for compatibility and tests.
 
 ## Alternatives considered
 

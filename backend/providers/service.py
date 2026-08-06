@@ -8,9 +8,11 @@ from http.client import HTTPConnection, HTTPSConnection, HTTPException
 import json
 import math
 import os
+import re
+from threading import Lock
 from typing import Any
 from urllib.parse import urlparse
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from psycopg.types.json import Jsonb
 
@@ -23,13 +25,13 @@ from backend.providers.secrets import (
     encrypt_provider_secret,
 )
 
-SUPPORTED_PROVIDERS = {"openai", "ollama", "vllm"}
+SUPPORTED_PROVIDERS = {"openai", "ollama"}
 MAX_MODELS = 200
 MAX_MODEL_LENGTH = 160
 MAX_ENDPOINT_LENGTH = 500
 PROVIDER_CHECK_TIMEOUT_SECONDS = 2.0
 PROVIDER_EMBEDDING_TIMEOUT_SECONDS = 60.0
-PROVIDER_LLM_TIMEOUT_SECONDS = 60.0
+PROVIDER_LLM_TIMEOUT_SECONDS = 180.0
 MAX_EMBEDDING_BATCH_SIZE = 64
 MAX_EMBEDDING_TEXT_LENGTH = 100_000
 MAX_EMBEDDING_BATCH_CHARACTERS = 500_000
@@ -38,6 +40,39 @@ MAX_EMBEDDING_DIMENSIONS = 8_192
 MAX_LLM_PROMPT_CHARACTERS = 80_000
 MAX_LLM_RESPONSE_BYTES = 1024 * 1024
 MAX_LLM_OUTPUT_CHARACTERS = 10_000
+LLM_SUMMARY_OUTPUT_TOKENS = 4096
+LLM_SUMMARY_JSON_INSTRUCTIONS = (
+    "You generate compact JSON for support-cluster summaries. Return exactly one "
+    "JSON object. Do not include markdown, code fences, comments, prose before the "
+    "object, prose after the object, or schema examples."
+)
+LLM_SUMMARY_JSON_SCHEMA: dict[str, object] = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "title": {
+            "type": "string",
+            "description": "Short cluster title, maximum 80 characters.",
+        },
+        "category": {
+            "type": ["string", "null"],
+            "description": "Short category label or null.",
+        },
+        "question": {
+            "type": "string",
+            "description": "Canonical customer question represented by the cluster.",
+        },
+        "answer": {
+            "type": "string",
+            "description": "Canonical support answer represented by the cluster.",
+        },
+        "rationale": {
+            "type": ["string", "null"],
+            "description": "Brief reason for the summary or null.",
+        },
+    },
+    "required": ["title", "category", "question", "answer", "rationale"],
+}
 OLLAMA_PULL_TIMEOUT_SECONDS = 1800.0
 OPENAI_API_HOST = "api.openai.com"
 DEFAULT_OLLAMA_BASE_URL = "http://localhost:11434"
@@ -46,19 +81,29 @@ LOCAL_PROVIDER_HOSTS = {
     "127.0.0.1",
     "::1",
     "ollama",
-    "vllm-cpu",
-    "vllm-gpu",
 }
+_OLLAMA_PULL_LOCK = Lock()
 
 
 class ProviderError(ValueError):
     """Raised when provider input is invalid."""
 
 
+class ProviderPullInProgress(ProviderError):
+    """Raised when another Ollama model pull is already active."""
+
+
+class ProviderDeleteBlocked(ProviderError):
+    """Raised when a provider is still referenced by active queued/running work."""
+
+
 @dataclass(frozen=True)
 class ProviderSettingsInput:
     provider: str
+    display_name: str | None = None
     endpoint_url: str | None = None
+    preserve_endpoint_url: bool = False
+    available_models: list[str] | None = None
     manual_models: list[str] | None = None
     llm_models: list[str] | None = None
     api_key: str | None = None
@@ -67,8 +112,11 @@ class ProviderSettingsInput:
 
 @dataclass(frozen=True)
 class ProviderConfiguration:
+    id: UUID
     provider: str
+    display_name: str
     endpoint_url: str | None
+    available_models: list[str]
     manual_models: list[str]
     llm_models: list[str]
     api_key_set: bool
@@ -77,23 +125,19 @@ class ProviderConfiguration:
 
 @dataclass(frozen=True)
 class ProviderCheckResult:
+    id: UUID
     provider: str
     ok: bool
     models: list[str]
+    embedding_models: list[str]
+    llm_models: list[str]
     message: str
 
 
 def _provider(provider: str) -> str:
     cleaned = provider.strip().lower()
     if cleaned not in SUPPORTED_PROVIDERS:
-        raise ProviderError("provider must be openai, ollama, or vllm")
-    return cleaned
-
-
-def _llm_provider(provider: str) -> str:
-    cleaned = provider.strip().lower()
-    if cleaned not in {"openai", "ollama"}:
-        raise ProviderError("LLM provider must be openai or ollama")
+        raise ProviderError("provider must be openai or ollama")
     return cleaned
 
 
@@ -103,6 +147,15 @@ def _clean_model(value: str) -> str:
         raise ProviderError("model must not be empty")
     if len(cleaned) > MAX_MODEL_LENGTH:
         raise ProviderError("model is too long")
+    return cleaned
+
+
+def _clean_display_name(value: str | None, *, fallback: str) -> str:
+    cleaned = (value or fallback).strip()
+    if not cleaned:
+        raise ProviderError("display_name must not be empty")
+    if len(cleaned) > 160:
+        raise ProviderError("display_name is too long")
     return cleaned
 
 
@@ -133,6 +186,67 @@ def _clean_models(values: list[str] | None) -> list[str]:
     if len(cleaned) > MAX_MODELS:
         raise ProviderError("too many models configured")
     return cleaned
+
+
+def _merge_models(*model_lists: list[str]) -> list[str]:
+    merged: list[str] = []
+    for models in model_lists:
+        merged.extend(models)
+    return _clean_models(merged)
+
+
+def _is_openai_embedding_model(model: str) -> bool:
+    return model.casefold().startswith("text-embedding-")
+
+
+def _is_openai_llm_model(model: str) -> bool:
+    cleaned = model.casefold()
+    if cleaned == "o4-mini":
+        return True
+    if cleaned.startswith("gpt-4.1") or cleaned.startswith("gpt-4o"):
+        return True
+    match = re.match(r"^gpt-(\d+)(?:[.\-].*)?$", cleaned)
+    return match is not None and int(match.group(1)) >= 5
+
+
+def _purpose_models(provider: str, models: list[str]) -> tuple[list[str], list[str]]:
+    if provider == "openai":
+        return (
+            [model for model in models if _is_openai_embedding_model(model)],
+            [model for model in models if _is_openai_llm_model(model)],
+        )
+    return models, models
+
+
+def _purpose_allow_lists(
+    provider: str, embedding_models: list[str], llm_models: list[str]
+) -> tuple[list[str], list[str]]:
+    if provider != "openai":
+        return embedding_models, llm_models
+    return (
+        [model for model in embedding_models if _is_openai_embedding_model(model)],
+        [model for model in llm_models if _is_openai_llm_model(model)],
+    )
+
+
+def _provider_check_result(
+    *,
+    config: ProviderConfiguration,
+    ok: bool,
+    models: list[str],
+    message: str,
+) -> ProviderCheckResult:
+    clean_models = _clean_models(models)
+    embedding_models, llm_models = _purpose_models(config.provider, clean_models)
+    return ProviderCheckResult(
+        id=config.id,
+        provider=config.provider,
+        ok=ok,
+        models=_merge_models(embedding_models, llm_models),
+        embedding_models=embedding_models,
+        llm_models=llm_models,
+        message=message,
+    )
 
 
 def _clean_endpoint(endpoint_url: str | None) -> str | None:
@@ -219,15 +333,32 @@ def _safe_llm_http_error(status: int, raw: bytes) -> str:
 
 
 def _configuration_from_row(row: dict[str, object]) -> ProviderConfiguration:
+    provider = str(row["provider"])
+    available_models = row.get("available_models", [])
     manual_models = row["manual_models"]
     llm_models = row.get("llm_models", [])
+    embedding_allow_list = (
+        list(manual_models) if isinstance(manual_models, list) else []
+    )
+    llm_allow_list = list(llm_models) if isinstance(llm_models, list) else []
+    embedding_allow_list, llm_allow_list = _purpose_allow_lists(
+        provider,
+        embedding_allow_list,
+        llm_allow_list,
+    )
+    available = list(available_models) if isinstance(available_models, list) else []
+    if not available:
+        available = _merge_models(embedding_allow_list, llm_allow_list)
     return ProviderConfiguration(
-        provider=str(row["provider"]),
+        id=UUID(str(row["id"])),
+        provider=provider,
+        display_name=str(row["display_name"]),
         endpoint_url=(
             str(row["endpoint_url"]) if row["endpoint_url"] is not None else None
         ),
-        manual_models=list(manual_models) if isinstance(manual_models, list) else [],
-        llm_models=list(llm_models) if isinstance(llm_models, list) else [],
+        available_models=available,
+        manual_models=embedding_allow_list,
+        llm_models=llm_allow_list,
         api_key_set=row["api_key_secret"] is not None,
         updated_at=row["updated_at"],  # type: ignore[arg-type]
     )
@@ -242,11 +373,13 @@ class ProviderService:
         with open_database_connection(self._settings) as connection:
             rows = connection.execute(
                 """
-                SELECT provider, endpoint_url,
+                SELECT id, provider, display_name, endpoint_url,
+                       available_models,
                        embedding_models AS manual_models,
                        llm_models, api_key_secret, updated_at
                 FROM provider_configurations
-                ORDER BY provider ASC
+                WHERE provider IN ('openai', 'ollama')
+                ORDER BY provider ASC, created_at ASC, id ASC
                 """
             ).fetchall()
         return [_configuration_from_row(dict(row)) for row in rows]
@@ -255,15 +388,233 @@ class ProviderService:
         with open_database_connection(self._settings) as connection:
             rows = connection.execute(
                 """
-                SELECT provider, endpoint_url,
+                SELECT id, provider, display_name, endpoint_url,
+                       available_models,
                        embedding_models AS manual_models,
                        llm_models, api_key_secret, updated_at
                 FROM provider_configurations
                 WHERE provider IN ('openai', 'ollama')
-                ORDER BY provider ASC
+                  AND jsonb_array_length(llm_models) > 0
+                ORDER BY provider ASC, created_at ASC, id ASC
                 """
             ).fetchall()
         return [_configuration_from_row(dict(row)) for row in rows]
+
+    def create_configuration(
+        self, provider: str, *, actor_user_id: UUID
+    ) -> ProviderConfiguration:
+        clean_provider = _provider(provider)
+        provider_id = uuid4()
+        with open_database_connection(self._settings) as connection:
+            with connection.transaction():
+                display_name = self._next_display_name(connection, clean_provider)
+                row = connection.execute(
+                    """
+                    INSERT INTO provider_configurations (
+                        id, provider, display_name, endpoint_url, manual_models,
+                        available_models, embedding_models, llm_models,
+                        created_by_user_id, updated_by_user_id
+                    )
+                    VALUES (
+                        %s, %s, %s, %s, '[]'::jsonb, '[]'::jsonb, '[]'::jsonb,
+                        '[]'::jsonb, %s, %s
+                    )
+                    RETURNING id, provider, display_name, endpoint_url,
+                              available_models, embedding_models AS manual_models,
+                              llm_models, api_key_secret, updated_at
+                    """,
+                    (
+                        provider_id,
+                        clean_provider,
+                        display_name,
+                        DEFAULT_OLLAMA_BASE_URL + "/"
+                        if clean_provider == "ollama"
+                        else None,
+                        actor_user_id,
+                        actor_user_id,
+                    ),
+                ).fetchone()
+                if row is None:
+                    raise RuntimeError("provider configuration insert returned no row")
+                self._audit.record_event(
+                    connection,
+                    actor_user_id=actor_user_id,
+                    action="provider.create",
+                    target_type="provider_configuration",
+                    target_id=provider_id,
+                    metadata={
+                        "provider": clean_provider,
+                        "display_name": display_name,
+                    },
+                )
+        return _configuration_from_row(dict(row))
+
+    def update_configuration(
+        self,
+        provider_id: UUID,
+        payload: ProviderSettingsInput,
+        *,
+        actor_user_id: UUID,
+    ) -> ProviderConfiguration:
+        existing = self._get_configuration_by_id(provider_id)
+        if existing is None:
+            raise ProviderError("provider is not configured")
+        provider = (
+            existing.provider
+            if not payload.provider.strip()
+            else _provider(payload.provider)
+        )
+        if provider != existing.provider:
+            raise ProviderError("provider type cannot be changed")
+        endpoint_url = (
+            existing.endpoint_url
+            if payload.preserve_endpoint_url
+            else _clean_endpoint(payload.endpoint_url)
+        )
+        if provider == "ollama" and endpoint_url is not None:
+            _require_local_endpoint(provider, endpoint_url)
+        requested_available_models = (
+            _clean_models(payload.available_models)
+            if payload.available_models is not None
+            else existing.available_models
+        )
+        requested_manual_models = (
+            _clean_models(payload.manual_models)
+            if payload.manual_models is not None
+            else existing.manual_models
+        )
+        requested_llm_models = (
+            _clean_models(payload.llm_models)
+            if payload.llm_models is not None
+            else existing.llm_models
+        )
+        requested_manual_models, requested_llm_models = _purpose_allow_lists(
+            provider,
+            requested_manual_models,
+            requested_llm_models,
+        )
+        clean_api_key = payload.api_key.strip() if payload.api_key is not None else None
+        if clean_api_key == "":
+            clean_api_key = None
+        if provider == "ollama" and clean_api_key is not None:
+            raise ProviderError("ollama does not accept an api_key")
+        if payload.remove_api_key and clean_api_key is not None:
+            raise ProviderError("api_key and remove_api_key cannot be used together")
+        encrypted_api_key: str | None = None
+        if clean_api_key is not None:
+            try:
+                encrypted_api_key = encrypt_provider_secret(clean_api_key)
+            except ProviderSecretError as exc:
+                raise ProviderError(str(exc)) from exc
+        display_name = _clean_display_name(
+            payload.display_name, fallback=existing.display_name
+        )
+        available_models = _merge_models(
+            requested_available_models,
+            requested_manual_models,
+            requested_llm_models,
+        )
+        with open_database_connection(self._settings) as connection:
+            with connection.transaction():
+                row = connection.execute(
+                    """
+                    UPDATE provider_configurations
+                    SET display_name = %s,
+                        endpoint_url = %s,
+                        api_key_secret = CASE
+                            WHEN %s THEN NULL
+                            WHEN %s::text IS NOT NULL THEN %s
+                            ELSE api_key_secret
+                        END,
+                        manual_models = %s,
+                        available_models = %s,
+                        embedding_models = %s,
+                        llm_models = %s,
+                        updated_by_user_id = %s,
+                        updated_at = now()
+                    WHERE id = %s
+                    RETURNING id, provider, display_name, endpoint_url,
+                              available_models, embedding_models AS manual_models,
+                              llm_models, api_key_secret, updated_at
+                    """,
+                    (
+                        display_name,
+                        endpoint_url,
+                        payload.remove_api_key,
+                        encrypted_api_key,
+                        encrypted_api_key,
+                        Jsonb(requested_manual_models),
+                        Jsonb(available_models),
+                        Jsonb(requested_manual_models),
+                        Jsonb(requested_llm_models),
+                        actor_user_id,
+                        provider_id,
+                    ),
+                ).fetchone()
+                if row is None:
+                    raise ProviderError("provider is not configured")
+                self._audit.record_event(
+                    connection,
+                    actor_user_id=actor_user_id,
+                    action="provider.configure",
+                    target_type="provider_configuration",
+                    target_id=provider_id,
+                    metadata={
+                        "provider": provider,
+                        "display_name": display_name,
+                        "endpoint_set": endpoint_url is not None,
+                        "available_model_count": len(available_models),
+                        "manual_model_count": len(requested_manual_models),
+                        "llm_model_count": len(requested_llm_models),
+                        "api_key_set": clean_api_key is not None,
+                        "api_key_removed": payload.remove_api_key,
+                    },
+                )
+        return _configuration_from_row(dict(row))
+
+    def delete_configuration(self, provider_id: UUID, *, actor_user_id: UUID) -> None:
+        with open_database_connection(self._settings) as connection:
+            with connection.transaction():
+                active_reference = connection.execute(
+                    """
+                    SELECT id
+                    FROM analysis_runs
+                    WHERE provider_configuration_id = %s
+                      AND deleted_at IS NULL
+                      AND status IN ('queued', 'running', 'cancelling')
+                    UNION ALL
+                    SELECT id
+                    FROM cluster_sets
+                    WHERE llm_provider_configuration_id = %s
+                      AND deleted_at IS NULL
+                      AND status IN ('queued', 'running', 'cancelling')
+                    LIMIT 1
+                    """,
+                    (provider_id, provider_id),
+                ).fetchone()
+                if active_reference is not None:
+                    raise ProviderDeleteBlocked("provider is still used by active jobs")
+                row = connection.execute(
+                    """
+                    DELETE FROM provider_configurations
+                    WHERE id = %s
+                    RETURNING id, provider, display_name
+                    """,
+                    (provider_id,),
+                ).fetchone()
+                if row is None:
+                    raise ProviderError("provider is not configured")
+                self._audit.record_event(
+                    connection,
+                    actor_user_id=actor_user_id,
+                    action="provider.delete",
+                    target_type="provider_configuration",
+                    target_id=provider_id,
+                    metadata={
+                        "provider": str(row["provider"]),
+                        "display_name": str(row["display_name"]),
+                    },
+                )
 
     def seed_ollama_provider_from_env(self) -> None:
         embedding_models = _clean_models(
@@ -272,6 +623,7 @@ class ProviderService:
         llm_models = _clean_models(
             _split_env_models(os.environ.get("SKM_OLLAMA_LLM_MODELS"))
         )
+        available_models = _merge_models(embedding_models, llm_models)
         endpoint_url = _clean_endpoint(
             os.environ.get("SKM_OLLAMA_BASE_URL")
             or (DEFAULT_OLLAMA_BASE_URL if embedding_models or llm_models else None)
@@ -285,17 +637,25 @@ class ProviderService:
                 connection.execute(
                     """
                     INSERT INTO provider_configurations (
-                        provider, endpoint_url, manual_models,
-                        embedding_models, llm_models
+                        id, provider, display_name, endpoint_url, manual_models,
+                        available_models, embedding_models, llm_models
                     )
-                    VALUES ('ollama', %s, %s, %s, %s)
-                    ON CONFLICT (provider) DO NOTHING
+                    SELECT %s, 'ollama', %s, %s, %s, %s, %s, %s
+                    WHERE NOT EXISTS (
+                        SELECT 1
+                        FROM provider_configurations
+                        WHERE provider = 'ollama' AND endpoint_url = %s
+                    )
                     """,
                     (
+                        uuid4(),
+                        self._next_display_name(connection, "ollama"),
                         endpoint_url,
                         Jsonb(embedding_models),
+                        Jsonb(available_models),
                         Jsonb(embedding_models),
                         Jsonb(llm_models),
+                        endpoint_url,
                     ),
                 )
 
@@ -307,8 +667,13 @@ class ProviderService:
     ) -> ProviderConfiguration:
         provider = _provider(payload.provider)
         endpoint_url = _clean_endpoint(payload.endpoint_url)
-        if provider in {"ollama", "vllm"} and endpoint_url is not None:
+        if provider == "ollama" and endpoint_url is not None:
             _require_local_endpoint(provider, endpoint_url)
+        requested_available_models = (
+            _clean_models(payload.available_models)
+            if payload.available_models is not None
+            else None
+        )
         requested_manual_models = (
             _clean_models(payload.manual_models)
             if payload.manual_models is not None
@@ -319,12 +684,10 @@ class ProviderService:
             if payload.llm_models is not None
             else None
         )
-        if provider == "vllm" and requested_llm_models:
-            raise ProviderError("vllm is not an LLM provider")
         clean_api_key = payload.api_key.strip() if payload.api_key is not None else None
         if clean_api_key == "":
             clean_api_key = None
-        if provider in {"ollama", "vllm"} and clean_api_key is not None:
+        if provider == "ollama" and clean_api_key is not None:
             raise ProviderError(f"{provider} does not accept an api_key")
         if payload.remove_api_key and clean_api_key is not None:
             raise ProviderError("api_key and remove_api_key cannot be used together")
@@ -336,6 +699,13 @@ class ProviderService:
                 raise ProviderError(str(exc)) from exc
 
         existing = self._get_configuration(provider)
+        provider_id = existing.id if existing is not None else uuid4()
+        display_name = _clean_display_name(
+            payload.display_name,
+            fallback=existing.display_name
+            if existing is not None
+            else provider.capitalize(),
+        )
         manual_models = (
             requested_manual_models
             if requested_manual_models is not None
@@ -346,38 +716,55 @@ class ProviderService:
             if requested_llm_models is not None
             else (existing.llm_models if existing is not None else [])
         )
+        manual_models, llm_models = _purpose_allow_lists(
+            provider,
+            manual_models,
+            llm_models,
+        )
+        available_models = _merge_models(
+            requested_available_models
+            if requested_available_models is not None
+            else (existing.available_models if existing is not None else []),
+            manual_models,
+            llm_models,
+        )
 
         with open_database_connection(self._settings) as connection:
             with connection.transaction():
                 row = connection.execute(
                     """
                     INSERT INTO provider_configurations (
-                        provider, endpoint_url, api_key_secret, manual_models,
-                        embedding_models, llm_models, created_by_user_id,
-                        updated_by_user_id
+                        id, provider, display_name, endpoint_url, api_key_secret,
+                        manual_models, available_models, embedding_models,
+                        llm_models, created_by_user_id, updated_by_user_id
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                    ON CONFLICT (provider) DO UPDATE
-                    SET endpoint_url = EXCLUDED.endpoint_url,
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (id) DO UPDATE
+                    SET display_name = EXCLUDED.display_name,
+                        endpoint_url = EXCLUDED.endpoint_url,
                         api_key_secret = CASE
                             WHEN %s THEN NULL
                             WHEN %s::text IS NOT NULL THEN %s
                             ELSE provider_configurations.api_key_secret
                         END,
                         manual_models = EXCLUDED.manual_models,
+                        available_models = EXCLUDED.available_models,
                         embedding_models = EXCLUDED.embedding_models,
                         llm_models = EXCLUDED.llm_models,
                         updated_by_user_id = EXCLUDED.updated_by_user_id,
                         updated_at = now()
-                    RETURNING provider, endpoint_url,
-                              embedding_models AS manual_models, llm_models,
-                              api_key_secret, updated_at
+                    RETURNING id, provider, display_name, endpoint_url,
+                              available_models, embedding_models AS manual_models,
+                              llm_models, api_key_secret, updated_at
                     """,
                     (
+                        provider_id,
                         provider,
+                        display_name,
                         endpoint_url,
                         encrypted_api_key,
                         Jsonb(manual_models),
+                        Jsonb(available_models),
                         Jsonb(manual_models),
                         Jsonb(llm_models),
                         actor_user_id,
@@ -394,10 +781,12 @@ class ProviderService:
                     actor_user_id=actor_user_id,
                     action="provider.configure",
                     target_type="provider_configuration",
-                    target_id=provider,
+                    target_id=provider_id,
                     metadata={
                         "provider": provider,
+                        "display_name": display_name,
                         "endpoint_set": endpoint_url is not None,
+                        "available_model_count": len(available_models),
                         "manual_model_count": len(manual_models),
                         "llm_model_count": len(llm_models),
                         "api_key_set": clean_api_key is not None,
@@ -406,61 +795,68 @@ class ProviderService:
                 )
         return _configuration_from_row(dict(row))
 
-    def check_provider(self, provider: str) -> ProviderCheckResult:
-        clean_provider = _provider(provider)
-        config = self._get_configuration(clean_provider)
+    def check_provider(self, provider_ref: UUID | str) -> ProviderCheckResult:
+        config = self._get_configuration_by_ref(provider_ref)
         if config is None:
             raise ProviderError("provider is not configured")
-        if clean_provider == "openai":
-            api_key_secret = self._get_api_key_secret(clean_provider)
+        if config.provider == "openai":
+            api_key_secret = self._get_api_key_secret(config.id)
             if api_key_secret is None:
-                return ProviderCheckResult(
-                    provider=clean_provider,
+                return _provider_check_result(
+                    config=config,
                     ok=False,
-                    models=config.manual_models,
+                    models=config.available_models,
                     message="OpenAI API key is not configured",
                 )
             try:
                 api_key = decrypt_provider_secret(api_key_secret)
             except ProviderSecretError as exc:
-                return ProviderCheckResult(
-                    provider=clean_provider,
+                return _provider_check_result(
+                    config=config,
                     ok=False,
-                    models=config.manual_models,
+                    models=config.available_models,
                     message=f"OpenAI model discovery failed: {exc}",
                 )
-            return self._check_openai(api_key, config.manual_models)
-        if config.endpoint_url is None:
-            raise ProviderError(f"{clean_provider} endpoint_url is required")
-        if clean_provider == "ollama":
-            return self._check_ollama(config.endpoint_url, config.manual_models)
-        return self._check_vllm(config.endpoint_url, config.manual_models)
-
-    def pull_ollama_model(
-        self, model: str, *, actor_user_id: UUID
-    ) -> ProviderConfiguration:
-        clean_model = _clean_model(model)
-        config = self._get_configuration("ollama")
-        if config is None:
-            raise ProviderError("ollama provider is not configured")
+            return self._check_openai(config, api_key)
         if config.endpoint_url is None:
             raise ProviderError("ollama endpoint_url is required")
-        self._pull_ollama_model(config.endpoint_url, clean_model)
-        manual_models = _clean_models([*config.manual_models, clean_model])
-        return self.upsert_configuration(
+        return self._check_ollama(config, config.endpoint_url)
+
+    def pull_ollama_model(
+        self, provider_ref: UUID | str, model: str, *, actor_user_id: UUID
+    ) -> ProviderConfiguration:
+        clean_model = _clean_model(model)
+        config = self._get_configuration_by_ref(provider_ref)
+        if config is None:
+            raise ProviderError("ollama provider is not configured")
+        if config.provider != "ollama":
+            raise ProviderError("model pull is only available for ollama")
+        if config.endpoint_url is None:
+            raise ProviderError("ollama endpoint_url is required")
+        if not _OLLAMA_PULL_LOCK.acquire(blocking=False):
+            raise ProviderPullInProgress("ollama model pull already in progress")
+        try:
+            self._pull_ollama_model(config.endpoint_url, clean_model)
+        finally:
+            _OLLAMA_PULL_LOCK.release()
+        available_models = _merge_models(config.available_models, [clean_model])
+        return self.update_configuration(
+            config.id,
             ProviderSettingsInput(
                 provider="ollama",
+                display_name=config.display_name,
                 endpoint_url=config.endpoint_url,
-                manual_models=manual_models,
+                available_models=available_models,
+                manual_models=config.manual_models,
+                llm_models=config.llm_models,
             ),
             actor_user_id=actor_user_id,
         )
 
     def embed_texts(
-        self, provider: str, model: str, texts: list[str]
+        self, provider_ref: UUID | str, model: str, texts: list[str]
     ) -> list[list[float]]:
         """Generate exactly one validated embedding per input without fallback."""
-        clean_provider = _provider(provider)
         clean_model = _clean_model(model)
         if not texts or len(texts) > MAX_EMBEDDING_BATCH_SIZE:
             raise ProviderError(
@@ -473,15 +869,17 @@ class ProviderService:
         if sum(len(text) for text in texts) > MAX_EMBEDDING_BATCH_CHARACTERS:
             raise ProviderError("embedding batch is too large")
 
-        config = self._get_configuration(clean_provider)
-        if config is None or clean_model not in config.manual_models:
+        config = self._get_configuration_by_ref(provider_ref)
+        if config is None:
+            raise ProviderError("provider is not configured for embeddings")
+        if clean_model not in config.manual_models:
             raise ProviderError("model is not configured for provider")
         headers = {
             "Accept": "application/json",
             "Content-Type": "application/json",
         }
-        if clean_provider == "openai":
-            secret = self._get_api_key_secret(clean_provider)
+        if config.provider == "openai":
+            secret = self._get_api_key_secret(config.id)
             if secret is None:
                 raise ProviderError("OpenAI API key is not configured")
             try:
@@ -499,15 +897,11 @@ class ProviderService:
             embeddings = self._openai_compatible_embeddings(payload, len(texts))
         else:
             if config.endpoint_url is None:
-                raise ProviderError(f"{clean_provider} endpoint_url is required")
-            _require_local_endpoint(clean_provider, config.endpoint_url)
+                raise ProviderError("ollama endpoint_url is required")
+            _require_local_endpoint(config.provider, config.endpoint_url)
             parsed = urlparse(config.endpoint_url)
             base_path = parsed.path.rstrip("/")
-            path = (
-                f"{base_path}/api/embed"
-                if clean_provider == "ollama"
-                else _openai_compatible_path(parsed.path, "embeddings")
-            )
+            path = f"{base_path}/api/embed" if base_path else "/api/embed"
             payload = self._post_embedding_request(
                 scheme=parsed.scheme,
                 netloc=parsed.netloc,
@@ -515,48 +909,44 @@ class ProviderService:
                 body={
                     "model": clean_model,
                     "input": texts,
-                    **({"keep_alive": "5m"} if clean_provider == "ollama" else {}),
+                    "keep_alive": "5m",
                 },
                 headers=headers,
             )
-            embeddings = (
-                self._ollama_embeddings(payload, len(texts))
-                if clean_provider == "ollama"
-                else self._openai_compatible_embeddings(payload, len(texts))
-            )
+            embeddings = self._ollama_embeddings(payload, len(texts))
         return self._validate_embeddings(embeddings, len(texts))
 
     def ensure_text_generation_model(
-        self, provider: str, model: str
+        self, provider_ref: UUID | str, model: str
     ) -> ProviderConfiguration:
-        clean_provider = _llm_provider(provider)
         clean_model = _clean_model(model)
-        config = self._get_configuration(clean_provider)
-        if config is None or clean_model not in config.llm_models:
+        config = self._get_configuration_by_ref(provider_ref)
+        if config is None:
+            raise ProviderError("provider is not configured for LLM use")
+        if clean_model not in config.llm_models:
             raise ProviderError("LLM model is not configured for provider")
-        if clean_provider == "openai" and self._get_api_key_secret("openai") is None:
+        if config.provider == "openai" and self._get_api_key_secret(config.id) is None:
             raise ProviderError("OpenAI API key is not configured")
-        if clean_provider == "ollama":
+        if config.provider == "ollama":
             if config.endpoint_url is None:
                 raise ProviderError("ollama endpoint_url is required")
             _require_local_ollama_endpoint(config.endpoint_url)
         return config
 
-    def generate_text(self, provider: str, model: str, prompt: str) -> str:
+    def generate_text(self, provider_ref: UUID | str, model: str, prompt: str) -> str:
         """Generate one bounded text response from an explicitly configured LLM."""
-        clean_provider = _llm_provider(provider)
         clean_model = _clean_model(model)
         if not isinstance(prompt, str) or not prompt.strip():
             raise ProviderError("LLM prompt must not be empty")
         if len(prompt) > MAX_LLM_PROMPT_CHARACTERS:
             raise ProviderError("LLM prompt is too large")
-        config = self.ensure_text_generation_model(clean_provider, clean_model)
+        config = self.ensure_text_generation_model(provider_ref, clean_model)
         headers = {
             "Accept": "application/json",
             "Content-Type": "application/json",
         }
-        if clean_provider == "openai":
-            secret = self._get_api_key_secret(clean_provider)
+        if config.provider == "openai":
+            secret = self._get_api_key_secret(config.id)
             if secret is None:
                 raise ProviderError("OpenAI API key is not configured")
             try:
@@ -567,25 +957,25 @@ class ProviderService:
             payload = self._post_llm_request(
                 scheme="https",
                 netloc=OPENAI_API_HOST,
-                path="/v1/chat/completions",
+                path="/v1/responses",
                 body={
                     "model": clean_model,
-                    "messages": [
-                        {
-                            "role": "system",
-                            "content": (
-                                "Return only compact JSON with title, category, "
-                                "question, answer, and rationale fields."
-                            ),
-                        },
-                        {"role": "user", "content": prompt},
-                    ],
-                    "temperature": 0.2,
-                    "max_tokens": 800,
+                    "instructions": LLM_SUMMARY_JSON_INSTRUCTIONS,
+                    "input": prompt,
+                    "max_output_tokens": LLM_SUMMARY_OUTPUT_TOKENS,
+                    "store": False,
+                    "text": {
+                        "format": {
+                            "type": "json_schema",
+                            "name": "cluster_summary",
+                            "strict": True,
+                            "schema": LLM_SUMMARY_JSON_SCHEMA,
+                        }
+                    },
                 },
                 headers=headers,
             )
-            text = self._openai_chat_text(payload)
+            text = self._openai_response_text(payload)
         else:
             if config.endpoint_url is None:
                 raise ProviderError("ollama endpoint_url is required")
@@ -599,9 +989,12 @@ class ProviderService:
                 path=path,
                 body={
                     "model": clean_model,
+                    "system": LLM_SUMMARY_JSON_INSTRUCTIONS,
                     "prompt": prompt,
+                    "format": "json",
                     "stream": False,
-                    "options": {"temperature": 0.2},
+                    "keep_alive": "5m",
+                    "options": {"temperature": 0, "num_predict": 700},
                 },
                 headers=headers,
             )
@@ -614,32 +1007,82 @@ class ProviderService:
         with open_database_connection(self._settings) as connection:
             row = connection.execute(
                 """
-                SELECT provider, endpoint_url,
+                SELECT id, provider, display_name, endpoint_url,
+                       available_models,
                        embedding_models AS manual_models,
                        llm_models, api_key_secret, updated_at
                 FROM provider_configurations
                 WHERE provider = %s
+                ORDER BY created_at ASC, id ASC
+                LIMIT 1
                 """,
                 (provider,),
             ).fetchone()
         return _configuration_from_row(dict(row)) if row is not None else None
 
-    def _get_api_key_secret(self, provider: str) -> str | None:
+    def _get_configuration_by_id(
+        self, provider_id: UUID
+    ) -> ProviderConfiguration | None:
+        with open_database_connection(self._settings) as connection:
+            row = connection.execute(
+                """
+                SELECT id, provider, display_name, endpoint_url,
+                       available_models,
+                       embedding_models AS manual_models,
+                       llm_models, api_key_secret, updated_at
+                FROM provider_configurations
+                WHERE id = %s
+                """,
+                (provider_id,),
+            ).fetchone()
+        return _configuration_from_row(dict(row)) if row is not None else None
+
+    def _get_configuration_by_ref(
+        self, provider_ref: UUID | str
+    ) -> ProviderConfiguration | None:
+        if isinstance(provider_ref, UUID):
+            return self._get_configuration_by_id(provider_ref)
+        try:
+            return self._get_configuration_by_id(UUID(str(provider_ref)))
+        except ValueError:
+            return self._get_configuration(_provider(str(provider_ref)))
+
+    def _get_api_key_secret(self, provider_id: UUID) -> str | None:
         with open_database_connection(self._settings) as connection:
             row = connection.execute(
                 """
                 SELECT api_key_secret
                 FROM provider_configurations
-                WHERE provider = %s
+                WHERE id = %s
                 """,
-                (provider,),
+                (provider_id,),
             ).fetchone()
         if row is None or row["api_key_secret"] is None:
             return None
         return str(row["api_key_secret"])
 
+    def _next_display_name(self, connection: Any, provider: str) -> str:
+        base_name = "OpenAI" if provider == "openai" else "Ollama"
+        rows = connection.execute(
+            """
+            SELECT display_name
+            FROM provider_configurations
+            WHERE provider = %s
+            """,
+            (provider,),
+        ).fetchall()
+        used = {
+            str(row["display_name"]) for row in rows if row["display_name"] is not None
+        }
+        if base_name not in used:
+            return base_name
+        suffix = 2
+        while f"{base_name} {suffix}" in used:
+            suffix += 1
+        return f"{base_name} {suffix}"
+
     def _check_ollama(
-        self, endpoint_url: str, manual_models: list[str]
+        self, config: ProviderConfiguration, endpoint_url: str
     ) -> ProviderCheckResult:
         _require_local_ollama_endpoint(endpoint_url)
         parsed = urlparse(endpoint_url)
@@ -665,19 +1108,19 @@ class ProviderService:
             OSError,
             json.JSONDecodeError,
         ) as exc:
-            return ProviderCheckResult(
-                provider="ollama",
+            return _provider_check_result(
+                config=config,
                 ok=False,
-                models=manual_models,
+                models=config.available_models,
                 message=f"Ollama model discovery failed: {exc.__class__.__name__}",
             )
         finally:
             connection.close()
         discovered = self._models_from_ollama_tags_payload(payload)
-        return ProviderCheckResult(
-            provider="ollama",
-            ok=bool(discovered or manual_models),
-            models=discovered or manual_models,
+        return _provider_check_result(
+            config=config,
+            ok=bool(discovered),
+            models=discovered,
             message=(
                 "Ollama models discovered"
                 if discovered
@@ -732,50 +1175,8 @@ class ProviderService:
         finally:
             connection.close()
 
-    def _check_vllm(
-        self, endpoint_url: str, manual_models: list[str]
-    ) -> ProviderCheckResult:
-        _require_local_endpoint("vllm", endpoint_url)
-        parsed = urlparse(endpoint_url)
-        connection_class = (
-            HTTPSConnection if parsed.scheme == "https" else HTTPConnection
-        )
-        path = _openai_compatible_path(parsed.path, "models")
-        connection = connection_class(
-            parsed.netloc,
-            timeout=PROVIDER_CHECK_TIMEOUT_SECONDS,
-        )
-        try:
-            connection.request("GET", path, headers={"Accept": "application/json"})
-            response = connection.getresponse()
-            if response.status >= 300:
-                raise ProviderError(f"vLLM returned HTTP {response.status}")
-            payload = json.loads(response.read(1024 * 1024).decode("utf-8"))
-        except (
-            HTTPException,
-            ProviderError,
-            TimeoutError,
-            OSError,
-            json.JSONDecodeError,
-        ) as exc:
-            return ProviderCheckResult(
-                provider="vllm",
-                ok=False,
-                models=manual_models,
-                message=f"vLLM model discovery failed: {exc.__class__.__name__}",
-            )
-        finally:
-            connection.close()
-        discovered = self._models_from_openai_compatible_payload(payload)
-        return ProviderCheckResult(
-            provider="vllm",
-            ok=True,
-            models=discovered or manual_models,
-            message="vLLM endpoint reachable",
-        )
-
     def _check_openai(
-        self, api_key: str, manual_models: list[str]
+        self, config: ProviderConfiguration, api_key: str
     ) -> ProviderCheckResult:
         connection = HTTPSConnection(
             OPENAI_API_HOST,
@@ -801,10 +1202,10 @@ class ProviderService:
             OSError,
             json.JSONDecodeError,
         ) as exc:
-            return ProviderCheckResult(
-                provider="openai",
+            return _provider_check_result(
+                config=config,
                 ok=False,
-                models=manual_models,
+                models=config.available_models,
                 message=f"OpenAI model discovery failed: {exc.__class__.__name__}",
             )
         finally:
@@ -812,27 +1213,16 @@ class ProviderService:
 
         discovered = self._models_from_openai_compatible_payload(payload)
         if not discovered:
-            return ProviderCheckResult(
-                provider="openai",
+            return _provider_check_result(
+                config=config,
                 ok=False,
-                models=manual_models,
+                models=[],
                 message="OpenAI model discovery returned no model ids",
             )
-        embedding_models = [
-            model for model in discovered if "embedding" in model.lower()
-        ]
-        if embedding_models:
-            return ProviderCheckResult(
-                provider="openai",
-                ok=True,
-                models=embedding_models,
-                message="OpenAI embedding models discovered",
-            )
-        models = discovered or manual_models
-        return ProviderCheckResult(
-            provider="openai",
-            ok=bool(models),
-            models=models,
+        return _provider_check_result(
+            config=config,
+            ok=True,
+            models=discovered,
             message="OpenAI models discovered",
         )
 
@@ -918,21 +1308,42 @@ class ProviderService:
         finally:
             connection.close()
 
-    def _openai_chat_text(self, payload: Any) -> str:
-        if not isinstance(payload, dict) or not isinstance(
-            payload.get("choices"), list
-        ):
+    def _openai_response_text(self, payload: Any) -> str:
+        if not isinstance(payload, dict):
             raise ProviderError("LLM provider returned an invalid response")
-        choices = payload["choices"]
-        if not choices:
-            raise ProviderError("LLM provider returned an empty response")
-        first = choices[0]
-        if not isinstance(first, dict) or not isinstance(first.get("message"), dict):
-            raise ProviderError("LLM provider returned an invalid response")
-        content = first["message"].get("content")
-        if not isinstance(content, str) or not content.strip():
-            raise ProviderError("LLM provider returned an empty response")
-        return content.strip()
+        output_text = payload.get("output_text")
+        if isinstance(output_text, str) and output_text.strip():
+            return output_text.strip()
+        text_parts: list[str] = []
+        output = payload.get("output")
+        if isinstance(output, list):
+            for item in output:
+                if not isinstance(item, dict):
+                    continue
+                content = item.get("content")
+                if not isinstance(content, list):
+                    continue
+                for content_item in content:
+                    if not isinstance(content_item, dict):
+                        continue
+                    text = content_item.get("text")
+                    if isinstance(text, str) and text.strip():
+                        text_parts.append(text.strip())
+        if text_parts:
+            return "\n".join(text_parts)
+        if payload.get("status") == "incomplete":
+            incomplete_details = payload.get("incomplete_details")
+            reason = (
+                incomplete_details.get("reason")
+                if isinstance(incomplete_details, dict)
+                else None
+            )
+            if isinstance(reason, str) and reason.strip():
+                raise ProviderError(
+                    f"LLM provider returned an incomplete response ({reason.strip()})"
+                )
+            raise ProviderError("LLM provider returned an incomplete response")
+        raise ProviderError("LLM provider returned an empty response")
 
     def _ollama_generation_text(self, payload: Any) -> str:
         if not isinstance(payload, dict):

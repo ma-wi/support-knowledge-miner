@@ -1,15 +1,5 @@
 name: support-knowledge-miner
 
-x-vllm-common: &vllm-common
-  image: ${VLLM_IMAGE:-vllm/vllm-openai:latest}
-  environment:
-    HF_HOME: /root/.cache/huggingface
-  ports:
-    - "${VLLM_PORT:-8000}:8000"
-  volumes:
-    - ksm-vllm-cache:/root/.cache/huggingface
-  ipc: host
-
 services:
   postgres:
     image: pgvector/pgvector:pg17
@@ -29,37 +19,6 @@ services:
       timeout: 5s
       retries: 20
 
-  vllm-gpu:
-    <<: *vllm-common
-    profiles: ["vllm-gpu"]
-    command:
-      - --host
-      - 0.0.0.0
-      - --port
-      - "8000"
-      - --model
-      - ${VLLM_MODEL:-Qwen/Qwen2.5-0.5B-Instruct}
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: ${VLLM_GPU_COUNT:-1}
-              capabilities: ["gpu"]
-
-  vllm-cpu:
-    <<: *vllm-common
-    profiles: ["vllm-cpu"]
-    command:
-      - --host
-      - 0.0.0.0
-      - --port
-      - "8000"
-      - --model
-      - ${VLLM_MODEL:-Qwen/Qwen2.5-0.5B-Instruct}
-      - --device
-      - cpu
-
   ollama:
     image: ${OLLAMA_IMAGE:-ollama/ollama:latest}
     profiles: ["ollama"]
@@ -69,6 +28,7 @@ services:
       - ksm-ollama-data:/root/.ollama
     environment:
       OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-5m}
+      OLLAMA_FLASH_ATTENTION: "0"
     deploy:
       resources:
         reservations:
@@ -79,5 +39,4 @@ services:
 
 volumes:
   ksm-postgres-data:
-  ksm-vllm-cache:
   ksm-ollama-data:

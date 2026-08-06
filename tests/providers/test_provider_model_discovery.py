@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 from typing import Any
+from uuid import UUID
 
 import pytest
 
@@ -12,6 +13,8 @@ from backend.providers import (
     ProviderService,
 )
 from backend.providers import service as provider_service_module
+
+PROVIDER_ID = UUID("cccccccc-cccc-cccc-cccc-cccccccccccc")
 
 
 class FakeResponse:
@@ -209,6 +212,59 @@ class RecordingEmbeddingConnection:
         cls.requests = []
 
 
+class RecordingLLMConnection:
+    status = 200
+    payload: Any = {"output_text": '{"title":"Reset"}'}
+    raw: bytes | None = None
+    requests: list[dict[str, object]] = []
+
+    def __init__(self, host: str, timeout: float) -> None:
+        self.host = host
+        self.timeout = timeout
+
+    def request(
+        self,
+        method: str,
+        path: str,
+        body: bytes | None = None,
+        *,
+        headers: dict[str, str],
+    ) -> None:
+        self.requests.append(
+            {
+                "host": self.host,
+                "timeout": self.timeout,
+                "method": method,
+                "path": path,
+                "body": json.loads(body.decode("utf-8")) if body else None,
+                "headers": headers,
+            }
+        )
+
+    def getresponse(self) -> RecordingEmbeddingResponse:
+        return RecordingEmbeddingResponse(
+            status=self.status,
+            payload=self.payload,
+            raw=self.raw,
+        )
+
+    def close(self) -> None:
+        return None
+
+    @classmethod
+    def reset(
+        cls,
+        *,
+        payload: Any,
+        status: int = 200,
+        raw: bytes | None = None,
+    ) -> None:
+        cls.payload = payload
+        cls.status = status
+        cls.raw = raw
+        cls.requests = []
+
+
 def provider_configuration(
     provider: str,
     *,
@@ -216,8 +272,11 @@ def provider_configuration(
     model: str = "local-embed",
 ) -> ProviderConfiguration:
     return ProviderConfiguration(
+        id=PROVIDER_ID,
         provider=provider,
+        display_name="OpenAI" if provider == "openai" else "Ollama",
         endpoint_url=endpoint_url,
+        available_models=[model],
         manual_models=[model],
         llm_models=[model] if provider in {"openai", "ollama"} else [],
         api_key_set=provider == "openai",
@@ -225,14 +284,26 @@ def provider_configuration(
     )
 
 
-def test_openai_check_prefers_embedding_models(monkeypatch: Any) -> None:
+def test_openai_check_returns_embedding_and_llm_models(monkeypatch: Any) -> None:
     monkeypatch.setattr(provider_service_module, "HTTPSConnection", FakeHTTPSConnection)
 
-    result = ProviderService()._check_openai("sk-test", ["manual-fallback"])
+    result = ProviderService()._check_openai(
+        provider_configuration("openai", endpoint_url=None, model="manual-fallback"),
+        "sk-test",
+    )
 
     assert result.ok is True
-    assert result.models == ["text-embedding-3-small", "text-embedding-3-large"]
-    assert result.message == "OpenAI embedding models discovered"
+    assert result.models == [
+        "text-embedding-3-small",
+        "text-embedding-3-large",
+        "gpt-4.1-mini",
+    ]
+    assert result.embedding_models == [
+        "text-embedding-3-small",
+        "text-embedding-3-large",
+    ]
+    assert result.llm_models == ["gpt-4.1-mini"]
+    assert result.message == "OpenAI models discovered"
     assert FakeHTTPSConnection.last_headers == {
         "Accept": "application/json",
         "Authorization": "Bearer sk-test",
@@ -246,10 +317,15 @@ def test_openai_check_falls_back_to_all_models_when_no_embeddings(
         provider_service_module, "HTTPSConnection", FakeAllModelHTTPSConnection
     )
 
-    result = ProviderService()._check_openai("sk-test", ["manual-fallback"])
+    result = ProviderService()._check_openai(
+        provider_configuration("openai", endpoint_url=None, model="manual-fallback"),
+        "sk-test",
+    )
 
     assert result.ok is True
-    assert result.models == ["gpt-4.1-mini", "o3-mini"]
+    assert result.models == ["gpt-4.1-mini"]
+    assert result.embedding_models == []
+    assert result.llm_models == ["gpt-4.1-mini"]
     assert result.message == "OpenAI models discovered"
 
 
@@ -262,11 +338,26 @@ def test_openai_check_accepts_alternative_model_payload_shapes(
         FakeAlternativePayloadHTTPSConnection,
     )
 
-    result = ProviderService()._check_openai("sk-test", [])
+    result = ProviderService()._check_openai(
+        ProviderConfiguration(
+            id=PROVIDER_ID,
+            provider="openai",
+            display_name="OpenAI",
+            endpoint_url=None,
+            available_models=[],
+            manual_models=[],
+            llm_models=[],
+            api_key_set=True,
+            updated_at=datetime(2026, 7, 26, tzinfo=UTC),
+        ),
+        "sk-test",
+    )
 
     assert result.ok is True
-    assert result.models == ["text-embedding-3-small"]
-    assert result.message == "OpenAI embedding models discovered"
+    assert result.models == ["text-embedding-3-small", "gpt-4.1-mini"]
+    assert result.embedding_models == ["text-embedding-3-small"]
+    assert result.llm_models == ["gpt-4.1-mini"]
+    assert result.message == "OpenAI models discovered"
 
 
 def test_openai_check_reports_empty_model_discovery(monkeypatch: Any) -> None:
@@ -274,10 +365,25 @@ def test_openai_check_reports_empty_model_discovery(monkeypatch: Any) -> None:
         provider_service_module, "HTTPSConnection", FakeEmptyModelHTTPSConnection
     )
 
-    result = ProviderService()._check_openai("sk-test", [])
+    result = ProviderService()._check_openai(
+        ProviderConfiguration(
+            id=PROVIDER_ID,
+            provider="openai",
+            display_name="OpenAI",
+            endpoint_url=None,
+            available_models=[],
+            manual_models=[],
+            llm_models=[],
+            api_key_set=True,
+            updated_at=datetime(2026, 7, 26, tzinfo=UTC),
+        ),
+        "sk-test",
+    )
 
     assert result.ok is False
     assert result.models == []
+    assert result.embedding_models == []
+    assert result.llm_models == []
     assert result.message == "OpenAI model discovery returned no model ids"
 
 
@@ -295,17 +401,41 @@ def test_openai_model_discovery_explicitly_filters_invalid_ids() -> None:
     assert models == ["valid-model"]
 
 
+def test_openai_configuration_filters_purpose_allow_lists_from_database_row() -> None:
+    configuration = provider_service_module._configuration_from_row(
+        {
+            "id": PROVIDER_ID,
+            "provider": "openai",
+            "display_name": "OpenAI",
+            "endpoint_url": None,
+            "available_models": ["text-embedding-3-small", "gpt-4.1-mini"],
+            "manual_models": ["text-embedding-3-small", "gpt-4.1-mini"],
+            "llm_models": ["text-embedding-3-small", "gpt-4.1-mini"],
+            "api_key_secret": "fernet:redacted",
+            "updated_at": datetime(2026, 7, 26, tzinfo=UTC),
+        }
+    )
+
+    assert configuration.manual_models == ["text-embedding-3-small"]
+    assert configuration.llm_models == ["gpt-4.1-mini"]
+
+
 def test_ollama_check_discovers_local_models(monkeypatch: Any) -> None:
     monkeypatch.setattr(
         provider_service_module, "HTTPConnection", FakeOllamaHTTPConnection
     )
 
     result = ProviderService()._check_ollama(
-        "http://localhost:11434", ["manual-fallback"]
+        provider_configuration(
+            "ollama", endpoint_url="http://localhost:11434", model="manual-fallback"
+        ),
+        "http://localhost:11434",
     )
 
     assert result.ok is True
     assert result.models == ["nomic-embed-text:latest", "mxbai-embed-large"]
+    assert result.embedding_models == ["nomic-embed-text:latest", "mxbai-embed-large"]
+    assert result.llm_models == ["nomic-embed-text:latest", "mxbai-embed-large"]
     assert result.message == "Ollama models discovered"
     assert FakeOllamaHTTPConnection.last_path == "/api/tags"
 
@@ -344,7 +474,10 @@ def test_ollama_check_rejects_non_local_endpoint_before_connecting(
     monkeypatch.setattr(provider_service_module, "HTTPConnection", fail_connection)
 
     with pytest.raises(ProviderError, match="allowed local endpoint"):
-        ProviderService()._check_ollama(endpoint_url, [])
+        ProviderService()._check_ollama(
+            provider_configuration("ollama", endpoint_url=endpoint_url),
+            endpoint_url,
+        )
 
 
 def test_ollama_pull_uses_local_pull_endpoint(monkeypatch: Any) -> None:
@@ -371,8 +504,11 @@ def test_ollama_embeddings_are_batched_and_validated(monkeypatch: Any) -> None:
         service,
         "_get_configuration",
         lambda _: ProviderConfiguration(
+            id=PROVIDER_ID,
             provider="ollama",
+            display_name="Ollama",
             endpoint_url="http://localhost:11434/",
+            available_models=["local-embed"],
             manual_models=["local-embed"],
             llm_models=[],
             api_key_set=False,
@@ -449,27 +585,17 @@ def test_openai_embeddings_use_fixed_host_and_restore_index_mapping(
     ]
 
 
-def test_vllm_embeddings_use_allowed_local_v1_endpoint(
+def test_vllm_embedding_provider_is_rejected_before_connecting(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    RecordingEmbeddingConnection.reset(
-        payload={"data": [{"index": 0, "embedding": [0.1, 0.2]}]}
-    )
     monkeypatch.setattr(
-        provider_service_module, "HTTPConnection", RecordingEmbeddingConnection
-    )
-    service = ProviderService()
-    monkeypatch.setattr(
-        service,
-        "_get_configuration",
-        lambda _: provider_configuration(
-            "vllm", endpoint_url="http://vllm-cpu:8000/v1"
-        ),
+        provider_service_module,
+        "HTTPConnection",
+        lambda *_args, **_kwargs: pytest.fail("connection must not be attempted"),
     )
 
-    assert service.embed_texts("vllm", "local-embed", ["source"]) == [[0.1, 0.2]]
-    assert RecordingEmbeddingConnection.requests[0]["host"] == "vllm-cpu:8000"
-    assert RecordingEmbeddingConnection.requests[0]["path"] == "/v1/embeddings"
+    with pytest.raises(ProviderError, match="provider must be openai or ollama"):
+        ProviderService().embed_texts("vllm", "local-embed", ["source"])
 
 
 @pytest.mark.parametrize(
@@ -520,12 +646,12 @@ def test_embedding_redirect_is_rejected_without_cloud_fallback(
         service,
         "_get_configuration",
         lambda _: provider_configuration(
-            "vllm", endpoint_url="http://localhost:8000/v1"
+            "ollama", endpoint_url="http://localhost:11434"
         ),
     )
 
     with pytest.raises(ProviderError, match="HTTP 302"):
-        service.embed_texts("vllm", "local-embed", ["source"])
+        service.embed_texts("ollama", "local-embed", ["source"])
 
     assert len(RecordingEmbeddingConnection.requests) == 1
 
@@ -599,17 +725,19 @@ def test_embedding_timeout_fails_safely_without_source_text(
     monkeypatch.setattr(
         service,
         "_get_configuration",
-        lambda _: provider_configuration("vllm", endpoint_url="http://localhost:8000"),
+        lambda _: provider_configuration(
+            "ollama", endpoint_url="http://localhost:11434"
+        ),
     )
 
     with pytest.raises(ProviderError) as error:
-        service.embed_texts("vllm", "local-embed", ["sensitive source text"])
+        service.embed_texts("ollama", "local-embed", ["sensitive source text"])
 
     assert "TimeoutError" in str(error.value)
     assert "sensitive source text" not in str(error.value)
 
 
-def test_embedding_rejects_non_local_vllm_endpoint_before_connecting(
+def test_embedding_rejects_non_local_ollama_endpoint_before_connecting(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
@@ -622,9 +750,123 @@ def test_embedding_rejects_non_local_vllm_endpoint_before_connecting(
         service,
         "_get_configuration",
         lambda _: provider_configuration(
-            "vllm", endpoint_url="http://example.com:8000"
+            "ollama", endpoint_url="http://example.com:11434"
         ),
     )
 
     with pytest.raises(ProviderError, match="allowed local endpoint"):
-        service.embed_texts("vllm", "local-embed", ["source"])
+        service.embed_texts("ollama", "local-embed", ["source"])
+
+
+def test_openai_responses_text_is_parsed_from_output_text() -> None:
+    text = ProviderService()._openai_response_text(
+        {
+            "id": "resp-1",
+            "output_text": (
+                '{"title":"Reset","category":"Account",'
+                '"question":"How?","answer":"Use link","rationale":null}'
+            ),
+        }
+    )
+
+    assert '"title":"Reset"' in text
+
+
+def test_openai_llm_request_uses_structured_outputs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    RecordingLLMConnection.reset(
+        payload={
+            "output_text": (
+                '{"title":"Reset","category":"Account",'
+                '"question":"How?","answer":"Use link","rationale":null}'
+            )
+        }
+    )
+    monkeypatch.setattr(
+        provider_service_module, "HTTPSConnection", RecordingLLMConnection
+    )
+    service = ProviderService()
+    monkeypatch.setattr(
+        service,
+        "_get_configuration_by_ref",
+        lambda _ref: provider_configuration(
+            "openai", endpoint_url=None, model="gpt-4.1-mini"
+        ),
+    )
+    monkeypatch.setattr(service, "_get_api_key_secret", lambda _id: "encrypted")
+    monkeypatch.setattr(
+        provider_service_module, "decrypt_provider_secret", lambda _: "sk-test"
+    )
+
+    text = service.generate_text("openai", "gpt-4.1-mini", "Prompt")
+
+    assert '"title":"Reset"' in text
+    assert len(RecordingLLMConnection.requests) == 1
+    request = RecordingLLMConnection.requests[0]
+    assert request["timeout"] == provider_service_module.PROVIDER_LLM_TIMEOUT_SECONDS
+    body = request["body"]
+    assert isinstance(body, dict)
+    assert body["store"] is False
+    assert (
+        body["max_output_tokens"] == provider_service_module.LLM_SUMMARY_OUTPUT_TOKENS
+    )
+    text_config = body["text"]
+    assert isinstance(text_config, dict)
+    format_config = text_config["format"]
+    assert isinstance(format_config, dict)
+    assert format_config["type"] == "json_schema"
+    assert format_config["strict"] is True
+    assert format_config["name"] == "cluster_summary"
+
+
+def test_ollama_llm_request_uses_json_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    RecordingLLMConnection.reset(
+        payload={
+            "response": (
+                '{"title":"Reset","category":"Account",'
+                '"question":"How?","answer":"Use link","rationale":null}'
+            )
+        }
+    )
+    monkeypatch.setattr(
+        provider_service_module, "HTTPConnection", RecordingLLMConnection
+    )
+    service = ProviderService()
+    monkeypatch.setattr(
+        service,
+        "_get_configuration_by_ref",
+        lambda _ref: provider_configuration(
+            "ollama", endpoint_url="http://localhost:11434", model="qwen2.5:7b"
+        ),
+    )
+
+    text = service.generate_text("ollama", "qwen2.5:7b", "Prompt")
+
+    assert '"title":"Reset"' in text
+    assert len(RecordingLLMConnection.requests) == 1
+    request = RecordingLLMConnection.requests[0]
+    assert request["path"] == "/api/generate"
+    assert request["timeout"] == provider_service_module.PROVIDER_LLM_TIMEOUT_SECONDS
+    body = request["body"]
+    assert isinstance(body, dict)
+    assert body["format"] == "json"
+    assert body["keep_alive"] == "5m"
+    options = body["options"]
+    assert isinstance(options, dict)
+    assert options["temperature"] == 0
+    assert options["num_predict"] == 700
+
+
+def test_openai_incomplete_response_reports_safe_reason() -> None:
+    with pytest.raises(ProviderError, match="max_output_tokens"):
+        ProviderService()._openai_response_text(
+            {
+                "id": "resp-1",
+                "status": "incomplete",
+                "incomplete_details": {"reason": "max_output_tokens"},
+                "output": [],
+            }
+        )

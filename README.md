@@ -12,8 +12,8 @@ The MVP is explicitly local-only. Do not connect it to production systems, produ
 - Create, open, rename, and delete independent projects.
 - Import CSV or JSON records with `ticket_id`, `message_group_id`, `message`, and `answer` fields.
 - Persist dataset versions, import logs, skipped-record reasons, and audit actor identity.
-- Configure global OpenAI, Ollama, and vLLM embedding providers plus OpenAI or
-  Ollama LLM providers; OpenAI API keys are write-only after save.
+- Configure global OpenAI and Ollama provider instances for Embedding and/or LLM
+  use; OpenAI API keys are write-only after save.
 - Start bounded indexing runs that split long `message` and `answer` texts into
   provider-safe chunks, persist selected-provider embeddings per text variant, and
   expose observable status, progress, metadata, cancellation and safe diagnostics.
@@ -105,7 +105,9 @@ valid records produce distinct German messages.
 
 - Backend: Python 3.13, FastAPI, ijson, psycopg, scikit-learn, PostgreSQL with pgvector.
 - Frontend: React 19, TypeScript, Vite, Vitest, Testing Library, Oxlint, Prettier.
-- Runtime: local Docker Compose PostgreSQL/pgvector; optional Ollama and vLLM GPU or CPU profiles.
+- Runtime: local Docker Compose PostgreSQL/pgvector; optional Ollama profile.
+- Optional GPU clustering acceleration: RAPIDS/cuML via the `gpu-cu12` or
+  `gpu-cu13` Python extra.
 - Security-sensitive libraries: Argon2id via `argon2-cffi` for passwords and `cryptography` for provider secret encryption.
 
 ## Setup
@@ -151,7 +153,23 @@ The initial user is created only when the user table is empty. After that, signe
 users manage further local users in the application. Email is the only stored login
 identity and the only public request/response identity field.
 
-See `deployment/docker/README.md` for PostgreSQL and optional Ollama/vLLM runtime details.
+See `deployment/docker/README.md` for PostgreSQL and optional Ollama runtime details.
+
+Optional RAPIDS/cuML GPU acceleration is not installed by the default setup,
+because the correct package must match the local CUDA major version. Install one
+GPU extra only:
+
+```bash
+# CUDA 13 runtime/toolkit
+uv sync --locked --extra gpu-cu13
+
+# CUDA 12 runtime/toolkit
+uv sync --locked --extra gpu-cu12
+```
+
+Use `nvidia-smi` and, when available, `nvcc --version` to check the CUDA major
+version. For example, when both commands report a CUDA 13 runtime/toolkit, choose
+the `gpu-cu13` extra.
 
 ## Run
 
@@ -164,7 +182,24 @@ uv run --locked python -m backend.main
 The command starts a Uvicorn server on `http://127.0.0.1:8080` and keeps running
 until stopped with `Ctrl+C`. On startup it applies local database migrations and
 then creates the initial user if the user table is empty and `SKM_INITIAL_*` is
-configured. In another terminal, verify it with:
+configured.
+
+To ensure the RAPIDS/cuML extra is installed before starting, include the
+matching extra in the run command:
+
+```bash
+uv run --locked --extra gpu-cu13 python -m backend.main
+```
+
+If the Cluster-Set form uses Backend `auto`, the service attempts cuML when it is
+importable and falls back to CPU otherwise. Backend `GPU/cuML erzwingen` fails
+with a safe accelerator-unavailable error when RAPIDS/cuML is not usable.
+
+For a small, coarse initial Cluster-Set, prefer Agglomerative when you need an exact target count and set `n_clusters` to roughly 8-20.
+HDBSCAN cannot guarantee an exact cluster count; for a coarse first pass use Backend `auto`, optional PCA reduction with about 10 dimensions, `min_cluster_size` around 5% of the dataset, `min_samples` around 20, and `cluster_selection_epsilon` around 0.1.
+If HDBSCAN still creates too many clusters, double `min_cluster_size` first and then try `cluster_selection_epsilon` around 0.2.
+
+In another terminal, verify the backend with:
 
 ```bash
 curl http://127.0.0.1:8080/api/health
@@ -186,14 +221,14 @@ The Vite dev server proxies `/api/*` requests to the backend at
 `http://127.0.0.1:8080` by default. Start the backend before signing in through
 the frontend.
 
-For local model serving, use the optional Ollama or vLLM Compose profiles documented in `deployment/docker/README.md`.
-Ollama and vLLM configuration is restricted to reviewed local hosts:
-`localhost`, `127.0.0.1`, `::1`, `ollama`, `vllm-gpu`, and `vllm-cpu`.
+For local model serving, use the optional Ollama Compose profile documented in `deployment/docker/README.md`.
+Ollama configuration is restricted to reviewed local hosts:
+`localhost`, `127.0.0.1`, `::1`, and `ollama`.
 Provider calls use bounded batches and responses without redirects or fallback.
 OpenAI indexing and LLM-backed Cluster-Set actions additionally require
 `cloud_use_confirmed: true`.
 Ollama embedding calls keep the selected model warm for five minutes between
-normal analysis batches; OpenAI and vLLM payloads are unchanged.
+normal analysis batches; OpenAI payloads are unchanged.
 Long messages are split at Unicode-safe boundaries into chunks of at most
 1,024 UTF-8 bytes. Chunks are produced incrementally, and only the current provider
 batch of at most 64 is retained. A byte-weighted mean followed by L2 normalization
@@ -202,9 +237,10 @@ into one chunk retain the provider vector unchanged. Run metadata records the so
 counts without storing source text in diagnostics. Provider failures expose a safe,
 actionable reason such as a context-window violation without copying provider
 response bodies or message text.
-The local backend runs at most two background indexing or Cluster-Set jobs
-concurrently, queues up to eight more, and rejects overload safely. Clustering
-rejects an estimated working set over
+The local backend runs indexing and Cluster-Set work through bounded background
+queues. Additional starts are admitted while earlier jobs are queued/running as
+long as the local worker queues accept them; cancellation remains available per
+active job. Clustering rejects an estimated working set over
 512 MiB before loading vectors or writing clusters. Pgvector values are decoded
 natively in bounded server-cursor batches into one preallocated contiguous matrix;
 the estimate includes the native matrix, estimator matrices, bounded fetch batch,
@@ -260,11 +296,10 @@ PostgreSQL container:
 - `SKM_PROVIDER_ENCRYPTION_KEY`: required before saving OpenAI provider API keys.
 - `SKM_INITIAL_PASSWORD`, `SKM_INITIAL_EMAIL`: required together to seed the first local user on an empty database. The email address is the login name.
 - `SKM_INITIAL_FIRST_NAME`, `SKM_INITIAL_LAST_NAME`: optional initial-user display names.
-- `SKM_VLLM_BASE_URL`: optional local vLLM-compatible endpoint.
 - `SKM_OLLAMA_BASE_URL`, `SKM_OLLAMA_MODELS`: optional local Ollama endpoint and comma-separated default model allow-list. The backend seeds this provider only when no Ollama provider is configured yet.
 - `OLLAMA_KEEP_ALIVE`: optional local Ollama model-residency duration; the Compose
   default and example use `5m`.
-- `POSTGRES_*`, `VLLM_*`, `OLLAMA_*`: local Docker Compose settings in `deployment/docker/.env.example`.
+- `POSTGRES_*`, `OLLAMA_*`: local Docker Compose settings in `deployment/docker/.env.example`.
 
 Do not commit secrets or local `.env` files.
 

@@ -6,7 +6,12 @@ from uuid import UUID
 import pytest
 
 import backend.providers.service as provider_service_module
-from backend.providers import ProviderError, ProviderService, ProviderSettingsInput
+from backend.providers import (
+    ProviderDeleteBlocked,
+    ProviderError,
+    ProviderService,
+    ProviderSettingsInput,
+)
 from backend.providers.secrets import (
     decrypt_provider_secret,
     generate_provider_secret_key,
@@ -18,11 +23,19 @@ NOW = datetime(2026, 7, 22, tzinfo=UTC)
 
 
 class FakeResult:
-    def __init__(self, row: dict[str, object] | None = None) -> None:
+    def __init__(
+        self,
+        row: dict[str, object] | None = None,
+        rows: list[dict[str, object]] | None = None,
+    ) -> None:
         self._row = row
+        self._rows = rows
 
     def fetchone(self) -> dict[str, object] | None:
         return self._row
+
+    def fetchall(self) -> list[dict[str, object]]:
+        return self._rows or ([] if self._row is None else [self._row])
 
 
 class FakeTransaction:
@@ -51,18 +64,21 @@ class ProviderConfigurationConnection:
         self, query: str, params: tuple[object, ...] | None = None
     ) -> FakeResult:
         normalized = " ".join(query.split())
-        if normalized.startswith("SELECT provider, endpoint_url"):
+        if normalized.startswith("SELECT id, provider, display_name, endpoint_url"):
             return FakeResult()
         if normalized.startswith("INSERT INTO provider_configurations"):
             assert params is not None
-            assert isinstance(params[2], str)
-            self.stored_secret = params[2]  # api_key_secret insert value
+            assert isinstance(params[4], str)
+            self.stored_secret = params[4]  # api_key_secret insert value
             return FakeResult(
                 {
-                    "provider": params[0],
-                    "endpoint_url": params[1],
-                    "manual_models": ["gpt-4.1-mini"],
-                    "llm_models": ["gpt-4.1-mini"],
+                    "id": params[0],
+                    "provider": params[1],
+                    "display_name": params[2],
+                    "endpoint_url": params[3],
+                    "available_models": list(getattr(params[6], "obj")),
+                    "manual_models": list(getattr(params[7], "obj")),
+                    "llm_models": list(getattr(params[8], "obj")),
                     "api_key_secret": self.stored_secret,
                     "updated_at": NOW,
                 }
@@ -101,10 +117,38 @@ class OllamaSeedConnection:
         self, query: str, params: tuple[object, ...] | None = None
     ) -> FakeResult:
         normalized = " ".join(query.split())
+        if normalized.startswith("SELECT display_name FROM provider_configurations"):
+            return FakeResult(rows=[])
         if normalized.startswith("INSERT INTO provider_configurations"):
             assert params is not None
-            self.endpoint_url = params[0]
-            self.manual_models = params[1]
+            self.endpoint_url = params[2]
+            self.manual_models = params[3]
+            return FakeResult()
+        raise AssertionError(f"unexpected query: {normalized}")
+
+
+class DeleteBlockedConnection:
+    def __init__(self) -> None:
+        self.delete_attempted = False
+
+    def __enter__(self) -> DeleteBlockedConnection:
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        return None
+
+    def transaction(self) -> FakeTransaction:
+        return FakeTransaction()
+
+    def execute(
+        self, query: str, params: tuple[object, ...] | None = None
+    ) -> FakeResult:
+        normalized = " ".join(query.split())
+        if normalized.startswith("SELECT id FROM analysis_runs"):
+            assert params == (ACTOR_ID, ACTOR_ID)
+            return FakeResult(row={"id": UUID("22222222-2222-2222-2222-222222222222")})
+        if normalized.startswith("DELETE FROM provider_configurations"):
+            self.delete_attempted = True
             return FakeResult()
         raise AssertionError(f"unexpected query: {normalized}")
 
@@ -159,6 +203,22 @@ def test_ollama_provider_can_be_seeded_from_environment(
     ]
 
 
+def test_provider_delete_is_blocked_while_active_jobs_reference_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_connection = DeleteBlockedConnection()
+    monkeypatch.setattr(
+        provider_service_module,
+        "open_database_connection",
+        lambda _: fake_connection,
+    )
+
+    with pytest.raises(ProviderDeleteBlocked):
+        ProviderService().delete_configuration(ACTOR_ID, actor_user_id=ACTOR_ID)
+
+    assert fake_connection.delete_attempted is False
+
+
 def test_ollama_provider_rejects_non_local_endpoint_before_storage(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -178,7 +238,7 @@ def test_ollama_provider_rejects_non_local_endpoint_before_storage(
         )
 
 
-def test_vllm_provider_rejects_non_local_endpoint_before_storage(
+def test_vllm_provider_is_rejected_before_storage(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
@@ -187,7 +247,7 @@ def test_vllm_provider_rejects_non_local_endpoint_before_storage(
         lambda _: pytest.fail("database connection must not be opened"),
     )
 
-    with pytest.raises(ProviderError, match="allowed local endpoint"):
+    with pytest.raises(ProviderError, match="provider must be openai or ollama"):
         ProviderService().upsert_configuration(
             ProviderSettingsInput(
                 provider="vllm",

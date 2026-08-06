@@ -12,7 +12,7 @@
 - Applicable ADRs: ADR-0001, ADR-0002, ADR-0004, ADR-0005, ADR-0006, ADR-0007
 - Superseded ADRs: ADR-0003
 - Decision owner: anfordernder Product Owner
-- Last reviewed: 2026-08-04
+- Last reviewed: 2026-08-05
 
 ## Purpose
 
@@ -31,10 +31,9 @@ analysis profiles and no separate candidate workflow in the accepted MVP state.
 - `DatasetVersion`: immutable import result containing valid support pairs.
 - `MessagePair`: one imported `ticket_id`, `message_group_id`, `message`, `answer`
   record.
-- `EmbeddingProviderConfiguration`: global OpenAI, Ollama or vLLM configuration for
-  embedding models.
-- `LLMProviderConfiguration`: global OpenAI or Ollama configuration for text
-  generation used in cluster summaries.
+- `ProviderConfiguration`: global OpenAI or Ollama provider instance with stable
+  technical ID, editable display name, connection settings, available models and
+  embedding/LLM model allow-lists.
 - `IndexingRun` / `Indizierung`: background job that embeds both the customer
   question and support answer for every valid support pair in one dataset version.
 - `Embedding`: persisted vector for one message pair and one text variant
@@ -58,14 +57,17 @@ analysis profiles and no separate candidate workflow in the accepted MVP state.
 - CSV/JSON import of already-paired records with required fields
   `ticket_id`, `message_group_id`, `message`, `answer`.
 - Bounded streamed imports through 512 MiB with persisted import logs.
-- Global provider settings split by purpose: Embedding-Provider and LLM-Provider.
+- Central global Provider settings for OpenAI/Ollama connection, discovered models
+  and embedding/LLM model allow-lists.
 - OpenAI secret handling with write-only reads after storage.
-- Local-only Ollama/vLLM endpoint restrictions.
+- Local-only Ollama endpoint restrictions.
 - User authentication and equal-permission user management.
 - Tab-scoped browser session restore through server-side token validation.
 - Indizierungen that create `message` and `answer` embeddings for every pair.
 - Background job status, percentage progress, phases, safe errors and cancellation
   for indexing and cluster-set jobs.
+- Bounded background queues for indexing and cluster-set jobs. Multiple jobs may be
+  queued or executed in parallel within the configured local worker/resource limits.
 - Multiple saved cluster sets per completed indexing run.
 - Cluster-set generation with vector basis, algorithm, parameters and optional LLM
   summary generation.
@@ -76,6 +78,7 @@ analysis profiles and no separate candidate workflow in the accepted MVP state.
 - Explorer export as CSV or JSON for the current filtered table state.
 - Durable audit/status metadata for imports, provider checks, indexing, cluster
   sets, exports and destructive operations.
+- Overlay feedback messages with manual close and auto-dismiss.
 
 ### Out of scope / non-goals
 
@@ -113,10 +116,11 @@ revocation request fails.
 
 ### Project overview and project workspace
 
-The main navigation item „Projekte“ opens a project overview. The overview supports
-project creation, opening, renaming and deletion. Opened projects appear as nested
-sidebar entries below „Projekte“. A project has no durable lifecycle status such as
-„Entwurf“; active/open is only UI selection.
+The top-right global menu item „Projekte“ opens a project overview. The overview
+supports project creation, opening, renaming and deletion. Signed-in views do not
+render a persistent left global sidebar; project switching happens through the
+project overview. A project has no durable lifecycle status such as „Entwurf“;
+active/open is only UI selection.
 
 An opened project shows these project tabs:
 
@@ -153,20 +157,52 @@ Dataset versions are immutable, but each import has an editable display name.
 Display-name changes are saved without a separate „Namen speichern“ button.
 Imports can be deleted. Existing indexing runs and cluster sets that depend on the
 deleted dataset remain. Affected indexing runs show „Datensatz gelöscht“.
+Import protocols show their import date. The log-details action is shown only when
+bounded skipped-record details exist.
 
 ### Provider settings
 
-Settings are global and split by purpose:
+Settings are global and contain only:
 
-- Tab „Embedding-Provider“: OpenAI, Ollama and vLLM embedding models.
-- Tab „LLM-Provider“: OpenAI and Ollama text-generation/chat models.
-- Tab „Benutzer“: local user management.
+- Tab „Provider“: central OpenAI/Ollama provider instances.
+- Tab „Nutzer“: local user management.
+
+Each provider instance has a stable technical ID, an editable display name, a base
+type (`openai` or `ollama`), connection settings, an available-model list and
+checkbox allow-lists for embedding and LLM models. Purpose availability is derived
+from these allow-lists: a provider is selectable for an action only when the
+relevant allow-list is non-empty. New provider instances use numbered default
+display names when the same base type already exists. Display names are
+user-controlled and are not unique; the technical ID is the identity.
 
 Provider/model selection is explicit. The system must not silently switch provider
 or model. OpenAI API keys are write-only after storage. The UI may show key
 presence and allow replacement/removal, but normal read APIs never return plaintext
-keys. Ollama and vLLM endpoints accept only reviewed local hosts, reject URL
-credentials and do not follow redirects.
+keys. When a key is stored, the OpenAI API-key input uses a masked placeholder
+instead of returning key material. Ollama endpoints accept only reviewed local
+hosts, reject URL credentials and do not follow redirects.
+
+Provider instances can be added and removed. Removal is a hard delete from active
+configuration. Existing import, indexing and cluster-set logs keep their historical
+provider name, base type and model provenance, but the deleted provider is no
+longer available for new execution.
+
+Provider connection tests validate reachability without changing model allow-lists.
+Provider model discovery refreshes available models. Models no longer returned by
+the provider disappear from available models and are removed from allow-lists on the
+next save. Unchecking a model removes it only from the relevant allow-list; the
+model remains visible, unchecked, in the existing available-model order until a
+successful discovery no longer returns it. OpenAI model lists are purpose-filtered:
+embedding lists show only embedding models, and LLM lists show only supported GPT/o
+families for MVP 1.
+
+vLLM is not an active MVP provider. Historical provenance that already names vLLM
+may remain readable, but vLLM is not shown, accepted for new provider
+configuration, or called by provider runtime.
+
+Ollama model pulls are started from the provider card. At most one Ollama pull can
+run globally. The UI shows a running state and a final success/failure message;
+percentage progress is not required.
 
 OpenAI use is the only cloud path in MVP 1. Before sending original support text to
 OpenAI for embeddings or LLM summaries, the UI requires explicit confirmation for
@@ -179,7 +215,10 @@ The user starts an indexing run by selecting:
 - dataset version.
 - embedding provider.
 - embedding model.
-- supported bounded technical parameters.
+- optional embedding-input normalization for provider compatibility:
+  preserving line breaks, removing line breaks or replacing line-break groups with
+  a bounded user-provided replacement string, plus optional lowercasing of the
+  provider input.
 
 An indexing run embeds every valid support pair twice:
 
@@ -187,11 +226,16 @@ An indexing run embeds every valid support pair twice:
 - exactly one `answer` embedding for the support answer.
 
 Long texts are split at Unicode-safe boundaries into chunks of at most 1,024 UTF-8
-bytes. Chunk generation is incremental. At most the current provider batch of 64
-chunks plus fixed-size accumulators are retained. Multiple chunk vectors are
-combined through byte-weighted mean followed by L2 normalization. A one-chunk
-provider vector remains unchanged. Metadata records source byte count, chunk count
-and pooling method.
+bytes after the selected provider-input normalization is applied. Original
+imported texts remain unchanged in storage and source dialogs. Line-break
+normalization is limited to the provider input and is persisted in indexing run
+parameters and embedding metadata when enabled. Optional lowercasing is applied
+after line-break normalization and also affects only the provider input. Chunk
+generation is incremental. At most the current provider batch of 64 chunks plus
+fixed-size accumulators are retained. Multiple chunk vectors are combined through
+byte-weighted mean followed by L2 normalization. A one-chunk provider vector
+remains unchanged. Metadata records source byte count, chunk count, pooling method
+and active input normalization when applicable.
 
 Provider responses are bounded and validated for count, dimensions, finite numeric
 values and source mapping before vectors are persisted. Provider/model fallback is
@@ -212,6 +256,9 @@ processed/total counts where known, start time and cancel action. Progress reach
 100 only for completed jobs. Failed jobs retain the last confirmed progress below
 100. A running indexing run cannot be selected as a cluster-set basis. New running
 indexing jobs appear only in the indexing list, focused and scrolled into view.
+Starting another indexing job is allowed while prior indexing jobs are queued,
+running or cancelling; admission is bounded by the local background queue and worker
+configuration. Cancelling running/cancelling jobs remains available.
 
 Indexing runs can be deleted. Existing cluster sets that reference a deleted
 indexing run remain available and show „Indizierung gelöscht“.
@@ -239,11 +286,21 @@ embeddings for the same pair. The default weighting is 50 % question and 50 %
 answer and is persisted in cluster-set parameters.
 
 Supported algorithms are HDBSCAN and Agglomerative. Parameters are
-algorithm-specific. Agglomerative rejects more than 10,000 records before writes.
-No implementation may construct a complete pairwise all-record distance matrix.
-Both algorithms preflight a conservative 512 MiB working-set budget before loading
-vectors. Rejected requests report safe concrete capacity details and corrective
-suggestions before cluster writes.
+algorithm-specific. HDBSCAN runs with `n_jobs=-1` on the CPU backend and may use
+all local CPU cores for distance calculation. HDBSCAN can optionally run after PCA
+or UMAP dimensionality reduction and supports `auto`, `cpu` and `cuml`
+execution-backend settings. `auto` may use cuML/RAPIDS when available and falls back
+to the CPU backend otherwise; `cuml` reports a safe accelerator-unavailable error
+when the local runtime has no usable cuML/GPU stack. RAPIDS/cuML is provided by the
+optional locked `gpu-cu12` and `gpu-cu13` Python extras and is not part of the
+default CPU-compatible setup. HDBSCAN does not guarantee an
+exact target number of clusters; coarse top-level work must use coarse HDBSCAN
+parameters/reduction or a target-count-capable algorithm such as Agglomerative.
+Agglomerative rejects more than 10,000 records before writes. No implementation may
+construct a complete pairwise all-record distance matrix. Both algorithms preflight
+a conservative 512 MiB working-set budget before loading vectors. Rejected requests
+report safe concrete capacity details and corrective suggestions before cluster
+writes.
 
 A cluster set stores its selected indexing run, parent cluster set when present,
 derivation type, source filter, immutable source snapshot, vector basis, algorithm,
@@ -252,10 +309,19 @@ errors and timestamps. A cluster set is not overwritten by recalculation,
 refinement, source changes or outlier exclusion; each structural operation creates
 a new child cluster set.
 
+Cluster summaries can be regenerated on an existing completed cluster set without
+recomputing cluster assignments. Summary-only regeneration reuses the stored
+clusters, updates LLM configuration/sample strategy for that set, runs only the LLM
+summary phase and preserves the existing clusters if the summary phase fails.
+
 Running cluster-set jobs use the same job statuses and visible progress rules as
 indexing. They cannot be loaded in the Explorer or used as a parent until status
 `fertig`. New running cluster-set jobs appear only in the cluster-set tree,
-expanded, focused and scrolled into view.
+expanded, focused and scrolled into view. Starting another cluster-set job is
+allowed while prior cluster-set jobs are queued, running or cancelling; admission is
+bounded by the local background queue and worker configuration. This applies to
+root creation, refinement and outlier recalculation. Cancelling running/cancelling
+jobs remains available.
 
 Cluster sets can be renamed and deleted. Display-name changes are saved without a
 separate „Namen speichern“ button. If a deleted cluster set is parent of other sets,
@@ -289,17 +355,26 @@ sampling strategy and seed are persisted for provenance.
 
 ### Cluster Explorer
 
-The Explorer loads one finished cluster set. The main view contains:
+The Explorer loads one finished cluster set. When the Explorer tab is opened
+directly and no set is already loaded, the UI loads the most recently updated
+completed cluster set. Recalculation and Explorer edits both update the owning
+cluster set's `updated_at` timestamp for this ordering. The loaded Explorer has a
+left control rail and a main table workspace. The control rail contains:
+
+- loaded cluster-set selector/context.
+- text search over visible cluster fields.
+- filters for status, category, outlier and excluded state.
+- outlier controls.
+- Summary regeneration for the loaded cluster set.
+- Explorer export controls and export history when clusters are loaded.
+
+The main table workspace contains:
 
 - summary metrics for the loaded set.
 - analysis path from import through indexing and parent cluster sets.
-- text search over visible cluster fields.
-- filters for status, category, outlier and excluded state.
 - category grouping.
-- box „Ausreißer ausschließen“ directly below search/filter and above the table.
 - tabular cluster analysis.
 - separate excluded section.
-- separate Export section below the Cluster Explorer panel.
 
 Search and filters change only the visible view. They do not alter memberships,
 cluster summaries, exclusions or persisted cluster sets.
@@ -338,12 +413,10 @@ the opener.
 Clusters can be excluded from further consideration and shown in a separate
 excluded section. Excluded clusters can be included again.
 
-Outlier management is separate from search/filter behavior. The Explorer shows an
-„Ausreißer ausschließen“ box inside the Cluster Explorer panel, below the filters.
-The box has no decorative status tag in its header. It offers threshold and method
-controls and a button „Ausreißer berechnen“. Because excluding outliers changes the
-analysis result, the action creates a new child cluster set instead of modifying
-the loaded set.
+Outlier management is separate from search/filter behavior. The Explorer shows
+Ausreißer controls in the left control rail. They offer threshold and a button
+„Ausreißer berechnen“. Because excluding outliers changes the analysis result, the
+action creates a new child cluster set instead of modifying the loaded set.
 
 The Explorer may show question/answer mismatch hints, especially when clustering by
 support answers. A cluster can then be refined or re-clustered by another vector
@@ -356,20 +429,22 @@ clusters coarsely by customer questions; stage 2 clusters the remaining sources 
 support answers.
 
 The cluster-set tree shows root and child sets with expand/fold. Each node shows
-operation type, parent, vector basis, algorithm, key parameters, source count,
-outlier/exclusion count, status and allowed actions.
+operation type, parent, vector basis, algorithm, all persisted cluster-set
+parameters, source count, outlier/exclusion count, status and allowed actions.
 
 ### Explorer export
 
-There is no separate project tab „Export“. The Explorer has a separate Export
-section below the Cluster Explorer panel. It is not in the table header or table
-container. The Export header has no decorative status tag.
+There is no separate project tab „Export“. Explorer export is owned by the left
+Explorer control rail. It is not in the table header or table container.
 
-The Export section lets the user choose `CSV` or `JSON` and export the current
+The Export group lets the user choose `CSV` or `JSON` and export the current
 Explorer search/filter table state for the loaded cluster set. The export contains
 visible cluster fields, status/exclusion state, category, summaries, counts,
 quality/mismatch hints and provenance for project, cluster set, filter state and
 creation time.
+The Export group is hidden while no completed cluster set with cluster rows is
+loaded. Export failures render in the rail and preserve the current filter and
+format controls.
 
 Original customer questions and support answers from the source dialog are not
 included implicitly. Exporting raw sources later requires a separate explicit
@@ -403,11 +478,15 @@ Required:
 
 Required:
 
-- Embedding-Provider tab with OpenAI, Ollama and vLLM configuration.
-- LLM-Provider tab with OpenAI and Ollama configuration.
+- Provider tab with add/remove/update for OpenAI and Ollama instances.
+- Provider instance cards with editable display name, connection settings,
+  connection-test action, model-discovery action and embedding/LLM model checkbox
+  allow-lists.
 - user-management tab.
 - write-only OpenAI key handling.
 - provider/model check action with safe diagnostics.
+- Ollama model pull action with one-global-pull guard and final success/failure
+  feedback.
 
 ### UI-04 Projects
 
@@ -427,7 +506,7 @@ Required:
 - select CSV/JSON file.
 - show required source fields and 512 MiB limit.
 - start import.
-- import summary and persisted import-log detail.
+- import summary, import date and persisted import-log detail when details exist.
 - import overview with editable display names and delete action.
 
 ### UI-06 Indizieren
@@ -441,6 +520,8 @@ Required:
 - indexing list with status, percentage, progressbar, phase, provider/model,
   dataset, counts, timestamps, errors, cancel action and delete action.
 - disabled cluster-set usage until indexing status is `fertig`.
+- start action remains available for additional indexing jobs subject to local
+  queue admission; cancel remains available for active jobs.
 
 ### UI-07 Cluster-Sets
 
@@ -458,21 +539,26 @@ Required:
 - load action disabled until status is `fertig`.
 - „Cluster verfeinern“ action that creates a child set.
 - cancel action for running cluster-set jobs.
+- create/refine/outlier-recalculate actions remain available for additional
+  cluster-set jobs subject to local queue admission; cancel remains available for
+  active jobs.
 
 ### UI-08 Explorer
 
 Required:
 
 - loaded cluster-set selector/context.
-- metrics and lineage path.
-- text search and filters.
+- default load of the most recently updated completed cluster set.
+- left control rail for cluster-set selection, search/filter, outlier controls,
+  Summary regeneration and export.
+- metrics, lineage path and all persisted cluster-set parameters for the loaded
+  set.
 - category grouping.
-- outlier-management box under search/filter.
 - cluster table.
 - source dialog.
 - exclusion/include actions.
 - refinement action using selected or included clusters.
-- separate Export section with CSV/JSON format choice.
+- Export rail group with CSV/JSON format choice, hidden when no clusters are loaded.
 
 ### UI-09 Shared error, empty and loading states
 
@@ -483,6 +569,7 @@ Required:
   explorer rows.
 - expired/invalid session state.
 - backend unavailable state.
+- overlay feedback/status message with manual close button and auto-dismiss.
 - provider unavailable state.
 - validation failure summaries with field-level placement where useful.
 - no false success after failed actions.
@@ -505,11 +592,14 @@ Required:
   100.
 - FR-10: Imported dataset versions are immutable but have editable display names.
 - FR-11: Deleting an import does not delete dependent indexing runs or cluster sets.
-- FR-12: Global embedding-provider settings support OpenAI, Ollama and vLLM.
-- FR-13: Global LLM-provider settings support OpenAI and Ollama.
+- FR-12: Global provider settings support multiple OpenAI and Ollama instances
+  with stable technical IDs and editable display names.
+- FR-13: Provider instances expose discovered/available models and checkbox
+  allow-lists for embedding and LLM; purpose availability is derived from the
+  relevant allow-list.
 - FR-14: Stored secrets are never exposed by read APIs or UI after save.
 - FR-15: OpenAI text transfer requires action-specific confirmation.
-- FR-16: Local provider endpoints are allow-listed local hosts only and reject
+- FR-16: Local Ollama endpoints are allow-listed local hosts only and reject
   credentials and redirects.
 - FR-17: Users authenticate before protected operations.
 - FR-18: User records store first name, last name, email and password hash.
@@ -525,7 +615,9 @@ Required:
 - FR-24: Embedding calls are bounded, validated and never fall back silently.
 - FR-25: Indexing progress is visible, monotone for confirmed work and reaches 100
   only on completion.
-- FR-26: Running indexing jobs can be cancelled and cannot be used for clustering.
+- FR-26: Running indexing jobs can be cancelled, cannot be used for clustering and
+  do not block additional indexing starts while the bounded local queue accepts
+  work.
 - FR-27: Indexing runs can be deleted while dependent cluster sets remain with a
   deleted-basis marker.
 - FR-28: Cluster sets reference project, indexing run, optional parent set,
@@ -536,14 +628,17 @@ Required:
   combined Q/A vector basis.
 - FR-31: Combined Q/A basis uses weighted concatenation of normalized question and
   answer embeddings for the same pair, default 50/50.
-- FR-32: HDBSCAN and Agglomerative are supported clustering algorithms.
+- FR-32: HDBSCAN and Agglomerative are supported clustering algorithms; HDBSCAN
+  supports optional PCA/UMAP reduction and `auto`/`cpu`/`cuml` execution backend
+  parameters.
 - FR-33: Agglomerative rejects more than 10,000 records before writes.
 - FR-34: Clustering must not construct a complete pairwise all-record distance
   matrix.
 - FR-35: Clustering preflights the fixed 512 MiB working-set budget before loading
   vectors.
 - FR-36: Running cluster-set jobs show status, percentage, progressbar, phase and
-  cancel action.
+  cancel action, and do not block additional cluster-set starts while the bounded
+  local queue accepts work.
 - FR-37: A cluster set is loadable and usable as a parent only when status is
   `fertig`.
 - FR-38: Structural changes create child cluster sets and never overwrite the
@@ -558,6 +653,8 @@ Required:
   can be replaced by „Alle Beispiele verwenden“.
 - FR-45: Values above a cluster's available examples use all available examples for
   that cluster.
+- FR-45a: Completed cluster sets with LLM configuration can regenerate only LLM
+  summaries without recalculating or replacing cluster assignments.
 - FR-46: Explorer search is text search over visible cluster fields unless a future
   semantic-search mode is explicitly added.
 - FR-47: Explorer search/filter changes only visible rows, not persisted results.
@@ -565,14 +662,25 @@ Required:
   answer, counts, status, hints and actions.
 - FR-49: Source dialog shows original support pairs with traceability fields.
 - FR-50: Excluded clusters remain visible separately and can be included again.
-- FR-51: Outlier exclusion is controlled in its own box below filters and creates a
-  child cluster set.
+- FR-51: Outlier exclusion is controlled in the Explorer control rail and creates
+  a child cluster set.
 - FR-52: Question/answer mismatch hints can be shown in the Explorer.
-- FR-53: Explorer export is a separate section and exports current filtered table
-  state as CSV or JSON.
+- FR-53: Explorer export is a control-rail group and exports current filtered
+  table state as CSV or JSON.
 - FR-54: Explorer table export does not implicitly include raw source-dialog texts.
 - FR-55: All user-facing errors use safe actionable messages without secrets, raw
   support text, raw provider bodies, SQL, stack traces or internal paths.
+- FR-56: Opening the Explorer without a loaded set selects the most recently
+  updated completed cluster set when one exists.
+- FR-57: Explorer export controls are hidden until a completed cluster set with
+  cluster rows is loaded.
+- FR-58: Summary regeneration from Cluster-Sets opens an explicit replacement
+  dialog; Summary regeneration from Explorer is exposed in the control rail and
+  uses the Summary-only flow without recalculating cluster assignments.
+- FR-59: The top-right app menu contains Projekte, Einstellungen and Abmelden;
+  the standalone visible Abmelden topbar button is not shown.
+- FR-58: Feedback/status messages render as overlays with manual close and
+  auto-dismiss.
 
 ## Quality and operational requirements
 
@@ -605,8 +713,8 @@ Required:
   events, clusters, sources, refinements and export.
 - Cluster source responses are page-bounded and include `limit`, `offset`,
   `next_offset` and `has_more` metadata.
-- Conceptual provider routes are separated for embedding providers and LLM
-  providers.
+- Conceptual provider routes manage central provider instances, connection checks,
+  model discovery, Ollama pulls and embedding/LLM model allow-lists.
 - Explorer export request includes loaded cluster-set ID, format and current
   search/filter/grouping state.
 - Explorer CSV/JSON export includes visible cluster fields, status/exclusion state,
@@ -652,8 +760,8 @@ status and safe diagnostic metadata so the UI can recover after reload.
 - Database migration/schema tests for PostgreSQL/pgvector, project-scoped
   constraints, profile removal and cluster-set schema.
 - Import parser tests for CSV/JSON edge cases and resource bounds.
-- Provider adapter tests with stubs for OpenAI/Ollama/vLLM embeddings and
-  OpenAI/Ollama LLM generation.
+- Provider adapter tests with stubs for OpenAI/Ollama embeddings and OpenAI/Ollama
+  LLM generation.
 - Authentication/user-management tests.
 - Synthetic fixed-vector clustering tests for HDBSCAN/Agglomerative,
   outliers/memberships, traceability, capacity rejection and absence of complete
@@ -684,8 +792,9 @@ status and safe diagnostic metadata so the UI can recover after reload.
 - [x] AC-4: Imports through 512 MiB use bounded streaming and atomic persistence.
 - [x] AC-5: Users can sign in, restore tab-scoped sessions after server validation,
   manage other users and cannot delete themselves.
-- [x] AC-6: Provider settings are split into Embedding-Provider and LLM-Provider and
-  never expose stored secrets.
+- [x] AC-6: Provider settings are centralized in one Provider tab, support
+  OpenAI/Ollama instances for embedding and/or LLM use, and never expose stored
+  secrets.
 - [x] AC-7: OpenAI use for embeddings or LLM summaries requires explicit
   confirmation before original texts are sent.
 - [x] AC-8: A user can start an indexing run that persists both `message` and

@@ -2,6 +2,7 @@
 
 - Status: accepted
 - Date: 2026-08-04
+- Last amended: 2026-08-05 by CHG-005 provider settings centralization
 - Owners: anfordernder Product Owner
 - Related requirement: `docs/requirements/chg-004-analyst-clustering-redesign.md`
 - Supersedes: ADR-0003
@@ -37,10 +38,15 @@ the parent.
 Store cluster-set lineage through parent links, derivation type and immutable source
 snapshots. The UI presents saved sets as an expandable analysis tree.
 
-Split provider configuration by purpose:
+Keep provider configuration global and purpose-aware:
 
-- Embedding providers: OpenAI, Ollama and vLLM.
-- LLM providers: OpenAI and Ollama.
+- Provider instances have a stable technical ID, editable display name and base
+  type.
+- Active base types are OpenAI and Ollama.
+- Each provider instance stores available/discovered models plus separate embedding
+  and LLM allow-lists. Purpose availability is derived from non-empty allow-lists.
+- vLLM is removed from active UI/API/runtime support. Historical provenance may
+  remain readable, but vLLM is not selectable or callable for new work.
 
 OpenAI remains explicit cloud use. Original support text may be sent to OpenAI only
 after confirmation for the concrete indexing or LLM-summary action. Local provider
@@ -112,8 +118,8 @@ exports the current filtered cluster table state as CSV or JSON.
 
 - Migration tests prove old profile/run/candidate-derived state is removed or
   migrated according to accepted scope while retained data remains accessible.
-- Provider tests prove embedding and LLM provider purposes are configured and
-  validated separately.
+- Provider tests prove provider instances, available models, embedding/LLM
+  allow-lists and active vLLM rejection.
 - Indexing tests prove every valid support pair gets both `message` and `answer`
   embeddings with safe progress/error behavior.
 - Cluster-set tests prove multiple saved sets, parent/child lineage, source

@@ -10,3 +10,7 @@ Requires-Dist: pgvector<1,>=0.5
 Requires-Dist: psycopg[binary]<4,>=3.2
 Requires-Dist: scikit-learn<2,>=1.9
 Requires-Dist: uvicorn<1,>=0.38
+Provides-Extra: gpu-cu12
+Requires-Dist: cuml-cu12<26.7,>=26.6; (sys_platform == "linux" and (platform_machine == "x86_64" or platform_machine == "aarch64")) and extra == "gpu-cu12"
+Provides-Extra: gpu-cu13
+Requires-Dist: cuml-cu13<26.7,>=26.6; (sys_platform == "linux" and (platform_machine == "x86_64" or platform_machine == "aarch64")) and extra == "gpu-cu13"

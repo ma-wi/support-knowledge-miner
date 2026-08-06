@@ -34,6 +34,8 @@ backend/db/migrations/0013_remove_prompt_identifier_run_mode.sql
 backend/db/migrations/0014_indexing_runs_without_profiles.sql
 backend/db/migrations/0015_cluster_sets_llm_summaries.sql
 backend/db/migrations/0016_explorer_exports.sql
+backend/db/migrations/0017_provider_instances_and_global_jobs.sql
+backend/db/migrations/0018_provider_available_models.sql
 backend/db/migrations/__init__.py
 backend/exports/__init__.py
 backend/exports/service.py

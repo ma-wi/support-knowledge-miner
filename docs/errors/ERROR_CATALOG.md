@@ -75,6 +75,27 @@ Active codes are declared below or indexed to a capability catalog.
 - Frontend mapping: not-applicable: central frontend normalizer updated by owning task
 - Required tests: unknown-code and unexpected-error negative tests in owning task
 
+### `VALIDATION_FAILED`
+
+- Status: active
+- Category: validation
+- Trigger: A submitted form/API payload for a user-triggered action is syntactically or domain-invalid.
+- HTTP status: 422
+- Problem type: `urn:skm:error:VALIDATION_FAILED`
+- User-facing title: Die Eingaben sind ungültig.
+- User-facing explanation: Die Aktion wurde nicht ausgeführt, weil Eingaben korrigiert werden müssen.
+- Suggested action: Eingaben prüfen und erneut versuchen.
+- Suggested action code: correct-input
+- Retryable: yes
+- UI placement: affected form or provider card
+- Input preservation: Preserve safe non-secret fields; never echo API keys or provider credentials.
+- Correlation reference: safe request identifier
+- Security considerations: Do not expose validation internals, endpoint credentials, provider bodies or secrets.
+- Backend source: `backend/api/app.py`
+- API contract: `docs/api/problem-details-contract.yaml`
+- Frontend mapping: `frontend/src/App.tsx` `ERROR_MESSAGES_BY_CODE`
+- Required tests: provider API validation tests and frontend normalizer mapping tests
+
 ### `INDEXING_MODEL_UNAVAILABLE`
 
 - Status: active
@@ -326,6 +347,48 @@ Active codes are declared below or indexed to a capability catalog.
 - API contract: `backend/api/app.py` Cluster-Set Problem Details routes
 - Frontend mapping: `frontend/src/App.tsx` `ERROR_MESSAGES_BY_CODE`
 - Required tests: invalid LLM output tests
+
+### `CLUSTER_REDUCTION_UNAVAILABLE`
+
+- Status: active
+- Category: dependency
+- Trigger: A Cluster-Set requests UMAP/PCA reduction parameters that cannot be applied in the local runtime.
+- HTTP status: 422
+- Problem type: `urn:skm:error:CLUSTER_REDUCTION_UNAVAILABLE`
+- User-facing title: Dimensionsreduzierung ist nicht verfügbar.
+- User-facing explanation: Die gewählte Dimensionsreduzierung ist lokal nicht verfügbar.
+- Suggested action: Parameter anpassen oder eine installierte Reduktionsmethode wählen.
+- Suggested action code: adjust-clustering-parameters
+- Retryable: yes
+- UI placement: Cluster-Set-Formular und Cluster-Set-Status
+- Input preservation: Preserve clustering parameters.
+- Correlation reference: safe job identifier
+- Security considerations: Do not expose local import paths or stack traces.
+- Backend source: `backend/clusters/service.py`, `backend/api/app.py`
+- API contract: `backend/api/app.py` Cluster-Set Problem Details routes
+- Frontend mapping: `frontend/src/App.tsx` `ERROR_MESSAGES_BY_CODE`
+- Required tests: HDBSCAN reduction parameter tests
+
+### `CLUSTER_ACCELERATOR_UNAVAILABLE`
+
+- Status: active
+- Category: dependency
+- Trigger: A Cluster-Set requests the cuML GPU backend, but RAPIDS/cuML or a compatible GPU runtime is unavailable.
+- HTTP status: 422
+- Problem type: `urn:skm:error:CLUSTER_ACCELERATOR_UNAVAILABLE`
+- User-facing title: GPU-Beschleunigung ist nicht verfügbar.
+- User-facing explanation: cuML/RAPIDS ist in dieser lokalen Laufzeit nicht verfügbar.
+- Suggested action: CPU-Backend wählen oder lokale RAPIDS/cuML-Installation prüfen.
+- Suggested action code: choose-cpu-backend
+- Retryable: yes
+- UI placement: Cluster-Set-Formular und Cluster-Set-Status
+- Input preservation: Preserve clustering parameters.
+- Correlation reference: safe job identifier
+- Security considerations: Do not expose CUDA driver paths or stack traces.
+- Backend source: `backend/clusters/service.py`, `backend/api/app.py`
+- API contract: `backend/api/app.py` Cluster-Set Problem Details routes
+- Frontend mapping: `frontend/src/App.tsx` `ERROR_MESSAGES_BY_CODE`
+- Required tests: cuML backend fallback/error tests
 
 ### `CLUSTER_SET_CANCEL_NOT_AVAILABLE`
 
@@ -627,6 +690,69 @@ Active codes are declared below or indexed to a capability catalog.
 - API contract: not-applicable: FastAPI mapping tested by owning task
 - Frontend mapping: not-applicable: frontend normalizer updated by owning task
 - Required tests: autosave failure tests
+
+### `PROVIDER_MODEL_PULL_IN_PROGRESS`
+
+- Status: active
+- Category: conflict
+- Trigger: An Ollama model pull is requested while another Ollama model pull is already active.
+- HTTP status: 409
+- Problem type: `urn:skm:error:PROVIDER_MODEL_PULL_IN_PROGRESS`
+- User-facing title: Ein Modell-Download läuft bereits.
+- User-facing explanation: Ein Ollama-Modell wird bereits geladen.
+- Suggested action: Abschluss abwarten und danach erneut versuchen.
+- Suggested action code: wait
+- Retryable: no-until-complete
+- UI placement: Ollama provider card download row and feedback overlay
+- Input preservation: Preserve the entered model name while the request is blocked.
+- Correlation reference: safe request identifier
+- Security considerations: Do not expose endpoint details or raw Ollama response bodies.
+- Backend source: `backend/providers/service.py`, `backend/api/app.py`
+- API contract: `docs/api/problem-details-contract.yaml`
+- Frontend mapping: `frontend/src/App.tsx` `ERROR_MESSAGES_BY_CODE`
+- Required tests: provider service/API/frontend pull-in-progress tests
+
+### `PROVIDER_DELETE_FAILED`
+
+- Status: active
+- Category: not-found
+- Trigger: A provider delete request targets a provider that cannot be removed from active configuration.
+- HTTP status: 404
+- Problem type: `urn:skm:error:PROVIDER_DELETE_FAILED`
+- User-facing title: Provider konnte nicht entfernt werden.
+- User-facing explanation: Der Provider konnte nicht aus der aktiven Konfiguration entfernt werden.
+- Suggested action: Aktuellen Stand neu laden und erneut versuchen.
+- Suggested action code: reload
+- Retryable: yes-after-reload
+- UI placement: Provider card and feedback overlay
+- Input preservation: Keep the provider visible until deletion succeeds.
+- Correlation reference: safe request identifier
+- Security considerations: Preserve historical provenance and do not expose internal delete details.
+- Backend source: `backend/providers/service.py`, `backend/api/app.py`
+- API contract: `docs/api/problem-details-contract.yaml`
+- Frontend mapping: `frontend/src/App.tsx` `ERROR_MESSAGES_BY_CODE`
+- Required tests: provider API deletion negative tests and frontend delete-failure handling
+
+### `PROVIDER_DELETE_BLOCKED`
+
+- Status: active
+- Category: conflict
+- Trigger: A provider delete request targets a provider still referenced by queued, running, or cancelling indexing/Cluster-Set work.
+- HTTP status: 409
+- Problem type: `urn:skm:error:PROVIDER_DELETE_BLOCKED`
+- User-facing title: Provider wird noch verwendet.
+- User-facing explanation: Der Provider kann erst entfernt werden, wenn aktive Jobs abgeschlossen oder abgebrochen sind.
+- Suggested action: Abschluss abwarten oder den aktiven Job abbrechen.
+- Suggested action code: wait
+- Retryable: yes-after-wait
+- UI placement: Provider card and feedback overlay
+- Input preservation: Keep the provider visible until deletion succeeds.
+- Correlation reference: safe request identifier
+- Security considerations: Do not expose project IDs or job IDs from other projects in the conflict response.
+- Backend source: `backend/providers/service.py`, `backend/api/app.py`
+- API contract: `docs/api/problem-details-contract.yaml`
+- Frontend mapping: `frontend/src/App.tsx` `ERROR_MESSAGES_BY_CODE`
+- Required tests: provider service/API deletion-blocked tests and frontend delete-failure handling
 
 ### `CLUSTER_OUTLIER_EMPTY_RESULT`
 

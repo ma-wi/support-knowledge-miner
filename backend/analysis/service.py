@@ -8,6 +8,7 @@ from datetime import datetime
 import logging
 import math
 from queue import Full, Queue
+import re
 from threading import Thread
 from typing import Any
 from uuid import UUID, uuid4
@@ -28,12 +29,15 @@ INDEXING_STATUSES = {
     "cancelled",
 }
 TERMINAL_INDEXING_STATUSES = {"completed", "failed", "cancelled"}
-SUPPORTED_EMBEDDING_PROVIDERS = {"openai", "ollama", "vllm"}
+SUPPORTED_EMBEDDING_PROVIDERS = {"openai", "ollama"}
 EMBEDDING_BATCH_SIZE = 64
 MAX_EMBEDDING_CHUNK_BYTES = 1024
+MAX_NEWLINE_REPLACEMENT_LENGTH = 16
 RUN_START_PROGRESS = 5
 RUN_MAX_WORKING_PROGRESS = 95
 LOGGER = logging.getLogger(__name__)
+_LINE_BREAK_PATTERN = re.compile(r"\r\n?|\n")
+_LINE_BREAK_GROUP_PATTERN = re.compile(r"[ \t\f\v]*(?:\r\n?|\n)+[ \t\f\v]*")
 
 
 class AnalysisError(ValueError):
@@ -122,8 +126,9 @@ class LocalBackgroundJobRunner:
 @dataclass(frozen=True)
 class IndexingRunInput:
     dataset_version_id: UUID
-    provider: str
     model: str
+    provider_id: UUID | None = None
+    provider: str | None = None
     parameters: dict[str, Any] = field(default_factory=dict)
     cloud_use_confirmed: bool = False
 
@@ -139,6 +144,8 @@ class IndexingRun:
     progress: int
     phase: str
     provider: str
+    provider_configuration_id: UUID | None
+    provider_display_name: str | None
     model: str
     parameters: dict[str, Any]
     error_code: str | None
@@ -167,6 +174,27 @@ class EmbeddingRecord:
     created_at: datetime
 
 
+@dataclass(frozen=True)
+class EmbeddingInputNormalization:
+    newline_mode: str = "preserve"
+    newline_replacement: str = ""
+    lowercase: bool = False
+
+    @property
+    def enabled(self) -> bool:
+        return self.newline_mode != "preserve" or self.lowercase
+
+    def to_parameters(self) -> dict[str, str | bool]:
+        if not self.enabled:
+            return {}
+        payload: dict[str, str | bool] = {"newline_mode": self.newline_mode}
+        if self.newline_mode == "replace":
+            payload["newline_replacement"] = self.newline_replacement
+        if self.lowercase:
+            payload["lowercase"] = True
+        return payload
+
+
 # Transitional aliases keep internal imports stable while the active API contract
 # has moved to IndexingRun naming.
 AnalysisRunInput = IndexingRunInput
@@ -183,11 +211,11 @@ def _provider(provider: str) -> str:
     cleaned = provider.strip().lower()
     if cleaned not in SUPPORTED_EMBEDDING_PROVIDERS:
         raise AnalysisError(
-            "provider must be openai, ollama, or vllm",
+            "provider must be openai or ollama",
             code="INDEXING_MODEL_UNAVAILABLE",
             status_code=422,
             suggested_action="correct-input",
-            field_errors={"provider": "provider must be openai, ollama, or vllm"},
+            field_errors={"provider": "provider must be openai or ollama"},
         )
     return cleaned
 
@@ -203,6 +231,166 @@ def _model(model: str) -> str:
             field_errors={"model": "model must not be empty"},
         )
     return cleaned
+
+
+def _indexing_parameters(
+    parameters: dict[str, Any],
+) -> tuple[dict[str, Any], EmbeddingInputNormalization]:
+    clean_parameters = _object(parameters, "parameters")
+    supported_keys = {"embedding_input_normalization"}
+    unsupported_keys = sorted(set(clean_parameters) - supported_keys)
+    if unsupported_keys:
+        raise AnalysisError(
+            "indexing runs no longer accept profile, run mode, or algorithm parameters",
+            code="INDEXING_MODEL_UNAVAILABLE",
+            status_code=422,
+            suggested_action="correct-input",
+            field_errors={
+                "parameters": (
+                    "indexing runs accept only embedding input normalization parameters"
+                )
+            },
+        )
+    normalization = _embedding_input_normalization(
+        clean_parameters.get("embedding_input_normalization")
+    )
+    if not normalization.enabled:
+        return {}, normalization
+    return {
+        "embedding_input_normalization": normalization.to_parameters()
+    }, normalization
+
+
+def _embedding_input_normalization(value: object) -> EmbeddingInputNormalization:
+    if value is None:
+        return EmbeddingInputNormalization()
+    if not isinstance(value, dict):
+        raise AnalysisError(
+            "embedding input normalization must be an object",
+            code="INDEXING_MODEL_UNAVAILABLE",
+            status_code=422,
+            suggested_action="correct-input",
+            field_errors={
+                "parameters.embedding_input_normalization": (
+                    "embedding input normalization must be an object"
+                )
+            },
+        )
+    raw_mode = value.get("newline_mode", "preserve")
+    if not isinstance(raw_mode, str):
+        raise AnalysisError(
+            "newline normalization mode must be a string",
+            code="INDEXING_MODEL_UNAVAILABLE",
+            status_code=422,
+            suggested_action="correct-input",
+            field_errors={
+                "parameters.embedding_input_normalization.newline_mode": (
+                    "newline normalization mode must be preserve, remove or replace"
+                )
+            },
+        )
+    mode = raw_mode.strip().lower()
+    if mode not in {"preserve", "remove", "replace"}:
+        raise AnalysisError(
+            "newline normalization mode must be preserve, remove or replace",
+            code="INDEXING_MODEL_UNAVAILABLE",
+            status_code=422,
+            suggested_action="correct-input",
+            field_errors={
+                "parameters.embedding_input_normalization.newline_mode": (
+                    "newline normalization mode must be preserve, remove or replace"
+                )
+            },
+        )
+    raw_lowercase = value.get("lowercase", False)
+    if not isinstance(raw_lowercase, bool):
+        raise AnalysisError(
+            "lowercase normalization flag must be a boolean",
+            code="INDEXING_MODEL_UNAVAILABLE",
+            status_code=422,
+            suggested_action="correct-input",
+            field_errors={
+                "parameters.embedding_input_normalization.lowercase": (
+                    "lowercase normalization flag must be true or false"
+                )
+            },
+        )
+    replacement_value = value.get("newline_replacement", "")
+    if mode != "replace":
+        return EmbeddingInputNormalization(
+            newline_mode=mode,
+            lowercase=raw_lowercase,
+        )
+    if not isinstance(replacement_value, str):
+        raise AnalysisError(
+            "newline replacement must be a string",
+            code="INDEXING_MODEL_UNAVAILABLE",
+            status_code=422,
+            suggested_action="correct-input",
+            field_errors={
+                "parameters.embedding_input_normalization.newline_replacement": (
+                    "newline replacement must be text"
+                )
+            },
+        )
+    if replacement_value == "":
+        raise AnalysisError(
+            "newline replacement must not be empty",
+            code="INDEXING_MODEL_UNAVAILABLE",
+            status_code=422,
+            suggested_action="correct-input",
+            field_errors={
+                "parameters.embedding_input_normalization.newline_replacement": (
+                    "newline replacement must not be empty"
+                )
+            },
+        )
+    if len(replacement_value) > MAX_NEWLINE_REPLACEMENT_LENGTH:
+        raise AnalysisError(
+            "newline replacement is too long",
+            code="INDEXING_MODEL_UNAVAILABLE",
+            status_code=422,
+            suggested_action="correct-input",
+            field_errors={
+                "parameters.embedding_input_normalization.newline_replacement": (
+                    f"newline replacement must contain at most "
+                    f"{MAX_NEWLINE_REPLACEMENT_LENGTH} characters"
+                )
+            },
+        )
+    if _LINE_BREAK_PATTERN.search(replacement_value):
+        raise AnalysisError(
+            "newline replacement must not contain line breaks",
+            code="INDEXING_MODEL_UNAVAILABLE",
+            status_code=422,
+            suggested_action="correct-input",
+            field_errors={
+                "parameters.embedding_input_normalization.newline_replacement": (
+                    "newline replacement must not contain line breaks"
+                )
+            },
+        )
+    return EmbeddingInputNormalization(
+        newline_mode="replace",
+        newline_replacement=replacement_value,
+        lowercase=raw_lowercase,
+    )
+
+
+def _normalize_embedding_input(
+    text: str, normalization: EmbeddingInputNormalization
+) -> str:
+    result = text
+    if normalization.newline_mode == "remove":
+        result = _LINE_BREAK_PATTERN.sub("", result)
+    elif normalization.newline_mode == "replace":
+        result = _LINE_BREAK_GROUP_PATTERN.sub(
+            normalization.newline_replacement,
+            result,
+        )
+    if normalization.lowercase:
+        result = result.lower()
+    return result
 
 
 def _run_from_row(row: dict[str, object]) -> IndexingRun:
@@ -227,6 +415,16 @@ def _run_from_row(row: dict[str, object]) -> IndexingRun:
         progress=int(str(row["progress"])),
         phase=str(row["phase"]),
         provider=str(row["provider"]),
+        provider_configuration_id=(
+            UUID(str(row["provider_configuration_id"]))
+            if row.get("provider_configuration_id") is not None
+            else None
+        ),
+        provider_display_name=(
+            str(row["provider_display_name"])
+            if row.get("provider_display_name") is not None
+            else None
+        ),
         model=str(row["model"]),
         parameters=dict(parameters) if isinstance(parameters, dict) else {},
         error_code=str(row["error_code"]) if row["error_code"] is not None else None,
@@ -326,17 +524,23 @@ def _text_chunks(
 
 def _message_embeddings(
     provider_service: ProviderService,
-    provider: str,
+    provider: UUID | str,
     model: str,
     messages: list[str],
     *,
+    normalization: EmbeddingInputNormalization | None = None,
     on_provider_batch_confirmed: Callable[[], None] | None = None,
 ) -> list[tuple[list[float], int, int, str]]:
+    active_normalization = normalization or EmbeddingInputNormalization()
     weighted_sums: list[list[float] | None] = [None] * len(messages)
     first_vectors: list[list[float] | None] = [None] * len(messages)
     total_weights = [0] * len(messages)
     chunk_counts = [0] * len(messages)
     source_bytes = [_utf8_byte_length(message) for message in messages]
+    provider_inputs = [
+        _normalize_embedding_input(message, active_normalization)
+        for message in messages
+    ]
     dimensions: int | None = None
 
     def embed_batch(batch: list[tuple[int, str, int]]) -> None:
@@ -370,7 +574,7 @@ def _message_embeddings(
             on_provider_batch_confirmed()
 
     batch: list[tuple[int, str, int]] = []
-    for message_index, message in enumerate(messages):
+    for message_index, message in enumerate(provider_inputs):
         for chunk in _text_chunks(message):
             chunk_counts[message_index] += 1
             batch.append((message_index, chunk, _utf8_byte_length(chunk)))
@@ -408,8 +612,17 @@ def _message_embeddings(
     return results
 
 
-def _provider_batch_count(messages: list[str]) -> int:
-    chunk_count = sum(1 for message in messages for _ in _text_chunks(message))
+def _provider_batch_count(
+    messages: list[str],
+    *,
+    normalization: EmbeddingInputNormalization | None = None,
+) -> int:
+    active_normalization = normalization or EmbeddingInputNormalization()
+    chunk_count = sum(
+        1
+        for message in messages
+        for _ in _text_chunks(_normalize_embedding_input(message, active_normalization))
+    )
     return (chunk_count + EMBEDDING_BATCH_SIZE - 1) // EMBEDDING_BATCH_SIZE
 
 
@@ -451,21 +664,7 @@ class AnalysisService:
         *,
         actor_user_id: UUID,
     ) -> IndexingRun:
-        parameters = _object(payload.parameters, "parameters")
-        if parameters:
-            raise AnalysisError(
-                "indexing runs no longer accept profile, run mode, or algorithm parameters",
-                code="INDEXING_MODEL_UNAVAILABLE",
-                status_code=422,
-                suggested_action="correct-input",
-                field_errors={
-                    "parameters": (
-                        "indexing runs no longer accept profile, run mode, "
-                        "or algorithm parameters"
-                    )
-                },
-            )
-        provider = _provider(payload.provider)
+        parameters, normalization = _indexing_parameters(payload.parameters)
         model = _model(payload.model)
         run_id = uuid4()
         with open_database_connection(self._settings) as connection:
@@ -481,7 +680,15 @@ class AnalysisService:
                 if dataset is None or dataset["deleted_at"] is not None:
                     raise AnalysisError("dataset version not found")
 
-                self._require_configured_embedding_model(connection, provider, model)
+                provider_config = self._require_configured_embedding_model(
+                    connection,
+                    provider_id=payload.provider_id,
+                    provider=payload.provider,
+                    model=model,
+                )
+                provider = str(provider_config["provider"])
+                provider_configuration_id = UUID(str(provider_config["id"]))
+                provider_display_name = str(provider_config["display_name"])
                 if provider == "openai" and payload.cloud_use_confirmed is not True:
                     raise AnalysisError(
                         "OpenAI indexing requires explicit cloud confirmation",
@@ -497,13 +704,17 @@ class AnalysisService:
                     """
                     INSERT INTO analysis_runs (
                         id, project_id, dataset_version_id, status, progress,
-                        phase, provider, model, parameters, created_by_user_id
+                        phase, provider, provider_configuration_id,
+                        provider_display_name, model, parameters, created_by_user_id
                     )
-                    VALUES (%s, %s, %s, 'queued', 0, 'queued', %s, %s, %s, %s)
+                    VALUES (
+                        %s, %s, %s, 'queued', 0, 'queued', %s, %s, %s, %s, %s, %s
+                    )
                     RETURNING id, project_id, dataset_version_id,
                               %s::text AS dataset_display_name,
                               NULL::timestamptz AS dataset_deleted_at,
-                              status, progress, phase, provider, model,
+                              status, progress, phase, provider,
+                              provider_configuration_id, provider_display_name, model,
                               parameters, error_code, error_message,
                               diagnostics, started_at, completed_at,
                               cancel_requested_at, deleted_at, created_at,
@@ -514,6 +725,8 @@ class AnalysisService:
                         project_id,
                         payload.dataset_version_id,
                         provider,
+                        provider_configuration_id,
+                        provider_display_name,
                         model,
                         Jsonb(parameters),
                         actor_user_id,
@@ -532,7 +745,14 @@ class AnalysisService:
                         "project_id": str(project_id),
                         "dataset_version_id": str(payload.dataset_version_id),
                         "provider": provider,
+                        "provider_configuration_id": str(provider_configuration_id),
+                        "provider_display_name": provider_display_name,
                         "model": model,
+                        "embedding_input_normalization": (
+                            normalization.to_parameters()
+                            if normalization.enabled
+                            else None
+                        ),
                     },
                 )
         return _run_from_row(dict(row))
@@ -568,7 +788,8 @@ class AnalysisService:
                 SELECT r.id, r.project_id, r.dataset_version_id,
                        d.display_name AS dataset_display_name,
                        d.deleted_at AS dataset_deleted_at,
-                       r.status, r.progress, r.phase, r.provider, r.model,
+                       r.status, r.progress, r.phase, r.provider,
+                       r.provider_configuration_id, r.provider_display_name, r.model,
                        r.parameters, r.error_code, r.error_message, r.diagnostics,
                        r.started_at, r.completed_at, r.cancel_requested_at,
                        r.deleted_at, r.created_at, r.updated_at
@@ -582,6 +803,19 @@ class AnalysisService:
             ).fetchall()
         return [_run_from_row(dict(row)) for row in rows]
 
+    def has_active_run(self) -> bool:
+        with open_database_connection(self._settings) as connection:
+            row = connection.execute(
+                """
+                SELECT id
+                FROM analysis_runs
+                WHERE deleted_at IS NULL
+                  AND status IN ('queued', 'running', 'cancelling')
+                LIMIT 1
+                """
+            ).fetchone()
+        return row is not None
+
     def get_run(self, project_id: UUID, run_id: UUID) -> IndexingRun | None:
         with open_database_connection(self._settings) as connection:
             row = connection.execute(
@@ -589,7 +823,8 @@ class AnalysisService:
                 SELECT r.id, r.project_id, r.dataset_version_id,
                        d.display_name AS dataset_display_name,
                        d.deleted_at AS dataset_deleted_at,
-                       r.status, r.progress, r.phase, r.provider, r.model,
+                       r.status, r.progress, r.phase, r.provider,
+                       r.provider_configuration_id, r.provider_display_name, r.model,
                        r.parameters, r.error_code, r.error_message, r.diagnostics,
                        r.started_at, r.completed_at, r.cancel_requested_at,
                        r.deleted_at, r.created_at, r.updated_at
@@ -656,7 +891,8 @@ class AnalysisService:
                     RETURNING id, project_id, dataset_version_id,
                               NULL::text AS dataset_display_name,
                               NULL::timestamptz AS dataset_deleted_at,
-                              status, progress, phase, provider, model,
+                              status, progress, phase, provider,
+                              provider_configuration_id, provider_display_name, model,
                               parameters, error_code, error_message,
                               diagnostics, started_at, completed_at,
                               cancel_requested_at, deleted_at, created_at,
@@ -730,13 +966,27 @@ class AnalysisService:
                     SET status = 'running', progress = %s, phase = 'embedding',
                         started_at = now(), updated_at = now()
                     WHERE id = %s AND status = 'queued' AND deleted_at IS NULL
-                    RETURNING id, project_id, dataset_version_id, provider, model
+                    RETURNING id, project_id, dataset_version_id, provider,
+                              provider_configuration_id, provider_display_name, model,
+                              parameters
                     """,
                     (RUN_START_PROGRESS, run_id),
                 ).fetchone()
                 if run_row is None:
                     return
+                provider_configuration_id = run_row["provider_configuration_id"]
+                provider_ref = (
+                    UUID(str(provider_configuration_id))
+                    if provider_configuration_id is not None
+                    else None
+                )
         try:
+            if provider_ref is None:
+                raise AnalysisError("provider configuration is no longer available")
+            run_parameters = run_row["parameters"]
+            _, normalization = _indexing_parameters(
+                dict(run_parameters) if isinstance(run_parameters, dict) else {}
+            )
             embeddings_written = 0
             variant_embedding_counts = {"message": 0, "answer": 0}
             chunks_embedded = 0
@@ -765,10 +1015,12 @@ class AnalysisService:
                             EMBEDDING_BATCH_SIZE
                         ):
                             total_provider_batches += _provider_batch_count(
-                                [str(pair["message"]) for pair in count_pairs]
+                                [str(pair["message"]) for pair in count_pairs],
+                                normalization=normalization,
                             )
                             total_provider_batches += _provider_batch_count(
-                                [str(pair["answer"]) for pair in count_pairs]
+                                [str(pair["answer"]) for pair in count_pairs],
+                                normalization=normalization,
                             )
                     if total_provider_batches < 1:
                         raise AnalysisError(
@@ -806,18 +1058,20 @@ class AnalysisService:
                             by_variant = {
                                 "message": _message_embeddings(
                                     self._provider_service,
-                                    str(run_row["provider"]),
+                                    provider_ref,
                                     str(run_row["model"]),
                                     [str(pair["message"]) for pair in pairs],
+                                    normalization=normalization,
                                     on_provider_batch_confirmed=(
                                         publish_confirmed_provider_batch
                                     ),
                                 ),
                                 "answer": _message_embeddings(
                                     self._provider_service,
-                                    str(run_row["provider"]),
+                                    provider_ref,
                                     str(run_row["model"]),
                                     [str(pair["answer"]) for pair in pairs],
+                                    normalization=normalization,
                                     on_provider_batch_confirmed=(
                                         publish_confirmed_provider_batch
                                     ),
@@ -849,17 +1103,58 @@ class AnalysisService:
                                         source_ordinal=pair["ordinal"],
                                         text_variant=text_variant,
                                         provider=str(run_row["provider"]),
+                                        provider_configuration_id=(
+                                            UUID(
+                                                str(
+                                                    run_row["provider_configuration_id"]
+                                                )
+                                            )
+                                            if run_row["provider_configuration_id"]
+                                            is not None
+                                            else None
+                                        ),
+                                        provider_display_name=(
+                                            str(run_row["provider_display_name"])
+                                            if run_row["provider_display_name"]
+                                            is not None
+                                            else None
+                                        ),
                                         model=str(run_row["model"]),
                                         vector=vector,
                                         chunk_count=chunk_count,
                                         source_bytes=source_bytes,
                                         pooling=pooling,
+                                        normalization=normalization,
                                     )
                                     embeddings_written += 1
                                     variant_embedding_counts[text_variant] += 1
                                     chunks_embedded += chunk_count
                                     if chunk_count > 1:
                                         chunked_texts += 1
+                    completion_diagnostics: dict[str, Any] = {
+                        "provider": str(run_row["provider"]),
+                        "provider_configuration_id": (
+                            str(run_row["provider_configuration_id"])
+                            if run_row["provider_configuration_id"] is not None
+                            else None
+                        ),
+                        "provider_display_name": (
+                            str(run_row["provider_display_name"])
+                            if run_row["provider_display_name"] is not None
+                            else None
+                        ),
+                        "model": str(run_row["model"]),
+                        "dimensions": dimensions,
+                        "message_embeddings": variant_embedding_counts["message"],
+                        "answer_embeddings": variant_embedding_counts["answer"],
+                        "embeddings_written": embeddings_written,
+                        "chunks_embedded": chunks_embedded,
+                        "chunked_texts": chunked_texts,
+                    }
+                    if normalization.enabled:
+                        completion_diagnostics["embedding_input_normalization"] = (
+                            normalization.to_parameters()
+                        )
                     connection.execute(
                         """
                         UPDATE analysis_runs
@@ -880,22 +1175,7 @@ class AnalysisService:
                         WHERE id = %s AND status IN ('running', 'cancelling')
                         """,
                         (
-                            Jsonb(
-                                {
-                                    "provider": str(run_row["provider"]),
-                                    "model": str(run_row["model"]),
-                                    "dimensions": dimensions,
-                                    "message_embeddings": variant_embedding_counts[
-                                        "message"
-                                    ],
-                                    "answer_embeddings": variant_embedding_counts[
-                                        "answer"
-                                    ],
-                                    "embeddings_written": embeddings_written,
-                                    "chunks_embedded": chunks_embedded,
-                                    "chunked_texts": chunked_texts,
-                                }
-                            ),
+                            Jsonb(completion_diagnostics),
                             run_id,
                         ),
                     )
@@ -979,12 +1259,30 @@ class AnalysisService:
         source_ordinal: object,
         text_variant: str,
         provider: str,
+        provider_configuration_id: UUID | None,
+        provider_display_name: str | None,
         model: str,
         vector: list[float],
         chunk_count: int,
         source_bytes: int,
         pooling: str,
+        normalization: EmbeddingInputNormalization,
     ) -> None:
+        metadata: dict[str, object] = {
+            "provider": provider,
+            "provider_configuration_id": (
+                str(provider_configuration_id)
+                if provider_configuration_id is not None
+                else None
+            ),
+            "provider_display_name": provider_display_name,
+            "source_ordinal": source_ordinal,
+            "source_chunk_count": chunk_count,
+            "source_bytes": source_bytes,
+            "pooling": pooling,
+        }
+        if normalization.enabled:
+            metadata["embedding_input_normalization"] = normalization.to_parameters()
         connection.execute(
             """
             INSERT INTO embeddings (
@@ -1006,37 +1304,58 @@ class AnalysisService:
                 model,
                 len(vector),
                 _vector_literal(vector),
-                Jsonb(
-                    {
-                        "provider": provider,
-                        "source_ordinal": source_ordinal,
-                        "source_chunk_count": chunk_count,
-                        "source_bytes": source_bytes,
-                        "pooling": pooling,
-                    }
-                ),
+                Jsonb(metadata),
             ),
         )
 
     def _require_configured_embedding_model(
-        self, connection: Any, provider: str, model: str
-    ) -> None:
-        row = connection.execute(
-            """
-            SELECT manual_models, api_key_secret, endpoint_url
-            FROM provider_configurations
-            WHERE provider = %s
-            """,
-            (provider,),
-        ).fetchone()
+        self,
+        connection: Any,
+        *,
+        provider_id: UUID | None,
+        provider: str | None,
+        model: str,
+    ) -> dict[str, object]:
+        if provider_id is not None:
+            row = connection.execute(
+                """
+                SELECT id, provider, display_name, embedding_models AS manual_models,
+                       api_key_secret, endpoint_url
+                FROM provider_configurations
+                WHERE id = %s
+                """,
+                (provider_id,),
+            ).fetchone()
+        else:
+            if provider is None:
+                raise AnalysisError(
+                    "embedding provider is not configured",
+                    code="INDEXING_MODEL_UNAVAILABLE",
+                    status_code=422,
+                    suggested_action="correct-input",
+                    field_errors={"provider_id": "embedding provider is required"},
+                )
+            clean_provider = _provider(provider)
+            row = connection.execute(
+                """
+                SELECT id, provider, display_name, embedding_models AS manual_models,
+                       api_key_secret, endpoint_url
+                FROM provider_configurations
+                WHERE provider = %s
+                ORDER BY created_at ASC, id ASC
+                LIMIT 1
+                """,
+                (clean_provider,),
+            ).fetchone()
         if row is None:
             raise AnalysisError(
                 "embedding provider is not configured",
                 code="INDEXING_MODEL_UNAVAILABLE",
                 status_code=422,
                 suggested_action="correct-input",
-                field_errors={"provider": "embedding provider is not configured"},
+                field_errors={"provider_id": "embedding provider is not configured"},
             )
+        provider_value = str(row["provider"])
         models = row["manual_models"]
         manual_models = list(models) if isinstance(models, list) else []
         if model not in manual_models:
@@ -1047,7 +1366,7 @@ class AnalysisService:
                 suggested_action="correct-input",
                 field_errors={"model": "selected embedding model is not configured"},
             )
-        if provider == "openai" and row["api_key_secret"] is None:
+        if provider_value == "openai" and row["api_key_secret"] is None:
             raise AnalysisError(
                 "OpenAI API key is not configured",
                 code="INDEXING_MODEL_UNAVAILABLE",
@@ -1055,11 +1374,12 @@ class AnalysisService:
                 suggested_action="correct-input",
                 field_errors={"provider": "OpenAI API key is not configured"},
             )
-        if provider in {"ollama", "vllm"} and row["endpoint_url"] is None:
+        if provider_value == "ollama" and row["endpoint_url"] is None:
             raise AnalysisError(
-                f"{provider} endpoint_url is required",
+                "ollama endpoint_url is required",
                 code="INDEXING_MODEL_UNAVAILABLE",
                 status_code=422,
                 suggested_action="correct-input",
-                field_errors={"provider": f"{provider} endpoint_url is required"},
+                field_errors={"provider_id": "ollama endpoint_url is required"},
             )
+        return dict(row)

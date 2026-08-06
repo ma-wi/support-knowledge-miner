@@ -39,9 +39,12 @@ type ApiImportLog = {
   total_records: number;
   valid_records: number;
   skipped_records: number;
+  skipped_detail_count?: number;
   dataset_version_id: string | null;
   dataset_display_name: string | null;
   dataset_deleted_at: string | null;
+  started_at: string;
+  completed_at: string;
 };
 
 type ApiImportLogEntry = {
@@ -59,16 +62,22 @@ type ImportLog = {
   totalRecords: number;
   validRecords: number;
   skippedRecords: number;
+  skippedDetailCount: number;
   datasetVersionId: string | null;
   datasetDisplayName: string | null;
   datasetDeletedAt: string | null;
+  startedAt: string;
+  completedAt: string;
 };
 
 const MAX_IMPORT_BYTES = 512 * 1024 * 1024;
 
 type ApiProviderConfiguration = {
+  id: string;
   provider: string;
+  display_name: string;
   endpoint_url: string | null;
+  available_models: string[];
   manual_models: string[];
   llm_models?: string[];
   api_key_set: boolean;
@@ -76,22 +85,28 @@ type ApiProviderConfiguration = {
 };
 
 type ApiProviderCheck = {
+  id: string;
   provider: string;
   ok: boolean;
   models: string[];
+  embedding_models: string[];
+  llm_models: string[];
   message: string;
 };
 
 type ProviderConfiguration = {
+  id: string;
   provider: string;
+  displayName: string;
   endpointUrl: string | null;
+  availableModels: string[];
   manualModels: string[];
   llmModels: string[];
   apiKeySet: boolean;
   updatedAt: string;
 };
 
-type ConfigurableProvider = "openai" | "ollama" | "vllm";
+type ConfigurableProvider = "openai" | "ollama";
 type AuthoritativeProjectContext = {
   projectId: string | null;
   generation: number;
@@ -113,6 +128,8 @@ type ApiIndexingRun = {
   progress: number;
   phase: string;
   provider: string;
+  provider_configuration_id: string | null;
+  provider_display_name: string | null;
   model: string;
   parameters: Record<string, unknown>;
   error_code: string | null;
@@ -136,6 +153,8 @@ type IndexingRun = {
   progress: number;
   phase: string;
   provider: string;
+  providerConfigurationId: string | null;
+  providerDisplayName: string | null;
   model: string;
   parameters: Record<string, unknown>;
   errorCode: string | null;
@@ -169,6 +188,8 @@ type ApiClusterSet = {
   parameters: Record<string, unknown>;
   source_snapshot: Record<string, unknown>;
   llm_provider: string | null;
+  llm_provider_configuration_id: string | null;
+  llm_provider_display_name: string | null;
   llm_model: string | null;
   llm_parameters: Record<string, unknown>;
   llm_sample_strategy: Record<string, unknown>;
@@ -204,6 +225,8 @@ type ClusterSet = {
   parameters: Record<string, unknown>;
   sourceSnapshot: Record<string, unknown>;
   llmProvider: string | null;
+  llmProviderConfigurationId: string | null;
+  llmProviderDisplayName: string | null;
   llmModel: string | null;
   llmParameters: Record<string, unknown>;
   llmSampleStrategy: Record<string, unknown>;
@@ -239,6 +262,8 @@ type ApiCluster = {
   algorithm: string;
   member_count: number;
   metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
   auto_summary_question?: string | null;
   auto_summary_answer?: string | null;
 };
@@ -263,6 +288,8 @@ type Cluster = {
   algorithm: string;
   memberCount: number;
   metadata: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
   autoSummaryQuestion: string | null;
   autoSummaryAnswer: string | null;
 };
@@ -344,10 +371,9 @@ type Feedback = {
 };
 
 type ActivePage = "projects" | "settings";
-type SettingsTab = "providers" | "llm-providers" | "users";
+type SettingsTab = "providers" | "users";
 type ProjectTab =
   "import" | "indexing" | "cluster-sets" | "explorer" | "delete";
-type LlmProviderSelection = "" | "openai" | "ollama";
 type ExplorerExportFormat = "csv" | "json";
 type ClusterSetRefinementDraft = {
   parentClusterSetId: string;
@@ -370,6 +396,8 @@ const FEEDBACK_LABELS: Record<FeedbackKind, string> = {
 const ERROR_MESSAGES_BY_CODE: Record<string, string> = {
   UNEXPECTED_ERROR:
     "Die Aktion konnte nicht abgeschlossen werden. Bitte erneut versuchen oder den aktuellen Stand neu laden.",
+  VALIDATION_FAILED:
+    "Die Eingaben sind ungültig. Bitte prüfen und erneut versuchen.",
   INDEXING_MODEL_UNAVAILABLE:
     "Das gewählte Embedding-Modell ist nicht verfügbar. Bitte Provider-Einstellungen prüfen oder ein anderes Modell wählen.",
   INDEXING_CLOUD_CONFIRMATION_REQUIRED:
@@ -408,8 +436,18 @@ const ERROR_MESSAGES_BY_CODE: Record<string, string> = {
     "Keine Cluster entsprechen der aktuellen Textsuche oder dem Filter.",
   CLUSTER_OUTLIER_EMPTY_RESULT:
     "Die Ausreißer-Einstellung würde keine Zeilen übrig lassen. Bitte Schwellwert anpassen.",
+  PROVIDER_MODEL_PULL_IN_PROGRESS:
+    "Ein Ollama-Modell wird bereits geladen. Bitte Abschluss abwarten.",
+  PROVIDER_DELETE_FAILED:
+    "Provider konnte nicht entfernt werden. Bitte aktuellen Stand neu laden und erneut versuchen.",
+  PROVIDER_DELETE_BLOCKED:
+    "Provider wird noch von einer aktiven Berechnung verwendet. Bitte Abschluss abwarten oder den Job abbrechen.",
   CLUSTER_OUTLIER_RECALCULATION_FAILED:
     "Die Ausreißer-Neuberechnung konnte nicht abgeschlossen werden.",
+  CLUSTER_REDUCTION_UNAVAILABLE:
+    "Die gewählte Dimensionsreduzierung ist lokal nicht verfügbar. Bitte Parameter anpassen.",
+  CLUSTER_ACCELERATOR_UNAVAILABLE:
+    "cuML/RAPIDS ist in dieser lokalen Laufzeit nicht verfügbar. Bitte CPU-Backend wählen.",
   CLUSTER_SET_LINEAGE_UNAVAILABLE:
     "Die Analyse-Historie ist unvollständig. Bitte Liste neu laden.",
   EXPLORER_EXPORT_EMPTY:
@@ -505,22 +543,105 @@ function toImportLog(log: ApiImportLog): ImportLog {
     totalRecords: log.total_records,
     validRecords: log.valid_records,
     skippedRecords: log.skipped_records,
+    skippedDetailCount: log.skipped_detail_count ?? 0,
     datasetVersionId: log.dataset_version_id,
     datasetDisplayName: log.dataset_display_name,
     datasetDeletedAt: log.dataset_deleted_at,
+    startedAt: log.started_at,
+    completedAt: log.completed_at,
   };
 }
 
 function toProviderConfiguration(
   configuration: ApiProviderConfiguration,
 ): ProviderConfiguration {
+  const manualModels =
+    configuration.provider === "openai"
+      ? configuration.manual_models.filter(isOpenAiEmbeddingModel)
+      : configuration.manual_models;
+  const llmModels =
+    configuration.provider === "openai"
+      ? (configuration.llm_models ?? []).filter(isOpenAiLlmModel)
+      : (configuration.llm_models ?? []);
+  const availableModels =
+    (configuration.available_models ?? []).length > 0
+      ? configuration.available_models
+      : Array.from(new Set([...manualModels, ...llmModels]));
   return {
+    id: configuration.id,
     provider: configuration.provider,
+    displayName: configuration.display_name,
     endpointUrl: configuration.endpoint_url,
-    manualModels: configuration.manual_models,
-    llmModels: configuration.llm_models ?? [],
+    availableModels,
+    manualModels,
+    llmModels,
     apiKeySet: configuration.api_key_set,
     updatedAt: configuration.updated_at,
+  };
+}
+
+function uniqueModels(models: string[]): string[] {
+  return Array.from(new Set(models));
+}
+
+function isOpenAiEmbeddingModel(model: string): boolean {
+  return model.toLowerCase().startsWith("text-embedding-");
+}
+
+function isOpenAiLlmModel(model: string): boolean {
+  const normalized = model.toLowerCase();
+  if (normalized === "o4-mini") {
+    return true;
+  }
+  if (normalized.startsWith("gpt-4.1") || normalized.startsWith("gpt-4o")) {
+    return true;
+  }
+  const major = normalized.match(/^gpt-(\d+)(?:[.-].*)?$/);
+  return major !== null && Number.parseInt(major[1], 10) >= 5;
+}
+
+function embeddingModelOptions(provider: ProviderConfiguration): string[] {
+  if (provider.provider === "openai") {
+    return provider.availableModels.filter(isOpenAiEmbeddingModel);
+  }
+  return provider.availableModels;
+}
+
+function llmModelOptions(provider: ProviderConfiguration): string[] {
+  if (provider.provider === "openai") {
+    return provider.availableModels.filter(isOpenAiLlmModel);
+  }
+  return provider.availableModels;
+}
+
+function reconcileDiscoveredProviderModels(
+  provider: ProviderConfiguration,
+  models: string[],
+  result: ApiProviderCheck,
+): ProviderConfiguration {
+  const availableModels = uniqueModels(models);
+  const nextProvider = {
+    ...provider,
+    availableModels,
+  };
+  const discoveredEmbeddingModels = result.embedding_models ?? [];
+  const discoveredLlmModels = result.llm_models ?? [];
+  const embeddingOptions =
+    discoveredEmbeddingModels.length > 0
+      ? discoveredEmbeddingModels
+      : embeddingModelOptions(nextProvider);
+  const llmOptions =
+    discoveredLlmModels.length > 0
+      ? discoveredLlmModels
+      : llmModelOptions(nextProvider);
+  const embeddingSet = new Set(embeddingOptions);
+  const llmSet = new Set(llmOptions);
+  return {
+    ...nextProvider,
+    manualModels: provider.manualModels.filter((model) =>
+      embeddingSet.has(model),
+    ),
+    llmModels: provider.llmModels.filter((model) => llmSet.has(model)),
   };
 }
 
@@ -535,6 +656,8 @@ function toIndexingRun(run: ApiIndexingRun): IndexingRun {
     progress: run.progress,
     phase: run.phase,
     provider: run.provider,
+    providerConfigurationId: run.provider_configuration_id,
+    providerDisplayName: run.provider_display_name,
     model: run.model,
     parameters: run.parameters,
     errorCode: run.error_code,
@@ -570,6 +693,8 @@ function toClusterSet(clusterSet: ApiClusterSet): ClusterSet {
     parameters: clusterSet.parameters,
     sourceSnapshot: clusterSet.source_snapshot,
     llmProvider: clusterSet.llm_provider,
+    llmProviderConfigurationId: clusterSet.llm_provider_configuration_id,
+    llmProviderDisplayName: clusterSet.llm_provider_display_name,
     llmModel: clusterSet.llm_model,
     llmParameters: clusterSet.llm_parameters,
     llmSampleStrategy: clusterSet.llm_sample_strategy,
@@ -607,9 +732,21 @@ function toCluster(cluster: ApiCluster): Cluster {
     algorithm: cluster.algorithm,
     memberCount: cluster.member_count,
     metadata: cluster.metadata,
+    createdAt: cluster.created_at,
+    updatedAt: cluster.updated_at,
     autoSummaryQuestion: cluster.auto_summary_question ?? null,
     autoSummaryAnswer: cluster.auto_summary_answer ?? null,
   };
+}
+
+function sortClusterSetsByRecency(clusterSets: ClusterSet[]): ClusterSet[] {
+  return clusterSets.slice().sort((left, right) => {
+    const updatedComparison = right.updatedAt.localeCompare(left.updatedAt);
+    if (updatedComparison !== 0) {
+      return updatedComparison;
+    }
+    return right.createdAt.localeCompare(left.createdAt);
+  });
 }
 
 function toClusterSource(source: ApiClusterSource): ClusterSource {
@@ -644,13 +781,6 @@ function toExportLog(log: ApiExportLog): ExportLog {
   };
 }
 
-function parseModels(value: FormDataEntryValue | null): string[] {
-  return String(value ?? "")
-    .split(",")
-    .map((item) => item.trim())
-    .filter(Boolean);
-}
-
 function parsePositiveInteger(value: FormDataEntryValue | null): number | null {
   const cleaned = String(value ?? "").trim();
   if (!/^[1-9]\d*$/.test(cleaned)) {
@@ -658,6 +788,118 @@ function parsePositiveInteger(value: FormDataEntryValue | null): number | null {
   }
   const parsed = Number(cleaned);
   return Number.isSafeInteger(parsed) ? parsed : null;
+}
+
+const CLUSTER_SET_PARAMETER_LABELS: Record<string, string> = {
+  vector_basis: "Vektorbasis",
+  message_weight: "Nachrichten-Gewicht",
+  answer_weight: "Antwort-Gewicht",
+  algorithm: "Algorithmus",
+  min_cluster_size: "min_cluster_size",
+  min_samples: "min_samples",
+  cluster_selection_epsilon: "cluster_selection_epsilon",
+  reduction_method: "Reduktion",
+  reduction_dimensions: "Ziel-Dimensionen",
+  execution_backend: "Backend",
+  umap_n_neighbors: "UMAP n_neighbors",
+  umap_min_dist: "UMAP min_dist",
+  outlier_threshold: "Outlier-Schwelle",
+  n_clusters: "n_clusters",
+  linkage: "Linkage",
+  distance_threshold: "distance_threshold",
+};
+
+const CLUSTER_SET_PARAMETER_ORDER = [
+  "vector_basis",
+  "message_weight",
+  "answer_weight",
+  "algorithm",
+  "min_cluster_size",
+  "min_samples",
+  "cluster_selection_epsilon",
+  "reduction_method",
+  "reduction_dimensions",
+  "execution_backend",
+  "umap_n_neighbors",
+  "umap_min_dist",
+  "outlier_threshold",
+  "n_clusters",
+  "linkage",
+  "distance_threshold",
+];
+
+type ClusterSetParameterEntry = {
+  key: string;
+  label: string;
+  value: string;
+};
+
+function formatClusterSetParameterValue(key: string, value: unknown): string {
+  if (value === null || value === undefined) {
+    if (key === "min_samples") {
+      return "auto";
+    }
+    if (key === "outlier_threshold") {
+      return "aus";
+    }
+    if (
+      key === "reduction_dimensions" ||
+      key === "umap_n_neighbors" ||
+      key === "umap_min_dist" ||
+      key === "distance_threshold"
+    ) {
+      return "nicht aktiv";
+    }
+    return "-";
+  }
+  if (typeof value === "number") {
+    return Number.isInteger(value)
+      ? String(value)
+      : String(Number(value.toFixed(4)));
+  }
+  if (typeof value === "boolean") {
+    return value ? "ja" : "nein";
+  }
+  if (typeof value === "string") {
+    return value.trim() || "-";
+  }
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function clusterSetParameterEntries(
+  clusterSet: ClusterSet,
+): ClusterSetParameterEntry[] {
+  const values: Record<string, unknown> = {
+    vector_basis: clusterSet.vectorBasis,
+    message_weight: clusterSet.messageWeight,
+    answer_weight: clusterSet.answerWeight,
+    algorithm: clusterSet.algorithm,
+    ...clusterSet.parameters,
+  };
+  const keys = [
+    ...CLUSTER_SET_PARAMETER_ORDER,
+    ...Object.keys(values)
+      .filter((key) => !CLUSTER_SET_PARAMETER_ORDER.includes(key))
+      .sort((left, right) => left.localeCompare(right)),
+  ];
+  const seen = new Set<string>();
+  return keys
+    .filter((key) => {
+      if (seen.has(key) || !(key in values)) {
+        return false;
+      }
+      seen.add(key);
+      return true;
+    })
+    .map((key) => ({
+      key,
+      label: CLUSTER_SET_PARAMETER_LABELS[key] ?? key,
+      value: formatClusterSetParameterValue(key, values[key]),
+    }));
 }
 
 class ApiRequestError extends Error {
@@ -799,29 +1041,59 @@ function App() {
   const [activePage, setActivePage] = useState<ActivePage>("projects");
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("providers");
   const [projectTab, setProjectTab] = useState<ProjectTab>("import");
-  const [recentProjectIds, setRecentProjectIds] = useState<string[]>([]);
-  const [openAiDiscoveredModels, setOpenAiDiscoveredModels] = useState<
-    string[]
-  >([]);
-  const [openAiSelectedModels, setOpenAiSelectedModels] = useState<string[]>(
-    [],
-  );
-  const [indexingProvider, setIndexingProvider] =
-    useState<ConfigurableProvider>("vllm");
+  const [newProviderType, setNewProviderType] =
+    useState<ConfigurableProvider>("openai");
+  const [ollamaPullProviderId, setOllamaPullProviderId] = useState<
+    string | null
+  >(null);
+  const [indexingProviderId, setIndexingProviderId] = useState("");
   const [indexingModel, setIndexingModel] = useState("");
   const [cloudUseConfirmed, setCloudUseConfirmed] = useState(false);
+  const [removeIndexingLineBreaks, setRemoveIndexingLineBreaks] =
+    useState(false);
+  const [replaceIndexingLineBreaks, setReplaceIndexingLineBreaks] =
+    useState(false);
+  const [indexingLineBreakReplacement, setIndexingLineBreakReplacement] =
+    useState(". ");
+  const [lowercaseIndexingInput, setLowercaseIndexingInput] = useState(false);
   const [clusterSetVectorBasis, setClusterSetVectorBasis] = useState("message");
-  const [clusterSetLlmProvider, setClusterSetLlmProvider] =
-    useState<LlmProviderSelection>("");
+  const [clusterSetReductionMethod, setClusterSetReductionMethod] =
+    useState("none");
+  const [clusterSetExecutionBackend, setClusterSetExecutionBackend] =
+    useState("auto");
+  const [clusterSetLlmProviderId, setClusterSetLlmProviderId] = useState("");
+  const [clusterSetSummaryRequestId, setClusterSetSummaryRequestId] = useState<
+    string | null
+  >(null);
+  const [summaryDialogClusterSet, setSummaryDialogClusterSet] =
+    useState<ClusterSet | null>(null);
+  const [summaryDialogError, setSummaryDialogError] = useState<string | null>(
+    null,
+  );
+  const [summaryDialogProviderId, setSummaryDialogProviderId] = useState("");
+  const [summaryDialogModel, setSummaryDialogModel] = useState("");
+  const [summaryDialogSampleCount, setSummaryDialogSampleCount] = useState(10);
+  const [summaryDialogSampleAll, setSummaryDialogSampleAll] = useState(false);
+  const [summaryDialogCloudUseConfirmed, setSummaryDialogCloudUseConfirmed] =
+    useState(false);
+  const [explorerSummaryError, setExplorerSummaryError] = useState<
+    string | null
+  >(null);
   const [clusterSetLlmSampleAll, setClusterSetLlmSampleAll] = useState(false);
   const [clusterSetCloudUseConfirmed, setClusterSetCloudUseConfirmed] =
     useState(false);
+  const [globalMenuOpen, setGlobalMenuOpen] = useState(false);
   const projectOpenGeneration = useRef(0);
   const clusterSetGenerationRequestRef =
     useRef<ClusterSetGenerationRequest | null>(null);
   const sourceDialogRef = useRef<HTMLElement | null>(null);
   const sourceDialogCloseRef = useRef<HTMLButtonElement | null>(null);
   const sourceDialogTriggerRef = useRef<HTMLElement | null>(null);
+  const summaryDialogRef = useRef<HTMLElement | null>(null);
+  const summaryDialogCloseRef = useRef<HTMLButtonElement | null>(null);
+  const summaryDialogTriggerRef = useRef<HTMLElement | null>(null);
+  const globalMenuButtonRef = useRef<HTMLButtonElement | null>(null);
+  const globalMenuRef = useRef<HTMLDivElement | null>(null);
   const signOutRef = useRef<() => void>(() => undefined);
   const authoritativeProjectContext = useRef<AuthoritativeProjectContext>({
     projectId: null,
@@ -892,12 +1164,22 @@ function App() {
     );
     const nextProviders = apiProviders.map(toProviderConfiguration);
     setProviders(nextProviders);
-    const openAi = nextProviders.find(
-      (provider) => provider.provider === "openai",
+    const firstEmbeddingProvider = nextProviders.find(
+      (provider) => provider.manualModels.length > 0,
     );
-    if (openAi !== undefined) {
-      setOpenAiSelectedModels(openAi.manualModels);
-    }
+    const firstLlmProvider = nextProviders.find(
+      (provider) => provider.llmModels.length > 0,
+    );
+    setIndexingProviderId((current) =>
+      current && nextProviders.some((provider) => provider.id === current)
+        ? current
+        : (firstEmbeddingProvider?.id ?? ""),
+    );
+    setClusterSetLlmProviderId((current) =>
+      current && nextProviders.some((provider) => provider.id === current)
+        ? current
+        : (firstLlmProvider?.id ?? ""),
+    );
   }
 
   async function fetchIndexingRuns(
@@ -938,6 +1220,7 @@ function App() {
       resetSourceDialogState();
       setClusterSetLoadId(clusterSetId);
       setExplorerExportError(null);
+      setExplorerSummaryError(null);
       setLastExportContent("");
       setLastExportContentType("");
       setProjectTab("explorer");
@@ -1105,15 +1388,35 @@ function App() {
     setClusterSets([]);
     setClusters([]);
     setClusterSetLoadId(null);
+    setClusterSetSummaryRequestId(null);
+    setSummaryDialogClusterSet(null);
+    setSummaryDialogError(null);
+    setSummaryDialogProviderId("");
+    setSummaryDialogModel("");
+    setSummaryDialogSampleCount(10);
+    setSummaryDialogSampleAll(false);
+    setSummaryDialogCloudUseConfirmed(false);
+    setExplorerSummaryError(null);
     resetSourceDialogState();
     setExportLogs([]);
     setExplorerExportError(null);
     setLastExportContent("");
     setLastExportContentType("");
-    setOpenAiDiscoveredModels([]);
-    setOpenAiSelectedModels([]);
-    setRecentProjectIds([]);
+    setIndexingProviderId("");
+    setClusterSetReductionMethod("none");
+    setClusterSetExecutionBackend("auto");
+    setClusterSetLlmProviderId("");
+    setClusterSetSummaryRequestId(null);
+    setSummaryDialogClusterSet(null);
+    setSummaryDialogError(null);
+    setSummaryDialogProviderId("");
+    setSummaryDialogModel("");
+    setSummaryDialogSampleCount(10);
+    setSummaryDialogSampleAll(false);
+    setSummaryDialogCloudUseConfirmed(false);
+    setExplorerSummaryError(null);
     setActivePage("projects");
+    setGlobalMenuOpen(false);
     setFeedback(null);
     if (token !== undefined) {
       void apiRequest<void>("/api/auth/sign-out", {
@@ -1133,19 +1436,13 @@ function App() {
   signOutRef.current = signOut;
 
   function openProvidersPage() {
+    setGlobalMenuOpen(false);
     setActivePage("settings");
     setSettingsTab("providers");
-    const openAi = providers.find((provider) => provider.provider === "openai");
-    if (
-      session !== null &&
-      openAi?.apiKeySet &&
-      openAiDiscoveredModels.length === 0
-    ) {
-      void discoverOpenAiModels(openAi.manualModels, false);
-    }
   }
 
   function openProjectListPage() {
+    setGlobalMenuOpen(false);
     invalidateProjectContext();
     setActivePage("projects");
     setCurrentProject(null);
@@ -1153,7 +1450,55 @@ function App() {
     setClusterSets([]);
     setProjectTab("import");
     setFeedback(null);
+    setExplorerSummaryError(null);
   }
+
+  function navigateFromGlobalMenu(target: "projects" | "settings" | "signout") {
+    if (target === "projects") {
+      openProjectListPage();
+      globalMenuButtonRef.current?.focus();
+      return;
+    }
+    if (target === "settings") {
+      openProvidersPage();
+      globalMenuButtonRef.current?.focus();
+      return;
+    }
+    setGlobalMenuOpen(false);
+    signOut();
+  }
+
+  useEffect(() => {
+    if (!globalMenuOpen) {
+      return undefined;
+    }
+    function closeOnPointerDown(event: PointerEvent) {
+      const target = event.target;
+      if (!(target instanceof Node)) {
+        return;
+      }
+      if (
+        globalMenuRef.current?.contains(target) ||
+        globalMenuButtonRef.current?.contains(target)
+      ) {
+        return;
+      }
+      setGlobalMenuOpen(false);
+    }
+    function closeOnEscape(event: KeyboardEvent) {
+      if (event.key !== "Escape") {
+        return;
+      }
+      setGlobalMenuOpen(false);
+      globalMenuButtonRef.current?.focus();
+    }
+    document.addEventListener("pointerdown", closeOnPointerDown);
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnPointerDown);
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [globalMenuOpen]);
 
   async function createProject(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -1222,7 +1567,6 @@ function App() {
       const project = toProject(opened);
       setCurrentProject(project);
       setProjectTab("import");
-      rememberProjectAccess(project.id);
       setActivePage("projects");
 
       const [logs, nextClusterSets, exports] = await Promise.allSettled([
@@ -1547,7 +1891,8 @@ function App() {
       const selectedLog = importLogs.find((log) => log.id === logId);
       showFeedback(
         "info",
-        selectedLog !== undefined && selectedLog.skippedRecords > entries.length
+        selectedLog !== undefined &&
+          selectedLog.skippedRecords > selectedLog.skippedDetailCount
           ? "Import-Log geladen. Angezeigt werden nur die ersten 100 Fehlerdetails."
           : "Import-Log geladen.",
       );
@@ -1559,9 +1904,73 @@ function App() {
     }
   }
 
+  function upsertProviderState(updated: ApiProviderConfiguration) {
+    const nextProvider = toProviderConfiguration(updated);
+    setProviders((existing) =>
+      existing.map((item) =>
+        item.id === nextProvider.id ? nextProvider : item,
+      ),
+    );
+  }
+
+  async function addProvider() {
+    if (session === null) {
+      return;
+    }
+    try {
+      const created = await apiRequest<ApiProviderConfiguration>(
+        "/api/providers",
+        {
+          method: "POST",
+          token: session.token,
+          body: JSON.stringify({ provider: newProviderType }),
+        },
+      );
+      const nextProvider = toProviderConfiguration(created);
+      setProviders((existing) => [...existing, nextProvider]);
+      showFeedback("success", `${nextProvider.displayName} wurde hinzugefügt.`);
+    } catch (error: unknown) {
+      showFeedback(
+        "error",
+        actionErrorMessage(error, "Provider konnte nicht hinzugefügt werden."),
+      );
+    }
+  }
+
+  async function deleteProvider(provider: ProviderConfiguration) {
+    if (session === null) {
+      return;
+    }
+    try {
+      await apiRequest<void>(`/api/providers/${provider.id}`, {
+        method: "DELETE",
+        token: session.token,
+      });
+      setProviders((existing) =>
+        existing.filter((item) => item.id !== provider.id),
+      );
+      if (indexingProviderId === provider.id) {
+        setIndexingProviderId("");
+        setIndexingModel("");
+      }
+      if (clusterSetLlmProviderId === provider.id) {
+        setClusterSetLlmProviderId("");
+      }
+      showFeedback(
+        "success",
+        `${provider.displayName} wurde aus der aktiven Konfiguration entfernt.`,
+      );
+    } catch (error: unknown) {
+      showFeedback(
+        "error",
+        actionErrorMessage(error, "Provider konnte nicht entfernt werden."),
+      );
+    }
+  }
+
   async function configureProvider(
     event: FormEvent<HTMLFormElement>,
-    provider: ConfigurableProvider,
+    provider: ProviderConfiguration,
   ) {
     event.preventDefault();
     if (session === null) {
@@ -1569,56 +1978,39 @@ function App() {
     }
     const formElement = event.currentTarget;
     const form = new FormData(formElement);
-    const payload: Record<string, unknown> = {};
-    if (provider === "openai") {
-      const apiKey = String(form.get("apiKey") ?? "");
+    const displayName = String(form.get("displayName") ?? "").trim();
+    const endpointUrl = String(form.get("endpointUrl") ?? "").trim();
+    const apiKey = String(form.get("apiKey") ?? "");
+    const payload: Record<string, unknown> = {
+      display_name: displayName || provider.displayName,
+      provider: provider.provider,
+      endpoint_url: provider.provider === "ollama" ? endpointUrl : null,
+      available_models: provider.availableModels,
+      manual_models: provider.manualModels,
+      llm_models: provider.llmModels,
+    };
+    if (provider.provider === "openai") {
       payload.api_key = apiKey || null;
       payload.remove_api_key = form.get("removeApiKey") === "on";
-      payload.manual_models = openAiSelectedModels.length
-        ? openAiSelectedModels
-        : parseModels(form.get("manualModels"));
-      payload.llm_models = parseModels(form.get("llmModels"));
-    } else if (provider === "ollama") {
-      payload.manual_models =
-        providers.find((item) => item.provider === "ollama")?.manualModels ??
-        [];
-      payload.llm_models = parseModels(form.get("llmModels"));
-      payload.endpoint_url = String(form.get("endpointUrl") ?? "").trim();
-    } else {
-      payload.manual_models = parseModels(form.get("manualModels"));
-      payload.endpoint_url = String(form.get("endpointUrl") ?? "").trim();
     }
     try {
       const updated = await apiRequest<ApiProviderConfiguration>(
-        `/api/providers/${provider}`,
+        `/api/providers/${provider.id}`,
         {
           method: "PUT",
           token: session.token,
           body: JSON.stringify(payload),
         },
       );
-      setProviders((existing) => [
-        toProviderConfiguration(updated),
-        ...existing.filter((item) => item.provider !== provider),
-      ]);
-      if (provider === "openai") {
-        const nextOpenAi = toProviderConfiguration(updated);
-        setOpenAiSelectedModels(nextOpenAi.manualModels);
-        formElement.reset();
-        if (nextOpenAi.apiKeySet) {
-          await discoverOpenAiModels(nextOpenAi.manualModels, true);
-        } else {
-          showFeedback("success", "OpenAI Provider gespeichert.");
-        }
-      } else {
-        formElement.reset();
-        showFeedback(
-          "success",
-          provider === "ollama"
-            ? "Ollama Provider gespeichert."
-            : "vLLM Provider gespeichert.",
-        );
+      upsertProviderState(updated);
+      const apiKeyInput = formElement.elements.namedItem("apiKey");
+      if (apiKeyInput instanceof HTMLInputElement) {
+        apiKeyInput.value = "";
       }
+      showFeedback(
+        "success",
+        `${displayName || provider.displayName} gespeichert.`,
+      );
     } catch (error: unknown) {
       showFeedback(
         "error",
@@ -1630,146 +2022,114 @@ function App() {
     }
   }
 
-  async function persistOpenAiModels(models: string[]) {
-    if (session === null) {
-      return;
-    }
-    const updated = await apiRequest<ApiProviderConfiguration>(
-      "/api/providers/openai",
-      {
-        method: "PUT",
-        token: session.token,
-        body: JSON.stringify({ manual_models: models }),
-      },
-    );
-    setProviders((existing) => [
-      toProviderConfiguration(updated),
-      ...existing.filter((item) => item.provider !== "openai"),
-    ]);
-  }
-
-  async function persistProviderModels(
-    provider: "ollama" | "vllm",
-    models: string[],
-  ) {
-    if (session === null) {
-      return;
-    }
-    const updated = await apiRequest<ApiProviderConfiguration>(
-      `/api/providers/${provider}`,
-      {
-        method: "PUT",
-        token: session.token,
-        body: JSON.stringify({
-          endpoint_url:
-            providers.find((item) => item.provider === provider)?.endpointUrl ??
-            null,
-          manual_models: models,
-          llm_models: providers.find((item) => item.provider === provider)
-            ?.llmModels,
-        }),
-      },
-    );
-    setProviders((existing) => [
-      toProviderConfiguration(updated),
-      ...existing.filter((item) => item.provider !== provider),
-    ]);
-  }
-
-  async function discoverOpenAiModels(
-    fallbackModels = openAiSelectedModels,
-    persistDiscovered = false,
-  ) {
+  async function testProviderConnection(provider: ProviderConfiguration) {
     if (session === null) {
       return;
     }
     try {
       const result = await apiRequest<ApiProviderCheck>(
-        "/api/providers/openai/check",
+        `/api/providers/${provider.id}/check`,
         {
           method: "POST",
           token: session.token,
         },
       );
-      const models = result.models.length ? result.models : fallbackModels;
-      setOpenAiDiscoveredModels(models);
-      setOpenAiSelectedModels((existing) =>
-        persistDiscovered || existing.length === 0 ? models : existing,
-      );
-      if (persistDiscovered && models.length > 0) {
-        await persistOpenAiModels(models);
-      }
-      if (result.ok && models.length > 0) {
-        showFeedback("success", `${models.length} OpenAI Modell(e) abgerufen.`);
-      } else if (result.ok) {
-        showFeedback("info", "Keine OpenAI Modelle gefunden.");
+      if (result.ok) {
+        showFeedback(
+          "success",
+          `Verbindung zu ${provider.displayName} erfolgreich geprüft.`,
+        );
       } else {
         showFeedback(
           "warning",
-          result.message || "OpenAI Modelle konnten nicht abgerufen werden.",
+          result.message || "Verbindung konnte nicht geprüft werden.",
         );
       }
     } catch (error: unknown) {
-      setOpenAiDiscoveredModels(fallbackModels);
       showFeedback(
         "error",
-        actionErrorMessage(
-          error,
-          "OpenAI Modelle konnten nicht abgerufen werden.",
-        ),
+        actionErrorMessage(error, "Verbindung konnte nicht geprüft werden."),
       );
     }
   }
 
-  function toggleOpenAiModel(model: string, checked: boolean) {
-    setOpenAiSelectedModels((existing) =>
-      checked
-        ? Array.from(new Set([...existing, model]))
-        : existing.filter((item) => item !== model),
-    );
-  }
-
-  async function discoverProviderModels(provider: "ollama" | "vllm") {
+  async function discoverProviderModels(provider: ProviderConfiguration) {
     if (session === null) {
       return;
     }
-    const configured = providers.find((item) => item.provider === provider);
-    const fallbackModels = configured?.manualModels ?? [];
     try {
       const result = await apiRequest<ApiProviderCheck>(
-        `/api/providers/${provider}/check`,
+        `/api/providers/${provider.id}/check`,
         {
           method: "POST",
           token: session.token,
         },
       );
-      const models = result.models.length ? result.models : fallbackModels;
-      if (models.length > 0) {
-        await persistProviderModels(provider, models);
+      const models = uniqueModels(result.models);
+      if (result.ok) {
+        setProviders((existing) =>
+          existing.map((item) =>
+            item.id === provider.id
+              ? reconcileDiscoveredProviderModels(item, models, result)
+              : item,
+          ),
+        );
       }
       if (result.ok && models.length > 0) {
         showFeedback(
           "success",
-          `${models.length} ${provider} Modell(e) abgerufen.`,
+          `${models.length} Modell(e) für ${provider.displayName} abgerufen.`,
         );
+      } else if (result.ok) {
+        showFeedback("info", "Keine Modelle gefunden.");
       } else {
         showFeedback(
           "warning",
-          result.message || `${provider} Modelle nicht gefunden.`,
+          result.message || "Modelle konnten nicht abgerufen werden.",
         );
       }
     } catch (error: unknown) {
       showFeedback(
         "error",
-        actionErrorMessage(
-          error,
-          `${provider} Modelle konnten nicht abgerufen werden.`,
-        ),
+        actionErrorMessage(error, "Modelle konnten nicht abgerufen werden."),
       );
     }
   }
 
-  async function pullOllamaModel(formElement: HTMLFormElement) {
+  function toggleProviderModel(
+    providerId: string,
+    purpose: "embedding" | "llm",
+    model: string,
+    checked: boolean,
+  ) {
+    setProviders((existing) =>
+      existing.map((provider) => {
+        if (provider.id !== providerId) {
+          return provider;
+        }
+        const current =
+          purpose === "embedding" ? provider.manualModels : provider.llmModels;
+        const selected = new Set(
+          checked
+            ? [...current, model]
+            : current.filter((item) => item !== model),
+        );
+        const options =
+          purpose === "embedding"
+            ? embeddingModelOptions(provider)
+            : llmModelOptions(provider);
+        const next = options.filter((item) => selected.has(item));
+        return purpose === "embedding"
+          ? { ...provider, manualModels: next }
+          : { ...provider, llmModels: next };
+      }),
+    );
+  }
+
+  async function pullOllamaModel(
+    provider: ProviderConfiguration,
+    formElement: HTMLFormElement,
+  ) {
     if (session === null) {
       return;
     }
@@ -1779,21 +2139,18 @@ function App() {
       showFeedback("warning", "Ollama Modellname fehlt.");
       return;
     }
-    setIsLoading(true);
+    setOllamaPullProviderId(provider.id);
     showFeedback("info", `Ollama Modell ${model} wird heruntergeladen.`);
     try {
       const updated = await apiRequest<ApiProviderConfiguration>(
-        "/api/providers/ollama/pull",
+        `/api/providers/${provider.id}/ollama/pull`,
         {
           method: "POST",
           token: session.token,
           body: JSON.stringify({ model }),
         },
       );
-      setProviders((existing) => [
-        toProviderConfiguration(updated),
-        ...existing.filter((item) => item.provider !== "ollama"),
-      ]);
+      upsertProviderState(updated);
       formElement.reset();
       showFeedback("success", `Ollama Modell ${model} wurde hinzugefügt.`);
     } catch (error: unknown) {
@@ -1802,7 +2159,7 @@ function App() {
         actionErrorMessage(error, "Ollama Modell konnte nicht geladen werden."),
       );
     } finally {
-      setIsLoading(false);
+      setOllamaPullProviderId(null);
     }
   }
 
@@ -1911,6 +2268,25 @@ function App() {
     }
   }
 
+  function indexingNormalizationParameters(): Record<string, unknown> {
+    const normalization: Record<string, unknown> = {};
+    if (removeIndexingLineBreaks) {
+      normalization.newline_mode = "remove";
+    } else if (replaceIndexingLineBreaks) {
+      normalization.newline_mode = "replace";
+      normalization.newline_replacement = indexingLineBreakReplacement;
+    } else if (lowercaseIndexingInput) {
+      normalization.newline_mode = "preserve";
+    }
+    if (lowercaseIndexingInput) {
+      normalization.lowercase = true;
+    }
+    if (Object.keys(normalization).length > 0) {
+      return { embedding_input_normalization: normalization };
+    }
+    return {};
+  }
+
   async function startIndexingRun(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const context = authoritativeProjectContext.current;
@@ -1931,11 +2307,27 @@ function App() {
     const formElement = event.currentTarget;
     const form = new FormData(formElement);
     const datasetVersionId = String(form.get("datasetVersionId") ?? "");
-    if (!datasetVersionId || !indexingModel) {
+    if (!datasetVersionId || !indexingProviderId || !indexingModel) {
       showFeedback("warning", "Bitte Datensatz und Embedding-Modell wählen.");
       return;
     }
-    if (indexingProvider === "openai" && !cloudUseConfirmed) {
+    const replacementHasLineBreak =
+      indexingLineBreakReplacement.includes("\n") ||
+      indexingLineBreakReplacement.includes("\r");
+    if (
+      replaceIndexingLineBreaks &&
+      (indexingLineBreakReplacement.length === 0 || replacementHasLineBreak)
+    ) {
+      showFeedback(
+        "warning",
+        "Bitte ein Ersatzzeichen ohne Zeilenumbruch angeben.",
+      );
+      return;
+    }
+    if (
+      indexingProviderConfiguration?.provider === "openai" &&
+      !cloudUseConfirmed
+    ) {
       showFeedback(
         "warning",
         "OpenAI Cloud-Nutzung muss vor dem Start bestätigt werden.",
@@ -1943,6 +2335,7 @@ function App() {
       return;
     }
     try {
+      const parameters = indexingNormalizationParameters();
       const created = await apiRequest<ApiIndexingRun>(
         `/api/projects/${originProjectId}/indexing-runs`,
         {
@@ -1950,10 +2343,14 @@ function App() {
           token: session.token,
           body: JSON.stringify({
             dataset_version_id: datasetVersionId,
-            provider: indexingProvider,
+            provider_id: indexingProviderId,
             model: indexingModel,
             cloud_use_confirmed:
-              indexingProvider === "openai" ? cloudUseConfirmed : undefined,
+              indexingProviderConfiguration?.provider === "openai"
+                ? cloudUseConfirmed
+                : undefined,
+            parameters:
+              Object.keys(parameters).length > 0 ? parameters : undefined,
           }),
         },
       );
@@ -2061,6 +2458,22 @@ function App() {
     }
   }
 
+  function touchClusterSetFromClusterUpdate(updatedCluster: Cluster) {
+    const clusterSetId = updatedCluster.clusterSetId;
+    if (clusterSetId === null) {
+      return;
+    }
+    setClusterSets((existing) =>
+      sortClusterSetsByRecency(
+        existing.map((clusterSet) =>
+          clusterSet.id === clusterSetId
+            ? { ...clusterSet, updatedAt: updatedCluster.updatedAt }
+            : clusterSet,
+        ),
+      ),
+    );
+  }
+
   function toggleClusterSetBranch(clusterSetId: string) {
     setCollapsedClusterSetIds((existing) => {
       const next = new Set(existing);
@@ -2096,15 +2509,27 @@ function App() {
     const epsilonRaw = String(
       form.get("clusterSelectionEpsilon") ?? "0",
     ).trim();
+    const reductionMethod = String(form.get("reductionMethod") ?? "none");
+    const executionBackend = String(form.get("executionBackend") ?? "auto");
+    const reductionDimensions = Number.parseInt(
+      String(form.get("reductionDimensions") ?? "10"),
+      10,
+    );
+    const umapNeighbors = Number.parseInt(
+      String(form.get("umapNeighbors") ?? "15"),
+      10,
+    );
+    const umapMinDist = Number.parseFloat(
+      String(form.get("umapMinDist") ?? "0"),
+    );
     const outlierThresholdRaw = String(
       form.get("outlierThreshold") ?? "",
     ).trim();
-    const llmProvider = String(form.get("llmProvider") ?? "") as
-      "" | "openai" | "ollama";
+    const llmProviderId = String(form.get("llmProviderId") ?? "");
     const llmModel = String(form.get("llmModel") ?? "").trim();
     const llmSampleCount = parsePositiveInteger(form.get("llmSampleCount"));
     if (
-      llmProvider !== "" &&
+      llmProviderId !== "" &&
       !clusterSetLlmSampleAll &&
       llmSampleCount === null
     ) {
@@ -2155,19 +2580,39 @@ function App() {
               cluster_selection_epsilon: epsilonRaw
                 ? Number.parseFloat(epsilonRaw)
                 : 0,
+              reduction_method: reductionMethod,
+              execution_backend: executionBackend,
+              ...(reductionMethod !== "none"
+                ? {
+                    reduction_dimensions: Number.isFinite(reductionDimensions)
+                      ? reductionDimensions
+                      : 10,
+                  }
+                : {}),
+              ...(reductionMethod === "umap"
+                ? {
+                    umap_n_neighbors: Number.isFinite(umapNeighbors)
+                      ? umapNeighbors
+                      : 15,
+                    umap_min_dist: Number.isFinite(umapMinDist)
+                      ? umapMinDist
+                      : 0,
+                  }
+                : {}),
             },
             outlier_threshold: outlierThresholdRaw
               ? Number.parseFloat(outlierThresholdRaw)
               : null,
             source_cluster_ids:
               clusterSetRefinementDraft?.sourceClusterIds ?? [],
-            llm_provider: llmProvider || null,
-            llm_model: llmProvider ? llmModel || null : null,
+            llm_provider_id: llmProviderId || null,
+            llm_model: llmProviderId ? llmModel || null : null,
             llm_sample_count:
-              llmProvider && !clusterSetLlmSampleAll ? llmSampleCount : null,
+              llmProviderId && !clusterSetLlmSampleAll ? llmSampleCount : null,
             llm_sample_all: clusterSetLlmSampleAll,
             llm_cloud_use_confirmed:
-              llmProvider === "openai" && clusterSetCloudUseConfirmed,
+              clusterSetLlmProviderConfiguration?.provider === "openai" &&
+              clusterSetCloudUseConfirmed,
           }),
         },
       );
@@ -2218,6 +2663,125 @@ function App() {
           error,
           "Cluster-Set konnte nicht abgebrochen werden.",
         ),
+      );
+    }
+  }
+
+  function closeSummaryRegenerationDialog() {
+    setSummaryDialogClusterSet(null);
+    setSummaryDialogError(null);
+    setSummaryDialogCloudUseConfirmed(false);
+    summaryDialogTriggerRef.current?.focus();
+    summaryDialogTriggerRef.current = null;
+  }
+
+  function openSummaryRegenerationDialog(
+    clusterSet: ClusterSet,
+    trigger?: HTMLElement,
+  ) {
+    const providerConfiguration =
+      llmProviders.find(
+        (provider) => provider.id === clusterSet.llmProviderConfigurationId,
+      ) ?? llmProviders[0];
+    const requested = clusterSet.llmSampleStrategy.requested;
+    const nextSampleAll = requested === "all";
+    const nextSampleCount =
+      typeof requested === "number" &&
+      Number.isSafeInteger(requested) &&
+      requested > 0
+        ? Math.min(requested, 50)
+        : 10;
+    summaryDialogTriggerRef.current = trigger ?? null;
+    setSummaryDialogClusterSet(clusterSet);
+    setSummaryDialogProviderId(providerConfiguration?.id ?? "");
+    setSummaryDialogModel(
+      clusterSet.llmModel !== null &&
+        providerConfiguration?.llmModels.includes(clusterSet.llmModel)
+        ? clusterSet.llmModel
+        : (providerConfiguration?.llmModels[0] ?? clusterSet.llmModel ?? ""),
+    );
+    setSummaryDialogSampleCount(nextSampleCount);
+    setSummaryDialogSampleAll(nextSampleAll);
+    setSummaryDialogCloudUseConfirmed(false);
+    setSummaryDialogError(null);
+    setExplorerSummaryError(null);
+  }
+
+  async function regenerateClusterSetSummaries(
+    clusterSet: ClusterSet,
+    surface: "dialog" | "explorer",
+  ) {
+    const setSurfaceError =
+      surface === "dialog" ? setSummaryDialogError : setExplorerSummaryError;
+    setSurfaceError(null);
+    const selectedProvider = llmProviders.find(
+      (provider) => provider.id === summaryDialogProviderId,
+    );
+    const selectedModel = summaryDialogModel.trim();
+    const safeSampleCount = Math.max(
+      1,
+      Math.min(50, Math.trunc(summaryDialogSampleCount)),
+    );
+    if (
+      session === null ||
+      currentProject === null ||
+      selectedProvider === undefined ||
+      selectedModel === ""
+    ) {
+      const message =
+        "Für die Summary-Neuerstellung muss ein aktiver LLM-Provider mit Modell ausgewählt sein.";
+      setSurfaceError(message);
+      showFeedback("error", message);
+      return;
+    }
+    if (
+      selectedProvider.provider === "openai" &&
+      !summaryDialogCloudUseConfirmed
+    ) {
+      const message =
+        "Bitte bestätige die OpenAI-Übertragung für diese Summary-Neuerstellung.";
+      setSurfaceError(message);
+      showFeedback("error", message);
+      return;
+    }
+    setClusterSetSummaryRequestId(clusterSet.id);
+    showFeedback("info", "Summary-Neuerstellung wurde gestartet.");
+    try {
+      const updated = await apiRequest<ApiClusterSet>(
+        `/api/projects/${currentProject.id}/cluster-sets/${clusterSet.id}/summaries`,
+        {
+          method: "POST",
+          token: session.token,
+          body: JSON.stringify({
+            llm_provider_id: selectedProvider.id,
+            llm_model: selectedModel,
+            llm_sample_count: summaryDialogSampleAll ? null : safeSampleCount,
+            llm_sample_all: summaryDialogSampleAll,
+            llm_cloud_use_confirmed:
+              selectedProvider.provider === "openai" &&
+              summaryDialogCloudUseConfirmed,
+          }),
+        },
+      );
+      upsertClusterSet(toClusterSet(updated));
+      setSurfaceError(null);
+      if (surface === "dialog") {
+        closeSummaryRegenerationDialog();
+      }
+      showFeedback(
+        "success",
+        "Summary-Neuerstellung gestartet. Status wird aktualisiert.",
+      );
+    } catch (error: unknown) {
+      const message = actionErrorMessage(
+        error,
+        "Summary-Neuerstellung konnte nicht gestartet werden.",
+      );
+      setSurfaceError(message);
+      showFeedback("error", message);
+    } finally {
+      setClusterSetSummaryRequestId((activeId) =>
+        activeId === clusterSet.id ? null : activeId,
       );
     }
   }
@@ -2279,11 +2843,13 @@ function App() {
           }),
         },
       );
+      const updatedCluster = toCluster(updated);
       setClusters((existing) =>
         existing.map((cluster) =>
-          cluster.id === clusterId ? toCluster(updated) : cluster,
+          cluster.id === clusterId ? updatedCluster : cluster,
         ),
       );
+      touchClusterSetFromClusterUpdate(updatedCluster);
       showFeedback("success", "Manuelle Clusterwerte gespeichert.");
     } catch (error: unknown) {
       showFeedback(
@@ -2309,11 +2875,13 @@ function App() {
           body: JSON.stringify({ manual_status: manualStatus }),
         },
       );
+      const updatedCluster = toCluster(updated);
       setClusters((existing) =>
         existing.map((cluster) =>
-          cluster.id === clusterId ? toCluster(updated) : cluster,
+          cluster.id === clusterId ? updatedCluster : cluster,
         ),
       );
+      touchClusterSetFromClusterUpdate(updatedCluster);
       showFeedback(
         "success",
         manualStatus === "rejected"
@@ -2481,6 +3049,11 @@ function App() {
       "min_cluster_size",
       "min_samples",
       "cluster_selection_epsilon",
+      "reduction_method",
+      "reduction_dimensions",
+      "umap_n_neighbors",
+      "umap_min_dist",
+      "execution_backend",
       "n_clusters",
       "linkage",
       "distance_threshold",
@@ -2621,49 +3194,36 @@ function App() {
     }
   }
 
-  const openAiProvider = providers.find(
-    (provider) => provider.provider === "openai",
+  const embeddingProviders = providers.filter(
+    (provider) => provider.manualModels.length > 0,
   );
-  const vllmProvider = providers.find(
-    (provider) => provider.provider === "vllm",
+  const llmProviders = providers.filter(
+    (provider) => provider.llmModels.length > 0,
   );
-  const ollamaProvider = providers.find(
-    (provider) => provider.provider === "ollama",
-  );
-  const sidebarProjects = projects
-    .slice()
-    .sort((left, right) => {
-      const leftRecentIndex = recentProjectIds.indexOf(left.id);
-      const rightRecentIndex = recentProjectIds.indexOf(right.id);
-      if (leftRecentIndex !== -1 || rightRecentIndex !== -1) {
-        if (leftRecentIndex === -1) {
-          return 1;
-        }
-        if (rightRecentIndex === -1) {
-          return -1;
-        }
-        return leftRecentIndex - rightRecentIndex;
-      }
-      return right.updatedAt.localeCompare(left.updatedAt);
-    })
-    .slice(0, 10);
+  const summaryDialogProvider =
+    llmProviders.find((provider) => provider.id === summaryDialogProviderId) ??
+    null;
+  const summaryDialogModels = summaryDialogProvider?.llmModels ?? [];
+  const summaryDialogModelKey = summaryDialogModels.join("\u0000");
+  const summaryDialogUsesOpenAi = summaryDialogProvider?.provider === "openai";
   const runnableDatasetLogs = importLogs.filter(
     (log) => log.datasetVersionId !== null && log.datasetDeletedAt === null,
   );
   const indexingProviderConfiguration = providers.find(
-    (provider) => provider.provider === indexingProvider,
+    (provider) => provider.id === indexingProviderId,
   );
   const indexingProviderModels =
     indexingProviderConfiguration?.manualModels ?? [];
   const completedIndexingRuns = indexingRuns.filter(
     (run) => run.status === "completed",
   );
+  const clusterSetLlmProviderConfiguration = providers.find(
+    (provider) => provider.id === clusterSetLlmProviderId,
+  );
   const clusterSetLlmProviderModels =
-    clusterSetLlmProvider === ""
+    clusterSetLlmProviderId === ""
       ? []
-      : (providers.find(
-          (provider) => provider.provider === clusterSetLlmProvider,
-        )?.llmModels ?? []);
+      : (clusterSetLlmProviderConfiguration?.llmModels ?? []);
 
   function clusterIsExcluded(cluster: Cluster): boolean {
     return cluster.effectiveStatus === "rejected";
@@ -2724,6 +3284,27 @@ function App() {
   const loadedClusterSet =
     clusterSets.find((clusterSet) => clusterSet.id === clusterSetLoadId) ??
     null;
+  useEffect(() => {
+    if (
+      session === null ||
+      currentProject === null ||
+      projectTab !== "explorer" ||
+      clusterSetLoadId !== null
+    ) {
+      return;
+    }
+    const latestCompleted = clusterSets.find(
+      (clusterSet) =>
+        clusterSet.status === "completed" && clusterSet.deletedAt === null,
+    );
+    if (latestCompleted !== undefined) {
+      void loadClusterSetClusters(
+        session.token,
+        currentProject.id,
+        latestCompleted.id,
+      );
+    }
+  }, [clusterSetLoadId, clusterSets, currentProject, projectTab, session]);
   const clusterCategories = Array.from(
     new Set(clusters.map(clusterCategory)),
   ).sort((left, right) => left.localeCompare(right));
@@ -2763,6 +3344,10 @@ function App() {
   const rootClusterSets = clusterSets.filter(
     (clusterSet) => clusterSet.parentClusterSetId === null,
   );
+  const completedClusterSets = clusterSets.filter(
+    (clusterSet) =>
+      clusterSet.status === "completed" && clusterSet.deletedAt === null,
+  );
   const childClusterSets = (parentId: string) =>
     clusterSets.filter(
       (clusterSet) => clusterSet.parentClusterSetId === parentId,
@@ -2793,12 +3378,28 @@ function App() {
             log.clusterSetId === null ||
             log.clusterSetId === loadedClusterSet.id,
         );
-
-  function rememberProjectAccess(projectId: string) {
-    setRecentProjectIds((existing) =>
-      [projectId, ...existing.filter((id) => id !== projectId)].slice(0, 10),
-    );
-  }
+  const activeSummaryDialogClusterSet =
+    summaryDialogClusterSet === null
+      ? null
+      : (clusterSets.find((item) => item.id === summaryDialogClusterSet.id) ??
+        summaryDialogClusterSet);
+  const summaryDialogClusterSetId = summaryDialogClusterSet?.id ?? null;
+  const summaryDialogCanStart =
+    activeSummaryDialogClusterSet !== null &&
+    summaryDialogProvider !== null &&
+    summaryDialogModel.trim() !== "" &&
+    (summaryDialogSampleAll ||
+      (Number.isSafeInteger(summaryDialogSampleCount) &&
+        summaryDialogSampleCount >= 1 &&
+        summaryDialogSampleCount <= 50)) &&
+    (!summaryDialogUsesOpenAi || summaryDialogCloudUseConfirmed) &&
+    clusterSetSummaryRequestId !== activeSummaryDialogClusterSet.id;
+  const canRegenerateLoadedClusterSetSummaries =
+    loadedClusterSet !== null &&
+    loadedClusterSet.status === "completed" &&
+    loadedClusterSet.deletedAt === null &&
+    loadedClusterSet.llmProviderConfigurationId !== null &&
+    loadedClusterSet.llmModel !== null;
 
   function datasetLabel(
     log: Pick<
@@ -2813,22 +3414,35 @@ function App() {
 
   useEffect(() => {
     const availableModels =
-      providers.find((provider) => provider.provider === indexingProvider)
+      providers.find((provider) => provider.id === indexingProviderId)
         ?.manualModels ?? [];
     setIndexingModel((currentModel) =>
       availableModels.includes(currentModel)
         ? currentModel
         : (availableModels[0] ?? ""),
     );
-  }, [indexingProvider, providers]);
+  }, [indexingProviderId, providers]);
 
   useEffect(() => {
     setCloudUseConfirmed(false);
-  }, [currentProject?.id, indexingProvider]);
+  }, [currentProject?.id, indexingProviderId]);
 
   useEffect(() => {
     setClusterSetCloudUseConfirmed(false);
-  }, [currentProject?.id, clusterSetLlmProvider]);
+  }, [currentProject?.id, clusterSetLlmProviderId]);
+
+  useEffect(() => {
+    const availableModels =
+      summaryDialogModelKey === "" ? [] : summaryDialogModelKey.split("\u0000");
+    if (availableModels.length > 0) {
+      setSummaryDialogModel((currentModel) =>
+        availableModels.includes(currentModel)
+          ? currentModel
+          : (availableModels[0] ?? ""),
+      );
+    }
+    setSummaryDialogCloudUseConfirmed(false);
+  }, [summaryDialogModelKey, summaryDialogProviderId]);
 
   useEffect(() => {
     if (
@@ -3018,6 +3632,53 @@ function App() {
     };
   }, [sourceDialogCluster]);
 
+  useEffect(() => {
+    if (summaryDialogClusterSetId === null) {
+      return undefined;
+    }
+    summaryDialogCloseRef.current?.focus();
+    const handleDialogKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        closeSummaryRegenerationDialog();
+        return;
+      }
+      if (event.key !== "Tab" || summaryDialogRef.current === null) {
+        return;
+      }
+      const focusable = Array.from(
+        summaryDialogRef.current.querySelectorAll<HTMLElement>(
+          [
+            "a[href]",
+            "button:not([disabled])",
+            "input:not([disabled])",
+            "select:not([disabled])",
+            "textarea:not([disabled])",
+            "[tabindex]:not([tabindex='-1'])",
+          ].join(","),
+        ),
+      ).filter(
+        (element) =>
+          !element.hasAttribute("hidden") &&
+          element.getAttribute("aria-hidden") !== "true",
+      );
+      if (focusable.length === 0) {
+        event.preventDefault();
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    window.addEventListener("keydown", handleDialogKeyDown);
+    return () => window.removeEventListener("keydown", handleDialogKeyDown);
+  }, [summaryDialogClusterSetId]);
+
   function renderClusterTableRow(cluster: Cluster) {
     const isExcluded = clusterIsExcluded(cluster);
     const mismatchMaximum = mismatchMetric(cluster, "maximum");
@@ -3053,65 +3714,67 @@ function App() {
           )}
         </td>
         <td className="cluster-actions-cell">
-          <form
-            className="table-edit-form"
-            onSubmit={(event) => updateCluster(event, cluster.id)}
-          >
-            <label>
-              Titel
-              <input
-                name="manualTitle"
-                defaultValue={cluster.manualTitle ?? ""}
-                aria-label={`Titel für ${cluster.effectiveTitle}`}
-              />
-            </label>
-            <label>
-              Kategorie
-              <input
-                name="manualCategory"
-                defaultValue={cluster.manualCategory ?? ""}
-                aria-label={`Kategorie für ${cluster.effectiveTitle}`}
-              />
-            </label>
-            <label>
-              Status
-              <select
-                name="manualStatus"
-                defaultValue={cluster.manualStatus ?? ""}
-                aria-label={`Status für ${cluster.effectiveTitle}`}
+          <div className="cluster-actions-stack">
+            <form
+              className="table-edit-form"
+              onSubmit={(event) => updateCluster(event, cluster.id)}
+            >
+              <label>
+                Titel
+                <input
+                  name="manualTitle"
+                  defaultValue={cluster.manualTitle ?? ""}
+                  aria-label={`Titel für ${cluster.effectiveTitle}`}
+                />
+              </label>
+              <label>
+                Kategorie
+                <input
+                  name="manualCategory"
+                  defaultValue={cluster.manualCategory ?? ""}
+                  aria-label={`Kategorie für ${cluster.effectiveTitle}`}
+                />
+              </label>
+              <label>
+                Status
+                <select
+                  name="manualStatus"
+                  defaultValue={cluster.manualStatus ?? ""}
+                  aria-label={`Status für ${cluster.effectiveTitle}`}
+                >
+                  <option value="">Kein Override</option>
+                  <option value="unreviewed">unreviewed</option>
+                  <option value="in_progress">in_progress</option>
+                  <option value="reviewed">reviewed</option>
+                  <option value="rejected">rejected</option>
+                  <option value="outlier">outlier</option>
+                </select>
+              </label>
+              <button type="submit" className="secondary">
+                Speichern
+              </button>
+            </form>
+            <div className="form-actions">
+              <button
+                type="button"
+                className="secondary"
+                onClick={() => void inspectClusterSources(cluster)}
               >
-                <option value="">Kein Override</option>
-                <option value="unreviewed">unreviewed</option>
-                <option value="in_progress">in_progress</option>
-                <option value="reviewed">reviewed</option>
-                <option value="rejected">rejected</option>
-                <option value="outlier">outlier</option>
-              </select>
-            </label>
-            <button type="submit" className="secondary">
-              Speichern
-            </button>
-          </form>
-          <div className="form-actions">
-            <button
-              type="button"
-              className="secondary"
-              onClick={() => void inspectClusterSources(cluster)}
-            >
-              Quellen anzeigen
-            </button>
-            <button
-              type="button"
-              className="secondary"
-              onClick={() =>
-                void setClusterManualStatus(
-                  cluster.id,
-                  isExcluded ? "unreviewed" : "rejected",
-                )
-              }
-            >
-              {isExcluded ? "Wieder einschließen" : "Ausschließen"}
-            </button>
+                Quellen anzeigen
+              </button>
+              <button
+                type="button"
+                className="secondary"
+                onClick={() =>
+                  void setClusterManualStatus(
+                    cluster.id,
+                    isExcluded ? "unreviewed" : "rejected",
+                  )
+                }
+              >
+                {isExcluded ? "Wieder einschließen" : "Ausschließen"}
+              </button>
+            </div>
           </div>
         </td>
       </tr>
@@ -3124,6 +3787,7 @@ function App() {
     const isExpanded = !collapsedClusterSetIds.has(clusterSet.id);
     const childRegionId = `cluster-set-children-${clusterSet.id}`;
     const isDeletedHistoryNode = clusterSet.deletedAt !== null;
+    const parameterEntries = clusterSetParameterEntries(clusterSet);
     return (
       <article
         className="user-card cluster-set-node"
@@ -3161,14 +3825,17 @@ function App() {
           Algorithmus: {clusterSet.algorithm}; Cluster:{" "}
           {clusterSet.clusterCount}
         </p>
-        <p className="hint">
-          Parameter: min_cluster_size{" "}
-          {String(clusterSet.parameters.min_cluster_size ?? "-")};
-          Outlier-Schwelle:{" "}
-          {typeof clusterSet.parameters.outlier_threshold === "number"
-            ? String(clusterSet.parameters.outlier_threshold)
-            : "aus"}
-        </p>
+        <dl
+          className="parameter-list parameter-list-compact"
+          aria-label={`Parameter von ${clusterSet.displayName}`}
+        >
+          {parameterEntries.map((entry) => (
+            <div key={entry.key}>
+              <dt>{entry.label}</dt>
+              <dd>{entry.value}</dd>
+            </div>
+          ))}
+        </dl>
         <p className="hint">
           Indizierung: {clusterSet.indexingRunId}; Datensatz:{" "}
           {clusterSet.datasetDisplayName ?? "-"}
@@ -3190,12 +3857,13 @@ function App() {
         <p className="hint">
           LLM:{" "}
           {clusterSet.llmProvider
-            ? `${clusterSet.llmProvider}/${clusterSet.llmModel}`
+            ? `${clusterSet.llmProviderDisplayName ?? clusterSet.llmProvider}/${clusterSet.llmModel}`
             : "deaktiviert"}
         </p>
         {clusterSet.errorCode !== null && (
           <p className="error" role="alert">
-            {ERROR_MESSAGES_BY_CODE[clusterSet.errorCode] ??
+            {clusterSet.errorMessage ??
+              ERROR_MESSAGES_BY_CODE[clusterSet.errorCode] ??
               ERROR_MESSAGES_BY_CODE.UNEXPECTED_ERROR}
           </p>
         )}
@@ -3223,6 +3891,22 @@ function App() {
             onClick={() => void createRefinementDraftFromClusterSet(clusterSet)}
           >
             Cluster verfeinern
+          </button>
+          <button
+            type="button"
+            className="secondary"
+            disabled={
+              clusterSet.status !== "completed" ||
+              isDeletedHistoryNode ||
+              clusterSetSummaryRequestId === clusterSet.id
+            }
+            onClick={(event) => {
+              openSummaryRegenerationDialog(clusterSet, event.currentTarget);
+            }}
+          >
+            {clusterSetSummaryRequestId === clusterSet.id
+              ? "Summaries werden gestartet"
+              : "Summaries neu erstellen"}
           </button>
           <button
             type="button"
@@ -3258,1672 +3942,2136 @@ function App() {
     );
   }
 
+  const feedbackOverlay =
+    feedback === null ? null : (
+      <div className="feedback-overlay">
+        <p
+          role={feedback.kind === "error" ? "alert" : "status"}
+          className={`feedback ${feedback.kind}`}
+        >
+          <span className="feedback-text">
+            <strong>{FEEDBACK_LABELS[feedback.kind]}:</strong> {feedback.text}
+          </span>
+          <button
+            type="button"
+            className="feedback-close"
+            aria-label="Meldung schließen"
+            onClick={() => setFeedback(null)}
+          >
+            ×
+          </button>
+        </p>
+      </div>
+    );
+
+  const summaryRegenerationDialog =
+    activeSummaryDialogClusterSet === null ? null : (
+      <div className="dialog-backdrop">
+        <section
+          className="source-dialog summary-regeneration-dialog"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="summary-dialog-title"
+          ref={summaryDialogRef}
+        >
+          <div className="panel-title">
+            <div>
+              <p className="eyebrow">Nur Summary-Job</p>
+              <h2 id="summary-dialog-title">Summaries neu erstellen</h2>
+            </div>
+            <button
+              type="button"
+              className="secondary"
+              aria-label="Dialog schließen"
+              ref={summaryDialogCloseRef}
+              onClick={closeSummaryRegenerationDialog}
+            >
+              ×
+            </button>
+          </div>
+          <p>
+            Cluster-Set:{" "}
+            <strong>{activeSummaryDialogClusterSet.displayName}</strong>
+          </p>
+          <p className="status warning">
+            Clusterzuordnung, Ausreißerstatus und manuelle Explorer-Änderungen
+            bleiben unverändert. Es werden nur Titel, Kategorie, Frage- und
+            Antwort-Summary neu geschrieben.
+          </p>
+          <div className="form-grid">
+            <label>
+              LLM-Provider
+              <select
+                value={summaryDialogProviderId}
+                onChange={(event) =>
+                  setSummaryDialogProviderId(event.currentTarget.value)
+                }
+              >
+                {llmProviders.length === 0 && (
+                  <option value="">Kein LLM-Provider verfügbar</option>
+                )}
+                {llmProviders.map((provider) => (
+                  <option value={provider.id} key={provider.id}>
+                    {provider.displayName}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Modell
+              <select
+                value={summaryDialogModel}
+                onChange={(event) =>
+                  setSummaryDialogModel(event.currentTarget.value)
+                }
+                disabled={summaryDialogModels.length === 0}
+              >
+                {summaryDialogModels.length === 0 && (
+                  <option value="">Kein Modell verfügbar</option>
+                )}
+                {summaryDialogModels.map((model) => (
+                  <option value={model} key={model}>
+                    {model}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Beispiele je Cluster
+              <input
+                type="number"
+                min="1"
+                max="50"
+                value={summaryDialogSampleCount}
+                disabled={summaryDialogSampleAll}
+                onChange={(event) =>
+                  setSummaryDialogSampleCount(Number(event.currentTarget.value))
+                }
+              />
+            </label>
+            <label>
+              Ergebnis
+              <select value="replace" onChange={() => undefined}>
+                <option value="replace">Aktuelle Summary ersetzen</option>
+                <option value="version" disabled>
+                  Zusätzlich als Version speichern (noch nicht verfügbar)
+                </option>
+              </select>
+            </label>
+          </div>
+          <label className="inline-check">
+            <input
+              type="checkbox"
+              checked={summaryDialogSampleAll}
+              onChange={(event) =>
+                setSummaryDialogSampleAll(event.currentTarget.checked)
+              }
+            />
+            Alle verfügbaren Beispiele je Cluster verwenden.
+          </label>
+          {summaryDialogUsesOpenAi && (
+            <label className="inline-check">
+              <input
+                type="checkbox"
+                checked={summaryDialogCloudUseConfirmed}
+                onChange={(event) =>
+                  setSummaryDialogCloudUseConfirmed(event.currentTarget.checked)
+                }
+              />
+              OpenAI-Übertragung für diese Aktion bestätigen.
+            </label>
+          )}
+          {summaryDialogError !== null && (
+            <div className="status error" role="alert">
+              {summaryDialogError}
+            </div>
+          )}
+          {summaryDialogProvider === null || summaryDialogModel === "" ? (
+            <p className="status warning" role="status">
+              Für die Summary-Neuerstellung ist kein aktiver LLM-Provider mit
+              Modell verfügbar.
+            </p>
+          ) : null}
+          <div className="form-actions">
+            <button
+              type="button"
+              onClick={() =>
+                void regenerateClusterSetSummaries(
+                  activeSummaryDialogClusterSet,
+                  "dialog",
+                )
+              }
+              disabled={!summaryDialogCanStart}
+            >
+              {clusterSetSummaryRequestId === activeSummaryDialogClusterSet.id
+                ? "Summaries werden gestartet"
+                : "Summary-Job starten"}
+            </button>
+            <button
+              type="button"
+              className="secondary"
+              onClick={closeSummaryRegenerationDialog}
+            >
+              Abbrechen
+            </button>
+          </div>
+        </section>
+      </div>
+    );
+
   if (isSessionChecking) {
     return (
-      <main className="auth-shell">
-        <section className="auth-card" aria-label="Sitzungsprüfung">
-          <p className="eyebrow">Support Knowledge Miner</p>
-          <p role="status" className="intro">
-            Gespeicherte Sitzung wird geprüft.
-          </p>
-        </section>
-      </main>
+      <>
+        {feedbackOverlay}
+        <main className="auth-shell">
+          <section className="auth-card" aria-label="Sitzungsprüfung">
+            <p className="eyebrow">Support Knowledge Miner</p>
+            <p role="status" className="intro">
+              Gespeicherte Sitzung wird geprüft.
+            </p>
+          </section>
+        </main>
+      </>
     );
   }
 
   if (session === null) {
     return (
-      <main className="auth-shell">
-        <section className="auth-card" aria-labelledby="signin-title">
-          <p className="eyebrow">Support Knowledge Miner</p>
-          <h1 id="signin-title">Lokaler Zugriff</h1>
-          <p className="intro">
-            Geschützte Projekt-, Import- und Kurationsbereiche starten erst nach
-            erfolgreicher Backend-Anmeldung. Fehler nennen nie, ob E-Mail oder
-            Passwort falsch war.
-          </p>
-          <form className="stack" onSubmit={signIn}>
-            <label>
-              E-Mail
-              <input name="email" type="email" autoComplete="username" />
-            </label>
-            <label>
-              Passwort
-              <input
-                name="password"
-                type="password"
-                autoComplete="current-password"
-              />
-            </label>
-            <button type="submit" disabled={isLoading}>
-              {isLoading ? "Prüfe Anmeldung" : "Anmelden"}
-            </button>
-          </form>
-          {feedback !== null && (
-            <p
-              role={feedback.kind === "error" ? "alert" : "status"}
-              className={`status ${feedback.kind}`}
-            >
-              <strong>{FEEDBACK_LABELS[feedback.kind]}:</strong> {feedback.text}
+      <>
+        {feedbackOverlay}
+        <main className="auth-shell">
+          <section className="auth-card" aria-labelledby="signin-title">
+            <p className="eyebrow">Support Knowledge Miner</p>
+            <h1 id="signin-title">Lokaler Zugriff</h1>
+            <p className="intro">
+              Geschützte Projekt-, Import- und Kurationsbereiche starten erst
+              nach erfolgreicher Backend-Anmeldung. Fehler nennen nie, ob E-Mail
+              oder Passwort falsch war.
             </p>
-          )}
-        </section>
-      </main>
+            <form className="stack" onSubmit={signIn}>
+              <label>
+                E-Mail
+                <input name="email" type="email" autoComplete="username" />
+              </label>
+              <label>
+                Passwort
+                <input
+                  name="password"
+                  type="password"
+                  autoComplete="current-password"
+                />
+              </label>
+              <button type="submit" disabled={isLoading}>
+                {isLoading ? "Prüfe Anmeldung" : "Anmelden"}
+              </button>
+            </form>
+          </section>
+        </main>
+      </>
     );
   }
 
   return (
-    <main className="app-shell">
-      <header className="topbar">
-        <div>
-          <p className="eyebrow">Support Knowledge Miner</p>
-          <h1>
-            {activePage === "projects"
-              ? "Projekte & Analysen"
-              : "Einstellungen"}
-          </h1>
-        </div>
-        <div className="topbar-actions">
-          <span>{session.user.name}</span>
-          <button type="button" className="icon-button" onClick={signOut}>
-            Abmelden
-          </button>
-        </div>
-      </header>
-
-      <div className="workspace">
-        <aside className="sidebar">
-          <nav aria-label="Hauptnavigation">
-            <button
-              type="button"
-              className={`nav-item ${
-                activePage === "projects" && currentProject === null
-                  ? "active"
-                  : ""
-              }`}
-              onClick={openProjectListPage}
-            >
-              Projekte
-            </button>
-            <div className="sidebar-submenu" aria-label="Projektliste">
-              {sidebarProjects.map((project) => (
-                <button
-                  type="button"
-                  className={`nav-subitem ${
-                    activePage === "projects" &&
-                    currentProject?.id === project.id
-                      ? "active"
-                      : ""
-                  }`}
-                  key={project.id}
-                  onClick={() => void openProject(project.id)}
+    <>
+      {feedbackOverlay}
+      <main className="app-shell">
+        <header className="topbar">
+          <div>
+            <p className="eyebrow">Support Knowledge Miner</p>
+            <h1>
+              {activePage === "projects"
+                ? "Projekte & Analysen"
+                : "Einstellungen"}
+            </h1>
+          </div>
+          <div className="topbar-actions">
+            <span>{session.user.name}</span>
+            <div className="global-menu">
+              <button
+                type="button"
+                className="icon-button global-menu-button"
+                aria-label="Hauptmenü öffnen"
+                aria-haspopup="menu"
+                aria-expanded={globalMenuOpen}
+                aria-controls="global-menu-overlay"
+                ref={globalMenuButtonRef}
+                onClick={() => setGlobalMenuOpen((open) => !open)}
+              >
+                <span aria-hidden="true">☰</span>
+              </button>
+              {globalMenuOpen && (
+                <div
+                  id="global-menu-overlay"
+                  className="global-menu-overlay"
+                  role="menu"
+                  ref={globalMenuRef}
                 >
-                  {project.name}
-                </button>
-              ))}
-            </div>
-            <button
-              type="button"
-              className={`nav-item ${activePage === "settings" ? "active" : ""}`}
-              onClick={openProvidersPage}
-            >
-              Einstellungen
-            </button>
-          </nav>
-        </aside>
-
-        <section className="content">
-          {feedback !== null && (
-            <p
-              role={feedback.kind === "error" ? "alert" : "status"}
-              className={`feedback ${feedback.kind}`}
-            >
-              <strong>{FEEDBACK_LABELS[feedback.kind]}:</strong> {feedback.text}
-            </p>
-          )}
-
-          {activePage === "projects" && currentProject && (
-            <>
-              <section
-                id="project-home"
-                className="panel project-summary"
-                aria-label="Aktuelles Projekt"
-              >
-                <p className="eyebrow">Aktuelles Projekt</p>
-                <div className="project-summary-content">
-                  <div>
-                    <h2>{currentProject.name}</h2>
-                    <p className="hint">
-                      Status: {currentProject.lifecycleState}; zuletzt
-                      aktualisiert:{" "}
-                      {formatProjectUpdatedAt(currentProject.updatedAt)}
-                    </p>
-                  </div>
-                  <form
-                    key={`${currentProject.id}:${currentProject.name}`}
-                    className="project-rename-form"
-                    aria-label="Projekt umbenennen"
-                    onSubmit={(event) => {
-                      event.preventDefault();
-                      const form = new FormData(event.currentTarget);
-                      void renameProject(
-                        currentProject.id,
-                        String(form.get("projectName") ?? ""),
-                      );
-                    }}
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => navigateFromGlobalMenu("projects")}
                   >
-                    <label>
-                      Projektname
-                      <input
-                        name="projectName"
-                        defaultValue={currentProject.name}
-                        required
-                      />
-                    </label>
-                    <button type="submit" className="secondary">
-                      Umbenennen
-                    </button>
-                  </form>
+                    Projekte
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => navigateFromGlobalMenu("settings")}
+                  >
+                    Einstellungen
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => navigateFromGlobalMenu("signout")}
+                  >
+                    Abmelden
+                  </button>
                 </div>
-              </section>
+              )}
+            </div>
+          </div>
+        </header>
 
-              <div
-                className="page-tabs"
-                role="tablist"
-                aria-label="Projektbereiche"
-              >
-                {(
-                  [
-                    ["import", "Import"],
-                    ["indexing", "Indizieren"],
-                    ["cluster-sets", "Cluster-Sets"],
-                    ["explorer", "Explorer"],
-                    ["delete", "Projekt löschen"],
-                  ] as const
-                ).map(([tab, label]) => (
+        <div className="workspace">
+          <section className="content">
+            {activePage === "projects" && currentProject && (
+              <>
+                <section
+                  id="project-home"
+                  className="panel project-summary"
+                  aria-label="Aktuelles Projekt"
+                >
+                  <p className="eyebrow">Aktuelles Projekt</p>
+                  <div className="project-summary-content">
+                    <div>
+                      <h2>{currentProject.name}</h2>
+                      <p className="hint">
+                        Status: {currentProject.lifecycleState}; zuletzt
+                        aktualisiert:{" "}
+                        {formatProjectUpdatedAt(currentProject.updatedAt)}
+                      </p>
+                    </div>
+                    <form
+                      key={`${currentProject.id}:${currentProject.name}`}
+                      className="project-rename-form"
+                      aria-label="Projekt umbenennen"
+                      onSubmit={(event) => {
+                        event.preventDefault();
+                        const form = new FormData(event.currentTarget);
+                        void renameProject(
+                          currentProject.id,
+                          String(form.get("projectName") ?? ""),
+                        );
+                      }}
+                    >
+                      <label>
+                        Projektname
+                        <input
+                          name="projectName"
+                          defaultValue={currentProject.name}
+                          required
+                        />
+                      </label>
+                      <button type="submit" className="secondary">
+                        Umbenennen
+                      </button>
+                    </form>
+                  </div>
+                </section>
+
+                <div
+                  className="page-tabs"
+                  role="tablist"
+                  aria-label="Projektbereiche"
+                >
+                  {(
+                    [
+                      ["import", "Import"],
+                      ["indexing", "Indizieren"],
+                      ["cluster-sets", "Cluster-Sets"],
+                      ["explorer", "Explorer"],
+                      ["delete", "Projekt löschen"],
+                    ] as const
+                  ).map(([tab, label]) => (
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={projectTab === tab}
+                      className={projectTab === tab ? "selected" : ""}
+                      key={tab}
+                      onClick={() => setProjectTab(tab)}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
+
+            {activePage === "settings" && (
+              <>
+                <div
+                  className="page-tabs"
+                  role="tablist"
+                  aria-label="Einstellungen"
+                >
                   <button
                     type="button"
                     role="tab"
-                    aria-selected={projectTab === tab}
-                    className={projectTab === tab ? "selected" : ""}
-                    key={tab}
-                    onClick={() => setProjectTab(tab)}
+                    aria-selected={settingsTab === "providers"}
+                    className={settingsTab === "providers" ? "selected" : ""}
+                    onClick={() => setSettingsTab("providers")}
                   >
-                    {label}
+                    Provider
                   </button>
-                ))}
-              </div>
-            </>
-          )}
-
-          {activePage === "settings" && (
-            <>
-              <div
-                className="page-tabs"
-                role="tablist"
-                aria-label="Einstellungen"
-              >
-                <button
-                  type="button"
-                  role="tab"
-                  aria-selected={settingsTab === "providers"}
-                  className={settingsTab === "providers" ? "selected" : ""}
-                  onClick={() => setSettingsTab("providers")}
-                >
-                  Embedding-Provider
-                </button>
-                <button
-                  type="button"
-                  role="tab"
-                  aria-selected={settingsTab === "llm-providers"}
-                  className={settingsTab === "llm-providers" ? "selected" : ""}
-                  onClick={() => setSettingsTab("llm-providers")}
-                >
-                  LLM-Provider
-                </button>
-                <button
-                  type="button"
-                  role="tab"
-                  aria-selected={settingsTab === "users"}
-                  className={settingsTab === "users" ? "selected" : ""}
-                  onClick={() => setSettingsTab("users")}
-                >
-                  Nutzer
-                </button>
-              </div>
-            </>
-          )}
-
-          {activePage === "settings" &&
-            (settingsTab === "providers" ||
-              settingsTab === "llm-providers") && (
-              <section id="providers" className="provider-settings">
-                <section className="provider-grid">
-                  <form
-                    className="panel provider-card stack"
-                    onSubmit={(event) => configureProvider(event, "openai")}
-                    aria-label="OpenAI Provider konfigurieren"
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={settingsTab === "users"}
+                    className={settingsTab === "users" ? "selected" : ""}
+                    onClick={() => setSettingsTab("users")}
                   >
-                    <div className="panel-title">
-                      <div>
-                        <p className="eyebrow">Cloud</p>
-                        <h2>OpenAI</h2>
-                      </div>
-                      <span
-                        className={`provider-status ${
-                          openAiProvider?.apiKeySet ? "active" : "idle"
-                        }`}
-                      >
-                        {openAiProvider?.apiKeySet
-                          ? "API-Key gesetzt"
-                          : "Nicht eingerichtet"}
-                      </span>
-                    </div>
-                    <p className="hint">
-                      Modelle werden über den gespeicherten oder neu
-                      eingegebenen API-Key abgerufen und danach für Analysen
-                      freigegeben.
-                    </p>
-                    <label className="provider-key-row">
-                      Neuer OpenAI API-Key
-                      <input
-                        name="apiKey"
-                        type="password"
-                        autoComplete="off"
-                        placeholder={
-                          openAiProvider?.apiKeySet
-                            ? "Neuen API-Key eintragen"
-                            : "sk-..."
-                        }
-                      />
-                    </label>
-                    <div className="form-actions">
-                      <button type="submit">OpenAI speichern</button>
-                      <button
-                        type="button"
-                        className="secondary"
-                        onClick={() =>
-                          discoverOpenAiModels(openAiSelectedModels, true)
-                        }
-                      >
-                        Modelle abrufen
-                      </button>
-                    </div>
-                    <div
-                      className="model-selection"
-                      aria-label="OpenAI Modell-Auswahl"
-                    >
-                      <span className="field-caption">
-                        Freigegebene Modelle
-                      </span>
-                      {(openAiDiscoveredModels.length
-                        ? openAiDiscoveredModels
-                        : openAiSelectedModels
-                      ).map((model) => (
-                        <label className="inline-check" key={model}>
-                          <input
-                            type="checkbox"
-                            checked={openAiSelectedModels.includes(model)}
-                            onChange={(event) =>
-                              toggleOpenAiModel(model, event.target.checked)
-                            }
-                          />
-                          {model}
-                        </label>
-                      ))}
-                      {openAiDiscoveredModels.length === 0 &&
-                        openAiSelectedModels.length === 0 && (
-                          <p className="hint">Noch keine Modelle abgerufen.</p>
-                        )}
-                    </div>
-                    <label>
-                      OpenAI LLM-Modelle
-                      <input
-                        name="llmModels"
-                        defaultValue={
-                          openAiProvider?.llmModels.join(", ") ?? ""
-                        }
-                        placeholder="gpt-4.1-mini"
-                      />
-                    </label>
-                    <label className="inline-check">
-                      <input name="removeApiKey" type="checkbox" />
-                      Gespeicherten API-Key entfernen
-                    </label>
-                  </form>
-
-                  <form
-                    className="panel provider-card stack"
-                    onSubmit={(event) => configureProvider(event, "vllm")}
-                    aria-label="vLLM Provider konfigurieren"
-                  >
-                    <div className="panel-title">
-                      <div>
-                        <p className="eyebrow">Lokal</p>
-                        <h2>vLLM</h2>
-                      </div>
-                      <span
-                        className={`provider-status ${vllmProvider ? "active" : "idle"}`}
-                      >
-                        {vllmProvider ? "Konfiguriert" : "Nicht eingerichtet"}
-                      </span>
-                    </div>
-                    <p className="hint">
-                      vLLM bleibt für dedizierte, bereits gestartete lokale
-                      Endpoints mit expliziter Modellliste vorgesehen.
-                    </p>
-                    <label>
-                      Endpoint URL
-                      <input
-                        name="endpointUrl"
-                        defaultValue={vllmProvider?.endpointUrl ?? ""}
-                        placeholder="http://localhost:8000"
-                      />
-                    </label>
-                    <label>
-                      vLLM Modelle
-                      <input
-                        name="manualModels"
-                        defaultValue={
-                          vllmProvider?.manualModels.join(", ") ?? ""
-                        }
-                        placeholder="local-embed, local-chat"
-                      />
-                    </label>
-                    <div className="provider-meta">
-                      <span className="field-caption">Aktuelle Modelle</span>
-                      <p className="hint">
-                        {vllmProvider?.manualModels.length
-                          ? vllmProvider.manualModels.join(", ")
-                          : "keine"}
-                      </p>
-                    </div>
-                    <div className="form-actions">
-                      <button type="submit">vLLM speichern</button>
-                      <button
-                        type="button"
-                        className="secondary"
-                        onClick={() => discoverProviderModels("vllm")}
-                      >
-                        Modelle abrufen
-                      </button>
-                    </div>
-                  </form>
-
-                  <form
-                    className="panel provider-card stack"
-                    onSubmit={(event) => configureProvider(event, "ollama")}
-                    aria-label="Ollama Provider konfigurieren"
-                  >
-                    <div className="panel-title">
-                      <div>
-                        <p className="eyebrow">Lokal</p>
-                        <h2>Ollama</h2>
-                      </div>
-                      <span
-                        className={`provider-status ${ollamaProvider ? "active" : "idle"}`}
-                      >
-                        {ollamaProvider ? "Konfiguriert" : "Nicht eingerichtet"}
-                      </span>
-                    </div>
-                    <p className="hint">
-                      Ollama verwaltet lokale Modelle. Neue Modelle können hier
-                      heruntergeladen und danach direkt für Analysen verwendet
-                      werden.
-                    </p>
-                    <label>
-                      Endpoint URL
-                      <input
-                        name="endpointUrl"
-                        defaultValue={ollamaProvider?.endpointUrl ?? ""}
-                        placeholder="http://localhost:11434"
-                      />
-                    </label>
-                    <div className="provider-meta">
-                      <span className="field-caption">
-                        Installierte Modelle
-                      </span>
-                      <p className="hint">
-                        {ollamaProvider?.manualModels.length
-                          ? ollamaProvider.manualModels.join(", ")
-                          : "keine"}
-                      </p>
-                    </div>
-                    <label>
-                      Ollama LLM-Modelle
-                      <input
-                        name="llmModels"
-                        defaultValue={
-                          ollamaProvider?.llmModels.join(", ") ?? ""
-                        }
-                        placeholder="llama3.1"
-                      />
-                    </label>
-                    <div className="provider-meta">
-                      <span className="field-caption">
-                        Aktuelle LLM-Modelle
-                      </span>
-                      <p className="hint">
-                        {ollamaProvider?.llmModels.length
-                          ? ollamaProvider.llmModels.join(", ")
-                          : "keine"}
-                      </p>
-                    </div>
-                    <div className="form-actions">
-                      <button type="submit">Ollama speichern</button>
-                      <button
-                        type="button"
-                        className="secondary"
-                        onClick={() => discoverProviderModels("ollama")}
-                      >
-                        Modelle abrufen
-                      </button>
-                    </div>
-                    <div className="inline-form provider-pull-row">
-                      <label>
-                        Neues Ollama Modell
-                        <input
-                          name="pullModel"
-                          placeholder="nomic-embed-text"
-                        />
-                      </label>
-                      <button
-                        type="button"
-                        className="secondary"
-                        onClick={(event) => {
-                          const form = event.currentTarget.closest("form");
-                          if (form !== null) {
-                            void pullOllamaModel(form);
-                          }
-                        }}
-                      >
-                        Herunterladen und hinzufügen
-                      </button>
-                    </div>
-                  </form>
-                </section>
-              </section>
+                    Nutzer
+                  </button>
+                </div>
+              </>
             )}
 
-          {activePage === "projects" && (
-            <>
-              {projectTab === "indexing" && (
-                <section id="indexing" className="panel-grid">
-                  <form
-                    className="panel stack"
-                    onSubmit={startIndexingRun}
-                    aria-label="Indizierung starten"
-                  >
-                    <p className="eyebrow">Indizierung</p>
-                    <h2>Datensatz indizieren</h2>
+            {activePage === "settings" && settingsTab === "providers" && (
+              <section id="providers" className="provider-settings">
+                <section className="panel provider-add-row">
+                  <div>
+                    <p className="eyebrow">Provider</p>
+                    <h2>Provider verwalten</h2>
                     <p className="hint">
-                      Embeddings werden direkt für einen Datensatz erzeugt.
-                      Cluster-Parameter werden erst im nächsten Schritt gewählt.
+                      Verbindung, API-Key und Modellfreigaben werden hier
+                      zentral pro Provider-Instanz gepflegt.
                     </p>
+                  </div>
+                  <div className="inline-form">
                     <label>
-                      Datensatz
-                      <select name="datasetVersionId">
-                        {runnableDatasetLogs.length === 0 && (
-                          <option value="">Kein aktiver Datensatz</option>
-                        )}
-                        {runnableDatasetLogs.map((log) => (
-                          <option
-                            key={log.datasetVersionId ?? log.id}
-                            value={log.datasetVersionId ?? ""}
-                          >
-                            {datasetLabel(log)} / {log.datasetVersionId}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <label>
-                      Embedding-Provider
+                      Basistyp
                       <select
-                        name="provider"
-                        value={indexingProvider}
-                        onChange={(event) => {
-                          setIndexingProvider(
+                        value={newProviderType}
+                        onChange={(event) =>
+                          setNewProviderType(
                             event.target.value as ConfigurableProvider,
-                          );
-                          setCloudUseConfirmed(false);
-                        }}
-                      >
-                        <option value="vllm">vLLM lokal</option>
-                        <option value="ollama">Ollama lokal</option>
-                        <option value="openai">OpenAI Cloud</option>
-                      </select>
-                    </label>
-                    <label>
-                      Embedding-Modell
-                      <select
-                        name="model"
-                        value={indexingModel}
-                        disabled={indexingProviderModels.length === 0}
-                        onChange={(event) =>
-                          setIndexingModel(event.target.value)
-                        }
-                        required
-                      >
-                        {indexingProviderModels.length === 0 && (
-                          <option value="">Keine Modelle verfügbar</option>
-                        )}
-                        {indexingProviderModels.map((model) => (
-                          <option key={model} value={model}>
-                            {model}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <p
-                      className={
-                        indexingProviderModels.length === 0
-                          ? "status warning"
-                          : "hint"
-                      }
-                      role="status"
-                    >
-                      {indexingProviderModels.length === 0
-                        ? "Für diesen Provider ist noch kein Modell konfiguriert. Bitte zuerst die Provider-Einstellungen ergänzen."
-                        : `${indexingProviderModels.length} Modell(e) für ${indexingProvider} verfügbar.`}
-                    </p>
-                    {indexingProvider === "openai" && (
-                      <label className="confirmation-field">
-                        <input
-                          name="cloudUseConfirmed"
-                          type="checkbox"
-                          checked={cloudUseConfirmed}
-                          onChange={(event) =>
-                            setCloudUseConfirmed(event.target.checked)
-                          }
-                        />
-                        Ich bestätige, dass die importierten Nachrichtentexte
-                        für diese Indizierung an OpenAI übertragen werden.
-                      </label>
-                    )}
-                    <button
-                      type="submit"
-                      disabled={
-                        runnableDatasetLogs.length === 0 ||
-                        !indexingProviderModels.includes(indexingModel) ||
-                        (indexingProvider === "openai" && !cloudUseConfirmed)
-                      }
-                    >
-                      Indizierung starten
-                    </button>
-                  </form>
-
-                  <section className="panel" aria-label="Indizierungen">
-                    <h2>Indizierungen</h2>
-                    <div className="user-list">
-                      {indexingRuns.length === 0 && (
-                        <p className="hint">
-                          Noch keine Indizierungen für dieses Projekt.
-                        </p>
-                      )}
-                      {indexingRuns.map((run) => (
-                        <article className="user-card" key={run.id}>
-                          <div className="user-heading">
-                            <strong>{run.status}</strong>
-                            <span>{run.progress}%</span>
-                          </div>
-                          <progress value={run.progress} max={100}>
-                            {run.progress}%
-                          </progress>
-                          <p className="hint">Phase: {run.phase}</p>
-                          <p className="hint">
-                            Provider/Modell: {run.provider}/{run.model}
-                          </p>
-                          <p className="hint">
-                            Datensatz: {run.datasetDisplayName ?? "-"}; Version:{" "}
-                            {run.datasetVersionId}
-                          </p>
-                          {run.datasetDeletedAt !== null && (
-                            <p className="status warning">
-                              Datensatz gelöscht: {run.datasetDeletedAt}
-                            </p>
-                          )}
-                          <p className="hint">
-                            Erstellt: {run.createdAt}; gestartet:{" "}
-                            {run.startedAt ?? "noch nicht"}; abgeschlossen:{" "}
-                            {run.completedAt ?? "noch nicht"}
-                          </p>
-                          {run.errorMessage && (
-                            <p className="error">{run.errorMessage}</p>
-                          )}
-                          <p className="hint">
-                            Diagnose: {JSON.stringify(run.diagnostics)}
-                          </p>
-                          <div className="form-actions">
-                            <button
-                              type="button"
-                              className="secondary"
-                              disabled={
-                                run.status !== "queued" &&
-                                run.status !== "running"
-                              }
-                              onClick={() => void cancelIndexingRun(run.id)}
-                            >
-                              Abbrechen
-                            </button>
-                            <button
-                              type="button"
-                              className="secondary"
-                              onClick={() => void deleteIndexingRun(run.id)}
-                            >
-                              Löschen
-                            </button>
-                          </div>
-                        </article>
-                      ))}
-                    </div>
-                  </section>
-                </section>
-              )}
-
-              {projectTab === "cluster-sets" && (
-                <section id="cluster-sets" className="panel-grid">
-                  <form
-                    className="panel stack"
-                    onSubmit={createClusterSet}
-                    aria-label="Cluster-Set erstellen"
-                  >
-                    <p className="eyebrow">Cluster-Sets</p>
-                    <h2>Cluster-Set erstellen</h2>
-                    <p className="hint">
-                      Cluster-Sets speichern Analyseparameter, Vektor-Basis,
-                      Quelle und optional LLM-Zusammenfassungen.
-                    </p>
-                    {clusterSetRefinementDraft !== null ? (
-                      <section className="status info" role="status">
-                        <strong>Verfeinerung vorausgefüllt</strong>
-                        <p>
-                          {clusterSetRefinementDraft.description}. Parent:{" "}
-                          {clusterSetRefinementDraft.parentClusterSetId}
-                        </p>
-                        <input
-                          type="hidden"
-                          name="indexingRunId"
-                          value={clusterSetRefinementDraft.indexingRunId}
-                        />
-                        <button
-                          type="button"
-                          className="secondary"
-                          onClick={() => setClusterSetRefinementDraft(null)}
-                        >
-                          Verfeinerung zurücksetzen
-                        </button>
-                      </section>
-                    ) : (
-                      <label>
-                        Indizierung
-                        <select name="indexingRunId" required>
-                          {completedIndexingRuns.length === 0 && (
-                            <option value="">
-                              Keine abgeschlossene Indizierung
-                            </option>
-                          )}
-                          {completedIndexingRuns.map((run) => (
-                            <option key={run.id} value={run.id}>
-                              {run.datasetDisplayName ?? run.datasetVersionId} /{" "}
-                              {run.model}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                    )}
-                    <label>
-                      Anzeigename
-                      <input
-                        name="displayName"
-                        placeholder="z. B. Antworten grob"
-                      />
-                    </label>
-                    <label>
-                      Vektor-Basis
-                      <select
-                        name="vectorBasis"
-                        value={clusterSetVectorBasis}
-                        onChange={(event) =>
-                          setClusterSetVectorBasis(event.target.value)
-                        }
-                      >
-                        <option value="message">Nachricht</option>
-                        <option value="answer">Antwort</option>
-                        <option value="combined">Q/A kombiniert</option>
-                      </select>
-                    </label>
-                    {clusterSetVectorBasis === "combined" && (
-                      <div className="inline-form">
-                        <label>
-                          Nachricht-Gewicht
-                          <input
-                            name="messageWeight"
-                            type="number"
-                            min="0"
-                            step="0.1"
-                            defaultValue="0.5"
-                          />
-                        </label>
-                        <label>
-                          Antwort-Gewicht
-                          <input
-                            name="answerWeight"
-                            type="number"
-                            min="0"
-                            step="0.1"
-                            defaultValue="0.5"
-                          />
-                        </label>
-                      </div>
-                    )}
-                    <div className="inline-form">
-                      <label>
-                        HDBSCAN min_cluster_size
-                        <input
-                          name="minClusterSize"
-                          type="number"
-                          min="2"
-                          defaultValue="2"
-                        />
-                      </label>
-                      <label>
-                        min_samples optional
-                        <input name="minSamples" type="number" min="1" />
-                      </label>
-                      <label>
-                        selection_epsilon
-                        <input
-                          name="clusterSelectionEpsilon"
-                          type="number"
-                          min="0"
-                          step="0.01"
-                          defaultValue="0"
-                        />
-                      </label>
-                      <label>
-                        Outlier-Schwelle optional
-                        <input
-                          name="outlierThreshold"
-                          type="number"
-                          min="0"
-                          max="1"
-                          step="0.01"
-                        />
-                      </label>
-                    </div>
-                    <label>
-                      LLM-Zusammenfassung
-                      <select
-                        name="llmProvider"
-                        value={clusterSetLlmProvider}
-                        onChange={(event) =>
-                          setClusterSetLlmProvider(
-                            event.target.value as LlmProviderSelection,
                           )
                         }
                       >
-                        <option value="">Keine Zusammenfassung</option>
-                        <option value="ollama">Ollama lokal</option>
-                        <option value="openai">OpenAI Cloud</option>
+                        <option value="openai">OpenAI</option>
+                        <option value="ollama">Ollama</option>
                       </select>
                     </label>
-                    {clusterSetLlmProvider !== "" && (
-                      <>
-                        <label>
-                          LLM-Modell
-                          <select
-                            name="llmModel"
-                            required
-                            disabled={clusterSetLlmProviderModels.length === 0}
-                          >
-                            {clusterSetLlmProviderModels.length === 0 && (
-                              <option value="">Keine Modelle verfügbar</option>
-                            )}
-                            {clusterSetLlmProviderModels.map((model) => (
-                              <option key={model} value={model}>
-                                {model}
-                              </option>
-                            ))}
-                          </select>
-                        </label>
-                        <label>
-                          Beispiele pro Cluster
-                          <input
-                            name="llmSampleCount"
-                            type="number"
-                            min="1"
-                            step="any"
-                            defaultValue="10"
-                            disabled={clusterSetLlmSampleAll}
-                          />
-                        </label>
-                        <label className="inline-check">
-                          <input
-                            name="llmSampleAll"
-                            type="checkbox"
-                            checked={clusterSetLlmSampleAll}
-                            onChange={(event) =>
-                              setClusterSetLlmSampleAll(event.target.checked)
-                            }
-                          />
-                          Alle Beispiele je Cluster verwenden
-                        </label>
-                      </>
-                    )}
-                    {clusterSetLlmProvider === "openai" && (
-                      <label className="confirmation-field">
-                        <input
-                          name="llmCloudUseConfirmed"
-                          type="checkbox"
-                          checked={clusterSetCloudUseConfirmed}
-                          onChange={(event) =>
-                            setClusterSetCloudUseConfirmed(event.target.checked)
-                          }
-                        />
-                        Ich bestätige, dass Beispieltexte für
-                        Cluster-Zusammenfassungen an OpenAI übertragen werden.
-                      </label>
-                    )}
-                    <button
-                      type="submit"
-                      disabled={
-                        (clusterSetRefinementDraft === null &&
-                          completedIndexingRuns.length === 0) ||
-                        clusterSetGenerationRequest !== null ||
-                        (clusterSetLlmProvider !== "" &&
-                          clusterSetLlmProviderModels.length === 0) ||
-                        (clusterSetLlmProvider === "openai" &&
-                          !clusterSetCloudUseConfirmed)
-                      }
-                    >
-                      {clusterSetGenerationRequest === null
-                        ? clusterSetRefinementDraft === null
-                          ? "Cluster-Set erstellen"
-                          : "Verfeinerung erstellen"
-                        : "Cluster-Set wird erstellt"}
+                    <button type="button" onClick={() => void addProvider()}>
+                      Provider hinzufügen
                     </button>
-                  </form>
-
-                  <section className="panel" aria-label="Cluster-Sets">
-                    <h2>Gespeicherte Cluster-Sets</h2>
-                    <div className="user-list">
-                      {clusterSets.length === 0 && (
-                        <p className="hint">
-                          Noch keine Cluster-Sets für dieses Projekt.
-                        </p>
-                      )}
-                      {rootClusterSets.map((clusterSet) =>
-                        renderClusterSetCard(clusterSet),
-                      )}
-                    </div>
-                  </section>
+                  </div>
                 </section>
-              )}
 
-              {projectTab === "explorer" && (
-                <section id="explorer" className="explorer-layout">
-                  <section
-                    className="panel cluster-explorer"
-                    aria-label="Cluster Explorer"
-                  >
-                    <div className="panel-title">
-                      <div>
-                        <p className="eyebrow">Explorer</p>
-                        <h2>Cluster Explorer</h2>
-                      </div>
-                      <button
-                        type="button"
-                        className="secondary"
-                        onClick={() => setProjectTab("cluster-sets")}
-                      >
-                        Cluster-Set auswählen
-                      </button>
-                    </div>
-
-                    {loadedClusterSet === null ? (
+                <section className="provider-grid">
+                  {providers.length === 0 && (
+                    <section className="panel provider-card stack">
+                      <h2>Noch kein Provider eingerichtet</h2>
                       <p className="hint">
-                        Noch kein abgeschlossenes Cluster-Set geladen. Wähle im
-                        Tab „Cluster-Sets“ einen fertigen Satz aus.
+                        Füge OpenAI oder Ollama hinzu, um Modelle für
+                        Indizierung und Cluster-Set-Summaries bereitzustellen.
                       </p>
-                    ) : (
-                      <>
-                        <div
-                          className="metric-grid"
-                          aria-label="Explorer Kennzahlen"
-                        >
+                    </section>
+                  )}
+                  {providers.map((provider) => {
+                    const embeddingModels = embeddingModelOptions(provider);
+                    const llmModels = llmModelOptions(provider);
+                    return (
+                      <form
+                        key={provider.id}
+                        className="panel provider-card stack"
+                        onSubmit={(event) => configureProvider(event, provider)}
+                        aria-label={`${provider.displayName} Provider konfigurieren`}
+                      >
+                        <div className="panel-title">
                           <div>
-                            <span className="field-caption">Geladenes Set</span>
-                            <strong>{loadedClusterSet.displayName}</strong>
+                            <p className="eyebrow">
+                              {provider.provider === "openai"
+                                ? "Cloud"
+                                : "Lokal"}{" "}
+                              ·{" "}
+                              {provider.provider === "openai"
+                                ? "OpenAI"
+                                : "Ollama"}
+                            </p>
+                            <h2>{provider.displayName}</h2>
                           </div>
-                          <div>
-                            <span className="field-caption">Cluster</span>
-                            <strong>{clusters.length}</strong>
-                          </div>
-                          <div>
-                            <span className="field-caption">Sichtbar</span>
-                            <strong>{visibleClusters.length}</strong>
-                          </div>
-                          <div>
-                            <span className="field-caption">
-                              Ausgeschlossen
-                            </span>
-                            <strong>
-                              {clusters.filter(clusterIsExcluded).length}
-                            </strong>
-                          </div>
+                          <button
+                            type="button"
+                            className="danger"
+                            onClick={() => void deleteProvider(provider)}
+                          >
+                            Entfernen
+                          </button>
+                        </div>
+                        <label>
+                          Anzeigename
+                          <input
+                            name="displayName"
+                            defaultValue={provider.displayName}
+                            required
+                          />
+                        </label>
+                        {provider.provider === "openai" ? (
+                          <>
+                            <label className="provider-key-row">
+                              OpenAI API-Key
+                              <input
+                                name="apiKey"
+                                type="password"
+                                autoComplete="off"
+                                placeholder={
+                                  provider.apiKeySet
+                                    ? "•••••••• gespeichert"
+                                    : "sk-..."
+                                }
+                              />
+                            </label>
+                            <label className="inline-check">
+                              <input name="removeApiKey" type="checkbox" />
+                              Gespeicherten API-Key entfernen
+                            </label>
+                          </>
+                        ) : (
+                          <label>
+                            Endpoint URL
+                            <input
+                              name="endpointUrl"
+                              defaultValue={provider.endpointUrl ?? ""}
+                              placeholder="http://localhost:11434"
+                            />
+                          </label>
+                        )}
+
+                        <div className="model-selection">
+                          <span className="field-caption">
+                            Embedding-Modelle
+                          </span>
+                          {embeddingModels.length === 0 && (
+                            <p className="hint">
+                              Noch keine Modelle abgerufen.
+                            </p>
+                          )}
+                          {embeddingModels.map((model) => (
+                            <label
+                              className="inline-check"
+                              key={`${provider.id}:embedding:${model}`}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={provider.manualModels.includes(model)}
+                                onChange={(event) =>
+                                  toggleProviderModel(
+                                    provider.id,
+                                    "embedding",
+                                    model,
+                                    event.target.checked,
+                                  )
+                                }
+                              />
+                              {model}
+                            </label>
+                          ))}
                         </div>
 
-                        <section
-                          className="analysis-path"
-                          aria-label="Analysepfad"
-                        >
-                          <span className="field-caption">Analysepfad</span>
-                          <ol>
-                            <li>
-                              Import:{" "}
-                              {loadedClusterSet.datasetDisplayName ?? "-"}
-                            </li>
-                            <li>
-                              Indizierung: {loadedClusterSet.indexingRunId}
-                            </li>
-                            {loadedAnalysisPath.map((clusterSet) => (
-                              <li key={clusterSet.id}>
-                                {formatClusterSetType(
-                                  clusterSet.derivationType,
-                                )}
-                                : {clusterSet.displayName}
-                                {clusterSet.deletedAt !== null
-                                  ? " (gelöscht)"
-                                  : ""}
-                              </li>
-                            ))}
-                          </ol>
-                        </section>
-
-                        <section
-                          className="explorer-controls"
-                          aria-label="Explorer Filter"
-                        >
-                          <label>
-                            Textsuche
-                            <input
-                              value={clusterSearchQuery}
-                              onChange={(event) =>
-                                setClusterSearchQuery(event.target.value)
-                              }
-                              placeholder="Titel, Kategorie, Summary oder Status"
-                            />
-                          </label>
-                          <label>
-                            Kategorie
-                            <select
-                              value={clusterCategoryFilter}
-                              onChange={(event) =>
-                                setClusterCategoryFilter(event.target.value)
-                              }
+                        <div className="model-selection">
+                          <span className="field-caption">LLM-Modelle</span>
+                          {llmModels.length === 0 && (
+                            <p className="hint">
+                              Noch keine Modelle abgerufen.
+                            </p>
+                          )}
+                          {llmModels.map((model) => (
+                            <label
+                              className="inline-check"
+                              key={`${provider.id}:llm:${model}`}
                             >
-                              <option value="">Alle Kategorien</option>
-                              {clusterCategories.map((category) => (
-                                <option key={category} value={category}>
-                                  {category}
-                                </option>
-                              ))}
-                            </select>
-                          </label>
-                          <label className="inline-check">
-                            <input
-                              type="checkbox"
-                              checked={clusterGroupByCategory}
-                              onChange={(event) =>
-                                setClusterGroupByCategory(event.target.checked)
-                              }
-                            />
-                            Nach Kategorie gruppieren
-                          </label>
-                          <label className="inline-check">
-                            <input
-                              type="checkbox"
-                              checked={showExcludedClusters}
-                              onChange={(event) =>
-                                setShowExcludedClusters(event.target.checked)
-                              }
-                            />
-                            Ausgeschlossene anzeigen
-                          </label>
-                          <label className="inline-check">
-                            <input
-                              type="checkbox"
-                              checked={includeOutlierRows}
-                              onChange={(event) =>
-                                setIncludeOutlierRows(event.target.checked)
-                              }
-                            />
-                            Ausreißer in Tabelle anzeigen
-                          </label>
-                        </section>
-
-                        <section
-                          className="outlier-box"
-                          aria-label="Ausreißer ausschließen"
-                        >
-                          <h2>Ausreißer ausschließen</h2>
-                          <p className="hint">
-                            Diese Aktion verändert das Analyseergebnis und
-                            erstellt deshalb ein neues Child-Cluster-Set.
-                          </p>
-                          <div className="inline-form">
-                            <label>
-                              Threshold
                               <input
-                                type="number"
-                                min="0"
-                                max="1"
-                                step="0.01"
-                                value={outlierThreshold}
+                                type="checkbox"
+                                checked={provider.llmModels.includes(model)}
                                 onChange={(event) =>
-                                  setOutlierThreshold(event.target.value)
+                                  toggleProviderModel(
+                                    provider.id,
+                                    "llm",
+                                    model,
+                                    event.target.checked,
+                                  )
                                 }
+                              />
+                              {model}
+                            </label>
+                          ))}
+                        </div>
+
+                        <div className="form-actions">
+                          <button type="submit">Provider speichern</button>
+                          <button
+                            type="button"
+                            className="secondary"
+                            onClick={() =>
+                              void testProviderConnection(provider)
+                            }
+                          >
+                            Verbindung testen
+                          </button>
+                          <button
+                            type="button"
+                            className="secondary"
+                            onClick={() =>
+                              void discoverProviderModels(provider)
+                            }
+                          >
+                            Modelle abrufen
+                          </button>
+                        </div>
+                        <p className="hint">
+                          Verbindungstest und Modellabruf nutzen die zuletzt
+                          gespeicherte Provider-Konfiguration.
+                        </p>
+
+                        {provider.provider === "ollama" && (
+                          <div className="inline-form provider-pull-row">
+                            <label>
+                              Neues Ollama Modell
+                              <input
+                                name="pullModel"
+                                placeholder="nomic-embed-text"
                               />
                             </label>
                             <button
                               type="button"
-                              onClick={() => void createOutlierExclusionSet()}
+                              className="secondary"
+                              disabled={ollamaPullProviderId !== null}
+                              onClick={(event) => {
+                                const form =
+                                  event.currentTarget.closest("form");
+                                if (form !== null) {
+                                  void pullOllamaModel(provider, form);
+                                }
+                              }}
                             >
-                              Ausreißer berechnen
+                              {ollamaPullProviderId === provider.id
+                                ? "Download läuft ..."
+                                : "Herunterladen und hinzufügen"}
                             </button>
                           </div>
-                        </section>
-
-                        {clusters.length > 0 &&
-                          visibleClusters.length === 0 && (
-                            <p className="status info" role="status">
-                              {ERROR_MESSAGES_BY_CODE.CLUSTER_SEARCH_NO_RESULTS}
-                            </p>
-                          )}
-
-                        <div className="cluster-table-wrap" tabIndex={0}>
-                          <table className="cluster-table">
-                            <thead>
-                              <tr>
-                                <th>Status</th>
-                                <th>Titel</th>
-                                <th>Kategorie</th>
-                                <th>Frage</th>
-                                <th>Antwort</th>
-                                <th>Kundenanfragen</th>
-                                <th>Supportantworten</th>
-                                <th>Hinweise</th>
-                                <th>Aktionen</th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {includedClusterGroups.map((group) => (
-                                <Fragment key={group.key}>
-                                  {clusterGroupByCategory && (
-                                    <tr className="group-row">
-                                      <td colSpan={9}>{group.label}</td>
-                                    </tr>
-                                  )}
-                                  {group.clusters.map((cluster) =>
-                                    renderClusterTableRow(cluster),
-                                  )}
-                                </Fragment>
-                              ))}
-                            </tbody>
-                          </table>
-                        </div>
-
-                        {showExcludedClusters && (
-                          <section
-                            className="excluded-section"
-                            aria-label="Ausgeschlossene Cluster"
-                          >
-                            <h2>Ausgeschlossene Cluster</h2>
-                            {visibleExcludedClusters.length === 0 ? (
-                              <p className="hint">
-                                Keine ausgeschlossenen Cluster sichtbar.
-                              </p>
-                            ) : (
-                              <div className="cluster-table-wrap" tabIndex={0}>
-                                <table className="cluster-table">
-                                  <tbody>
-                                    {visibleExcludedClusters.map((cluster) =>
-                                      renderClusterTableRow(cluster),
-                                    )}
-                                  </tbody>
-                                </table>
-                              </div>
-                            )}
-                          </section>
                         )}
+                      </form>
+                    );
+                  })}
+                </section>
+              </section>
+            )}
 
-                        <div className="form-actions">
-                          <button
-                            type="button"
-                            onClick={createRefinementDraftFromVisibleClusters}
-                          >
-                            Eingeschlossene Cluster verfeinern
-                          </button>
-                        </div>
-                      </>
-                    )}
-                  </section>
-
-                  <section className="panel stack" aria-label="Explorer Export">
-                    <p className="eyebrow">Export</p>
-                    <h2>Explorer exportieren</h2>
-                    <p className="hint">
-                      Exportiert die aktuelle gefilterte Explorer-Tabelle ohne
-                      Originaltexte aus dem Quellen-Dialog.
-                    </p>
-                    {explorerExportError !== null && (
-                      <div className="status error stack" role="alert">
-                        <strong>Explorer-Export fehlgeschlagen.</strong>
-                        <p>{explorerExportError}</p>
-                        <p className="hint">
-                          Filter und Format bleiben erhalten. Bitte Eingaben
-                          anpassen oder den Export erneut starten.
-                        </p>
-                      </div>
-                    )}
-                    <form className="stack" onSubmit={createExplorerExport}>
+            {activePage === "projects" && (
+              <>
+                {projectTab === "indexing" && (
+                  <section id="indexing" className="panel-grid">
+                    <form
+                      className="panel stack"
+                      onSubmit={startIndexingRun}
+                      aria-label="Indizierung starten"
+                    >
+                      <p className="eyebrow">Indizierung</p>
+                      <h2>Datensatz indizieren</h2>
+                      <p className="hint">
+                        Embeddings werden direkt für einen Datensatz erzeugt.
+                        Cluster-Parameter werden erst im nächsten Schritt
+                        gewählt.
+                      </p>
                       <label>
-                        Format
-                        <select
-                          value={explorerExportFormat}
-                          onChange={(event) =>
-                            setExplorerExportFormat(
-                              event.target.value as ExplorerExportFormat,
-                            )
-                          }
-                        >
-                          <option value="csv">CSV</option>
-                          <option value="json">JSON</option>
+                        Datensatz
+                        <select name="datasetVersionId">
+                          {runnableDatasetLogs.length === 0 && (
+                            <option value="">Kein aktiver Datensatz</option>
+                          )}
+                          {runnableDatasetLogs.map((log) => (
+                            <option
+                              key={log.datasetVersionId ?? log.id}
+                              value={log.datasetVersionId ?? ""}
+                            >
+                              {datasetLabel(log)} / {log.datasetVersionId}
+                            </option>
+                          ))}
                         </select>
                       </label>
+                      <label>
+                        Embedding-Provider
+                        <select
+                          name="providerId"
+                          value={indexingProviderId}
+                          onChange={(event) => {
+                            setIndexingProviderId(event.target.value);
+                            setCloudUseConfirmed(false);
+                          }}
+                        >
+                          {embeddingProviders.length === 0 && (
+                            <option value="">Kein Provider verfügbar</option>
+                          )}
+                          {embeddingProviders.map((provider) => (
+                            <option key={provider.id} value={provider.id}>
+                              {provider.displayName} ·{" "}
+                              {provider.provider === "openai"
+                                ? "OpenAI"
+                                : "Ollama"}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        Embedding-Modell
+                        <select
+                          name="model"
+                          value={indexingModel}
+                          disabled={indexingProviderModels.length === 0}
+                          onChange={(event) =>
+                            setIndexingModel(event.target.value)
+                          }
+                          required
+                        >
+                          {indexingProviderModels.length === 0 && (
+                            <option value="">Keine Modelle verfügbar</option>
+                          )}
+                          {indexingProviderModels.map((model) => (
+                            <option key={model} value={model}>
+                              {model}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <p
+                        className={
+                          indexingProviderModels.length === 0
+                            ? "status warning"
+                            : "hint"
+                        }
+                        role="status"
+                      >
+                        {indexingProviderModels.length === 0
+                          ? "Für diesen Provider ist noch kein Modell konfiguriert. Bitte zuerst die Provider-Einstellungen ergänzen."
+                          : `${indexingProviderModels.length} Modell(e) für ${indexingProviderConfiguration?.displayName ?? "Provider"} verfügbar.`}
+                      </p>
+                      <fieldset className="parameter-group">
+                        <legend>Text-Normalisierung für Embeddings</legend>
+                        <p className="hint">
+                          Originaltexte bleiben unverändert. Die Normalisierung
+                          gilt nur für den Text, der an den Embedding-Provider
+                          gesendet wird.
+                        </p>
+                        <label className="inline-check">
+                          <input
+                            name="removeLineBreaks"
+                            type="checkbox"
+                            checked={removeIndexingLineBreaks}
+                            onChange={(event) => {
+                              setRemoveIndexingLineBreaks(event.target.checked);
+                              if (event.target.checked) {
+                                setReplaceIndexingLineBreaks(false);
+                              }
+                            }}
+                          />
+                          Zeilenumbrüche entfernen
+                        </label>
+                        <label className="inline-check">
+                          <input
+                            name="replaceLineBreaks"
+                            type="checkbox"
+                            checked={replaceIndexingLineBreaks}
+                            onChange={(event) => {
+                              setReplaceIndexingLineBreaks(
+                                event.target.checked,
+                              );
+                              if (event.target.checked) {
+                                setRemoveIndexingLineBreaks(false);
+                              }
+                            }}
+                          />
+                          Zeilenumbrüche ersetzen durch
+                        </label>
+                        <label>
+                          Ersatzzeichen für Zeilenumbrüche
+                          <input
+                            name="lineBreakReplacement"
+                            value={indexingLineBreakReplacement}
+                            maxLength={16}
+                            disabled={!replaceIndexingLineBreaks}
+                            onChange={(event) =>
+                              setIndexingLineBreakReplacement(
+                                event.target.value,
+                              )
+                            }
+                          />
+                        </label>
+                        <label className="inline-check">
+                          <input
+                            name="lowercaseEmbeddingInput"
+                            type="checkbox"
+                            checked={lowercaseIndexingInput}
+                            onChange={(event) =>
+                              setLowercaseIndexingInput(event.target.checked)
+                            }
+                          />
+                          Text in Kleinschreibung umwandeln
+                        </label>
+                      </fieldset>
+                      {indexingProviderConfiguration?.provider === "openai" && (
+                        <label className="confirmation-field">
+                          <input
+                            name="cloudUseConfirmed"
+                            type="checkbox"
+                            checked={cloudUseConfirmed}
+                            onChange={(event) =>
+                              setCloudUseConfirmed(event.target.checked)
+                            }
+                          />
+                          Ich bestätige, dass die importierten Nachrichtentexte
+                          für diese Indizierung an OpenAI übertragen werden.
+                        </label>
+                      )}
                       <button
                         type="submit"
                         disabled={
-                          loadedClusterSet === null ||
-                          visibleClusters.length === 0
+                          runnableDatasetLogs.length === 0 ||
+                          !indexingProviderModels.includes(indexingModel) ||
+                          (indexingProviderConfiguration?.provider ===
+                            "openai" &&
+                            !cloudUseConfirmed)
                         }
                       >
-                        Aktuelle Tabelle exportieren
+                        Indizierung starten
                       </button>
                     </form>
-                    <section aria-label="Exporthistorie">
-                      <h2>Exporthistorie</h2>
+
+                    <section className="panel" aria-label="Indizierungen">
+                      <h2>Indizierungen</h2>
                       <div className="user-list">
-                        {visibleExportLogs.length === 0 && (
+                        {indexingRuns.length === 0 && (
                           <p className="hint">
-                            Noch keine Explorer-Exporte für dieses Projekt.
+                            Noch keine Indizierungen für dieses Projekt.
                           </p>
                         )}
-                        {visibleExportLogs.map((log) => (
-                          <article className="user-card" key={log.id}>
+                        {indexingRuns.map((run) => (
+                          <article className="user-card" key={run.id}>
                             <div className="user-heading">
-                              <strong>{log.outputFilename}</strong>
-                              <span>{log.exportType}</span>
+                              <strong>{run.status}</strong>
+                              <span>{run.progress}%</span>
                             </div>
+                            <progress value={run.progress} max={100}>
+                              {run.progress}%
+                            </progress>
+                            <p className="hint">Phase: {run.phase}</p>
                             <p className="hint">
-                              Zeilen: {log.rowCount}; Cluster-Set:{" "}
-                              {log.clusterSetId ?? "-"}
+                              Provider/Modell:{" "}
+                              {run.providerDisplayName ?? run.provider}/
+                              {run.model}
                             </p>
-                            <p className="hint">Erstellt: {log.createdAt}</p>
+                            <p className="hint">
+                              Datensatz: {run.datasetDisplayName ?? "-"};
+                              Version: {run.datasetVersionId}
+                            </p>
+                            {run.datasetDeletedAt !== null && (
+                              <p className="status warning">
+                                Datensatz gelöscht: {run.datasetDeletedAt}
+                              </p>
+                            )}
+                            <p className="hint">
+                              Erstellt: {run.createdAt}; gestartet:{" "}
+                              {run.startedAt ?? "noch nicht"}; abgeschlossen:{" "}
+                              {run.completedAt ?? "noch nicht"}
+                            </p>
+                            {run.errorMessage && (
+                              <p className="error">{run.errorMessage}</p>
+                            )}
+                            <p className="hint">
+                              Diagnose: {JSON.stringify(run.diagnostics)}
+                            </p>
+                            <div className="form-actions">
+                              <button
+                                type="button"
+                                className="secondary"
+                                disabled={
+                                  run.status !== "queued" &&
+                                  run.status !== "running"
+                                }
+                                onClick={() => void cancelIndexingRun(run.id)}
+                              >
+                                Abbrechen
+                              </button>
+                              <button
+                                type="button"
+                                className="secondary"
+                                onClick={() => void deleteIndexingRun(run.id)}
+                              >
+                                Löschen
+                              </button>
+                            </div>
                           </article>
                         ))}
                       </div>
                     </section>
-                    {lastExportContent && (
-                      <pre
-                        className="log-detail"
-                        aria-label="Letzter Explorer Export"
-                        tabIndex={0}
-                      >
-                        {lastExportContentType}:{"\n"}
-                        {lastExportContent}
-                      </pre>
-                    )}
                   </section>
+                )}
 
-                  {sourceDialogCluster !== null && (
-                    <div className="dialog-backdrop">
-                      <section
-                        className="source-dialog"
-                        role="dialog"
-                        aria-modal="true"
-                        aria-labelledby="source-dialog-title"
-                        ref={sourceDialogRef}
-                      >
-                        <div className="panel-title">
-                          <div>
-                            <p className="eyebrow">Quellen</p>
-                            <h2 id="source-dialog-title">
-                              {sourceDialogCluster.effectiveTitle}
-                            </h2>
-                          </div>
+                {projectTab === "cluster-sets" && (
+                  <section id="cluster-sets" className="panel-grid">
+                    <form
+                      className="panel stack"
+                      onSubmit={createClusterSet}
+                      aria-label="Cluster-Set erstellen"
+                    >
+                      <p className="eyebrow">Cluster-Sets</p>
+                      <h2>Cluster-Set erstellen</h2>
+                      <p className="hint">
+                        Cluster-Sets speichern Analyseparameter, Vektor-Basis,
+                        Quelle und optional LLM-Zusammenfassungen.
+                      </p>
+                      {clusterSetRefinementDraft !== null ? (
+                        <section className="status info" role="status">
+                          <strong>Verfeinerung vorausgefüllt</strong>
+                          <p>
+                            {clusterSetRefinementDraft.description}. Parent:{" "}
+                            {clusterSetRefinementDraft.parentClusterSetId}
+                          </p>
+                          <input
+                            type="hidden"
+                            name="indexingRunId"
+                            value={clusterSetRefinementDraft.indexingRunId}
+                          />
                           <button
                             type="button"
                             className="secondary"
-                            ref={sourceDialogCloseRef}
-                            onClick={closeSourceDialog}
+                            onClick={() => setClusterSetRefinementDraft(null)}
                           >
-                            Schließen
+                            Verfeinerung zurücksetzen
                           </button>
+                        </section>
+                      ) : (
+                        <label>
+                          Indizierung
+                          <select name="indexingRunId" required>
+                            {completedIndexingRuns.length === 0 && (
+                              <option value="">
+                                Keine abgeschlossene Indizierung
+                              </option>
+                            )}
+                            {completedIndexingRuns.map((run) => (
+                              <option key={run.id} value={run.id}>
+                                {run.datasetDisplayName ?? run.datasetVersionId}{" "}
+                                / {run.model}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                      )}
+                      <label>
+                        Anzeigename
+                        <input
+                          name="displayName"
+                          placeholder="z. B. Antworten grob"
+                        />
+                      </label>
+                      <label>
+                        Vektor-Basis
+                        <select
+                          name="vectorBasis"
+                          value={clusterSetVectorBasis}
+                          onChange={(event) =>
+                            setClusterSetVectorBasis(event.target.value)
+                          }
+                        >
+                          <option value="message">Nachricht</option>
+                          <option value="answer">Antwort</option>
+                          <option value="combined">Q/A kombiniert</option>
+                        </select>
+                      </label>
+                      {clusterSetVectorBasis === "combined" && (
+                        <div className="inline-form">
+                          <label>
+                            Nachricht-Gewicht
+                            <input
+                              name="messageWeight"
+                              type="number"
+                              min="0"
+                              step="0.1"
+                              defaultValue="0.5"
+                            />
+                          </label>
+                          <label>
+                            Antwort-Gewicht
+                            <input
+                              name="answerWeight"
+                              type="number"
+                              min="0"
+                              step="0.1"
+                              defaultValue="0.5"
+                            />
+                          </label>
                         </div>
-                        {!sourceDialogLoaded ? (
-                          <p className="hint" role="status">
-                            Quellen werden geladen.
+                      )}
+                      <div className="inline-form">
+                        <label>
+                          HDBSCAN min_cluster_size
+                          <input
+                            name="minClusterSize"
+                            type="number"
+                            min="2"
+                            defaultValue="2"
+                          />
+                        </label>
+                        <label>
+                          min_samples optional
+                          <input name="minSamples" type="number" min="1" />
+                        </label>
+                        <label>
+                          selection_epsilon
+                          <input
+                            name="clusterSelectionEpsilon"
+                            type="number"
+                            min="0"
+                            step="0.01"
+                            defaultValue="0"
+                          />
+                        </label>
+                        <label>
+                          Outlier-Schwelle optional
+                          <input
+                            name="outlierThreshold"
+                            type="number"
+                            min="0"
+                            max="1"
+                            step="0.01"
+                          />
+                        </label>
+                      </div>
+                      <div className="inline-form">
+                        <label>
+                          Dimensionsreduzierung
+                          <select
+                            name="reductionMethod"
+                            value={clusterSetReductionMethod}
+                            onChange={(event) =>
+                              setClusterSetReductionMethod(event.target.value)
+                            }
+                          >
+                            <option value="none">Keine</option>
+                            <option value="pca">PCA vor HDBSCAN</option>
+                            <option value="umap">UMAP vor HDBSCAN</option>
+                          </select>
+                        </label>
+                        <label>
+                          Ziel-Dimensionen
+                          <input
+                            name="reductionDimensions"
+                            type="number"
+                            min="2"
+                            max="512"
+                            defaultValue="10"
+                            disabled={clusterSetReductionMethod === "none"}
+                          />
+                        </label>
+                        <label>
+                          Backend
+                          <select
+                            name="executionBackend"
+                            value={clusterSetExecutionBackend}
+                            onChange={(event) =>
+                              setClusterSetExecutionBackend(event.target.value)
+                            }
+                          >
+                            <option value="auto">
+                              Auto (cuML wenn verfügbar)
+                            </option>
+                            <option value="cpu">CPU/sklearn</option>
+                            <option value="cuml">GPU/cuML erzwingen</option>
+                          </select>
+                        </label>
+                      </div>
+                      {clusterSetReductionMethod === "umap" && (
+                        <div className="inline-form">
+                          <label>
+                            UMAP n_neighbors
+                            <input
+                              name="umapNeighbors"
+                              type="number"
+                              min="2"
+                              max="512"
+                              defaultValue="15"
+                            />
+                          </label>
+                          <label>
+                            UMAP min_dist
+                            <input
+                              name="umapMinDist"
+                              type="number"
+                              min="0"
+                              max="0.99"
+                              step="0.01"
+                              defaultValue="0"
+                            />
+                          </label>
+                        </div>
+                      )}
+                      <label>
+                        LLM-Zusammenfassung
+                        <select
+                          name="llmProviderId"
+                          value={clusterSetLlmProviderId}
+                          onChange={(event) =>
+                            setClusterSetLlmProviderId(event.target.value)
+                          }
+                        >
+                          <option value="">Keine Zusammenfassung</option>
+                          {llmProviders.map((provider) => (
+                            <option key={provider.id} value={provider.id}>
+                              {provider.displayName} ·{" "}
+                              {provider.provider === "openai"
+                                ? "OpenAI"
+                                : "Ollama"}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      {clusterSetLlmProviderId !== "" && (
+                        <>
+                          <label>
+                            LLM-Modell
+                            <select
+                              name="llmModel"
+                              required
+                              disabled={
+                                clusterSetLlmProviderModels.length === 0
+                              }
+                            >
+                              {clusterSetLlmProviderModels.length === 0 && (
+                                <option value="">
+                                  Keine Modelle verfügbar
+                                </option>
+                              )}
+                              {clusterSetLlmProviderModels.map((model) => (
+                                <option key={model} value={model}>
+                                  {model}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                          <label>
+                            Beispiele pro Cluster
+                            <input
+                              name="llmSampleCount"
+                              type="number"
+                              min="1"
+                              step="any"
+                              defaultValue="10"
+                              disabled={clusterSetLlmSampleAll}
+                            />
+                          </label>
+                          <label className="inline-check">
+                            <input
+                              name="llmSampleAll"
+                              type="checkbox"
+                              checked={clusterSetLlmSampleAll}
+                              onChange={(event) =>
+                                setClusterSetLlmSampleAll(event.target.checked)
+                              }
+                            />
+                            Alle Beispiele je Cluster verwenden
+                          </label>
+                        </>
+                      )}
+                      {clusterSetLlmProviderConfiguration?.provider ===
+                        "openai" && (
+                        <label className="confirmation-field">
+                          <input
+                            name="llmCloudUseConfirmed"
+                            type="checkbox"
+                            checked={clusterSetCloudUseConfirmed}
+                            onChange={(event) =>
+                              setClusterSetCloudUseConfirmed(
+                                event.target.checked,
+                              )
+                            }
+                          />
+                          Ich bestätige, dass Beispieltexte für
+                          Cluster-Zusammenfassungen an OpenAI übertragen werden.
+                        </label>
+                      )}
+                      <button
+                        type="submit"
+                        disabled={
+                          (clusterSetRefinementDraft === null &&
+                            completedIndexingRuns.length === 0) ||
+                          clusterSetGenerationRequest !== null ||
+                          (clusterSetLlmProviderId !== "" &&
+                            clusterSetLlmProviderModels.length === 0) ||
+                          (clusterSetLlmProviderConfiguration?.provider ===
+                            "openai" &&
+                            !clusterSetCloudUseConfirmed)
+                        }
+                      >
+                        {clusterSetGenerationRequest === null
+                          ? clusterSetRefinementDraft === null
+                            ? "Cluster-Set erstellen"
+                            : "Verfeinerung erstellen"
+                          : "Cluster-Set wird erstellt"}
+                      </button>
+                    </form>
+
+                    <section className="panel" aria-label="Cluster-Sets">
+                      <h2>Gespeicherte Cluster-Sets</h2>
+                      <div className="user-list">
+                        {clusterSets.length === 0 && (
+                          <p className="hint">
+                            Noch keine Cluster-Sets für dieses Projekt.
                           </p>
-                        ) : sourceDialogError !== null &&
-                          clusterSources.length === 0 ? (
-                          <div className="status error stack" role="alert">
-                            <strong>
-                              Quellen konnten nicht geladen werden.
-                            </strong>
-                            <p>{sourceDialogError}</p>
+                        )}
+                        {rootClusterSets.map((clusterSet) =>
+                          renderClusterSetCard(clusterSet),
+                        )}
+                      </div>
+                    </section>
+                  </section>
+                )}
+
+                {projectTab === "explorer" && (
+                  <section id="explorer" className="explorer-layout">
+                    <section
+                      className="panel cluster-explorer"
+                      aria-label="Cluster Explorer"
+                    >
+                      <div className="panel-title">
+                        <div>
+                          <p className="eyebrow">Explorer</p>
+                          <h2>Cluster Explorer</h2>
+                        </div>
+                        <button
+                          type="button"
+                          className="secondary"
+                          onClick={() => setProjectTab("cluster-sets")}
+                        >
+                          Cluster-Set auswählen
+                        </button>
+                      </div>
+
+                      {loadedClusterSet === null ? (
+                        <p className="hint">
+                          Noch kein abgeschlossenes Cluster-Set geladen. Wähle
+                          im Tab „Cluster-Sets“ einen fertigen Satz aus.
+                        </p>
+                      ) : (
+                        <div className="explorer-workspace-grid">
+                          <aside
+                            className="explorer-rail"
+                            aria-label="Explorer Kontrollleiste"
+                          >
+                            <section
+                              className="rail-group"
+                              aria-label="Cluster-Set Auswahl"
+                            >
+                              <h3>Cluster-Set</h3>
+                              <label>
+                                Geladenes Set
+                                <select
+                                  value={loadedClusterSet.id}
+                                  onChange={(event) => {
+                                    if (
+                                      session === null ||
+                                      currentProject === null
+                                    ) {
+                                      return;
+                                    }
+                                    void loadClusterSetClusters(
+                                      session.token,
+                                      currentProject.id,
+                                      event.target.value,
+                                    );
+                                  }}
+                                >
+                                  {completedClusterSets.map((clusterSet) => (
+                                    <option
+                                      key={clusterSet.id}
+                                      value={clusterSet.id}
+                                    >
+                                      {clusterSet.displayName}
+                                    </option>
+                                  ))}
+                                </select>
+                              </label>
+                              <button
+                                type="button"
+                                className="secondary"
+                                onClick={() => setProjectTab("cluster-sets")}
+                              >
+                                Cluster-Sets verwalten
+                              </button>
+                            </section>
+
+                            <section
+                              className="rail-group"
+                              aria-label="Explorer Filter"
+                            >
+                              <h3>Suche & Filter</h3>
+                              <label>
+                                Textsuche
+                                <input
+                                  value={clusterSearchQuery}
+                                  onChange={(event) =>
+                                    setClusterSearchQuery(event.target.value)
+                                  }
+                                  placeholder="Titel, Kategorie, Summary oder Status"
+                                />
+                              </label>
+                              <label>
+                                Kategorie
+                                <select
+                                  value={clusterCategoryFilter}
+                                  onChange={(event) =>
+                                    setClusterCategoryFilter(event.target.value)
+                                  }
+                                >
+                                  <option value="">Alle Kategorien</option>
+                                  {clusterCategories.map((category) => (
+                                    <option key={category} value={category}>
+                                      {category}
+                                    </option>
+                                  ))}
+                                </select>
+                              </label>
+                              <label className="inline-check">
+                                <input
+                                  type="checkbox"
+                                  checked={clusterGroupByCategory}
+                                  onChange={(event) =>
+                                    setClusterGroupByCategory(
+                                      event.target.checked,
+                                    )
+                                  }
+                                />
+                                Nach Kategorie gruppieren
+                              </label>
+                              <label className="inline-check">
+                                <input
+                                  type="checkbox"
+                                  checked={showExcludedClusters}
+                                  onChange={(event) =>
+                                    setShowExcludedClusters(
+                                      event.target.checked,
+                                    )
+                                  }
+                                />
+                                Ausgeschlossene anzeigen
+                              </label>
+                              <label className="inline-check">
+                                <input
+                                  type="checkbox"
+                                  checked={includeOutlierRows}
+                                  onChange={(event) =>
+                                    setIncludeOutlierRows(event.target.checked)
+                                  }
+                                />
+                                Ausreißer in Tabelle anzeigen
+                              </label>
+                            </section>
+
+                            <section
+                              className="rail-group"
+                              aria-label="Explorer Verfeinerung"
+                            >
+                              <h3>Verfeinerung</h3>
+                              <p className="hint">
+                                Nutzt die aktuell sichtbaren eingeschlossenen
+                                Cluster als Quelle für ein neues
+                                Child-Cluster-Set.
+                              </p>
+                              <button
+                                type="button"
+                                onClick={
+                                  createRefinementDraftFromVisibleClusters
+                                }
+                              >
+                                Eingeschlossene Cluster verfeinern
+                              </button>
+                            </section>
+
+                            <section
+                              className="rail-group"
+                              aria-label="Ausreißer ausschließen"
+                            >
+                              <h3>Ausreißer</h3>
+                              <p className="hint">
+                                Erstellt ein neues Child-Cluster-Set.
+                              </p>
+                              <label>
+                                Threshold
+                                <input
+                                  type="number"
+                                  min="0"
+                                  max="1"
+                                  step="0.01"
+                                  value={outlierThreshold}
+                                  onChange={(event) =>
+                                    setOutlierThreshold(event.target.value)
+                                  }
+                                />
+                              </label>
+                              <button
+                                type="button"
+                                onClick={() => void createOutlierExclusionSet()}
+                              >
+                                Ausreißer berechnen
+                              </button>
+                            </section>
+
+                            <section
+                              className="rail-group"
+                              aria-label="Explorer Summary"
+                            >
+                              <h3>Summary</h3>
+                              <p className="hint">
+                                Ersetzt die aktuellen Summary-Felder dieses
+                                Cluster-Sets. Versions- und Kopie-Modi sind
+                                nicht aktiv.
+                              </p>
+                              {explorerSummaryError !== null && (
+                                <div className="status error" role="alert">
+                                  {explorerSummaryError}
+                                </div>
+                              )}
+                              <button
+                                type="button"
+                                disabled={
+                                  !canRegenerateLoadedClusterSetSummaries ||
+                                  clusterSetSummaryRequestId ===
+                                    loadedClusterSet.id
+                                }
+                                onClick={(event) =>
+                                  openSummaryRegenerationDialog(
+                                    loadedClusterSet,
+                                    event.currentTarget,
+                                  )
+                                }
+                              >
+                                {clusterSetSummaryRequestId ===
+                                loadedClusterSet.id
+                                  ? "Summaries werden gestartet"
+                                  : "Summaries neu erstellen"}
+                              </button>
+                              {!canRegenerateLoadedClusterSetSummaries && (
+                                <p className="hint">
+                                  Für dieses Cluster-Set ist kein aktiver
+                                  LLM-Provider hinterlegt.
+                                </p>
+                              )}
+                            </section>
+
+                            {clusters.length > 0 && (
+                              <section
+                                className="rail-group"
+                                aria-label="Explorer Export"
+                              >
+                                <h3>Export</h3>
+                                <p className="hint">
+                                  Exportiert die aktuelle gefilterte
+                                  Explorer-Tabelle ohne Originaltexte aus dem
+                                  Quellen-Dialog.
+                                </p>
+                                {explorerExportError !== null && (
+                                  <div
+                                    className="status error stack"
+                                    role="alert"
+                                  >
+                                    <strong>
+                                      Explorer-Export fehlgeschlagen.
+                                    </strong>
+                                    <p>{explorerExportError}</p>
+                                    <p className="hint">
+                                      Filter und Format bleiben erhalten. Bitte
+                                      Eingaben anpassen oder den Export erneut
+                                      starten.
+                                    </p>
+                                  </div>
+                                )}
+                                <form
+                                  className="stack"
+                                  onSubmit={createExplorerExport}
+                                >
+                                  <label>
+                                    Format
+                                    <select
+                                      value={explorerExportFormat}
+                                      onChange={(event) =>
+                                        setExplorerExportFormat(
+                                          event.target
+                                            .value as ExplorerExportFormat,
+                                        )
+                                      }
+                                    >
+                                      <option value="csv">CSV</option>
+                                      <option value="json">JSON</option>
+                                    </select>
+                                  </label>
+                                  <button
+                                    type="submit"
+                                    disabled={visibleClusters.length === 0}
+                                  >
+                                    Aktuelle Tabelle exportieren
+                                  </button>
+                                </form>
+                                <section aria-label="Exporthistorie">
+                                  <h3>Exporthistorie</h3>
+                                  <div className="user-list">
+                                    {visibleExportLogs.length === 0 && (
+                                      <p className="hint">
+                                        Noch keine Explorer-Exporte für dieses
+                                        Projekt.
+                                      </p>
+                                    )}
+                                    {visibleExportLogs.map((log) => (
+                                      <article
+                                        className="user-card"
+                                        key={log.id}
+                                      >
+                                        <div className="user-heading">
+                                          <strong>{log.outputFilename}</strong>
+                                          <span>{log.exportType}</span>
+                                        </div>
+                                        <p className="hint">
+                                          Zeilen: {log.rowCount}; Cluster-Set:{" "}
+                                          {log.clusterSetId ?? "-"}
+                                        </p>
+                                        <p className="hint">
+                                          Erstellt: {log.createdAt}
+                                        </p>
+                                      </article>
+                                    ))}
+                                  </div>
+                                </section>
+                                {lastExportContent && (
+                                  <pre
+                                    className="log-detail"
+                                    aria-label="Letzter Explorer Export"
+                                    tabIndex={0}
+                                  >
+                                    {lastExportContentType}:{"\n"}
+                                    {lastExportContent}
+                                  </pre>
+                                )}
+                              </section>
+                            )}
+                          </aside>
+
+                          <div className="explorer-table-workspace">
+                            <div
+                              className="metric-grid"
+                              aria-label="Explorer Kennzahlen"
+                            >
+                              <div>
+                                <span className="field-caption">
+                                  Geladenes Set
+                                </span>
+                                <strong>{loadedClusterSet.displayName}</strong>
+                              </div>
+                              <div>
+                                <span className="field-caption">Cluster</span>
+                                <strong>{clusters.length}</strong>
+                              </div>
+                              <div>
+                                <span className="field-caption">Sichtbar</span>
+                                <strong>{visibleClusters.length}</strong>
+                              </div>
+                              <div>
+                                <span className="field-caption">
+                                  Ausgeschlossen
+                                </span>
+                                <strong>
+                                  {clusters.filter(clusterIsExcluded).length}
+                                </strong>
+                              </div>
+                            </div>
+
+                            <section
+                              className="analysis-path"
+                              aria-label="Analysepfad"
+                            >
+                              <span className="field-caption">Analysepfad</span>
+                              <ol>
+                                <li>
+                                  Import:{" "}
+                                  {loadedClusterSet.datasetDisplayName ?? "-"}
+                                </li>
+                                <li>
+                                  Indizierung: {loadedClusterSet.indexingRunId}
+                                </li>
+                                {loadedAnalysisPath.map((clusterSet) => (
+                                  <li key={clusterSet.id}>
+                                    {formatClusterSetType(
+                                      clusterSet.derivationType,
+                                    )}
+                                    : {clusterSet.displayName}
+                                    {clusterSet.deletedAt !== null
+                                      ? " (gelöscht)"
+                                      : ""}
+                                  </li>
+                                ))}
+                              </ol>
+                            </section>
+
+                            <section
+                              className="cluster-set-parameter-card"
+                              aria-label="Cluster-Set Parameter"
+                            >
+                              <span className="field-caption">
+                                Cluster-Set Parameter
+                              </span>
+                              <dl className="parameter-list">
+                                {clusterSetParameterEntries(
+                                  loadedClusterSet,
+                                ).map((entry) => (
+                                  <div key={entry.key}>
+                                    <dt>{entry.label}</dt>
+                                    <dd>{entry.value}</dd>
+                                  </div>
+                                ))}
+                              </dl>
+                            </section>
+
+                            {clusters.length > 0 &&
+                              visibleClusters.length === 0 && (
+                                <p className="status info" role="status">
+                                  {
+                                    ERROR_MESSAGES_BY_CODE.CLUSTER_SEARCH_NO_RESULTS
+                                  }
+                                </p>
+                              )}
+
+                            <div className="cluster-table-wrap" tabIndex={0}>
+                              <table className="cluster-table">
+                                <thead>
+                                  <tr>
+                                    <th>Status</th>
+                                    <th>Titel</th>
+                                    <th>Kategorie</th>
+                                    <th>Frage</th>
+                                    <th>Antwort</th>
+                                    <th>Kundenanfragen</th>
+                                    <th>Supportantworten</th>
+                                    <th>Hinweise</th>
+                                    <th>Aktionen</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {includedClusterGroups.map((group) => (
+                                    <Fragment key={group.key}>
+                                      {clusterGroupByCategory && (
+                                        <tr className="group-row">
+                                          <td colSpan={9}>{group.label}</td>
+                                        </tr>
+                                      )}
+                                      {group.clusters.map((cluster) =>
+                                        renderClusterTableRow(cluster),
+                                      )}
+                                    </Fragment>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+
+                            {showExcludedClusters && (
+                              <section
+                                className="excluded-section"
+                                aria-label="Ausgeschlossene Cluster"
+                              >
+                                <h2>Ausgeschlossene Cluster</h2>
+                                {visibleExcludedClusters.length === 0 ? (
+                                  <p className="hint">
+                                    Keine ausgeschlossenen Cluster sichtbar.
+                                  </p>
+                                ) : (
+                                  <div
+                                    className="cluster-table-wrap"
+                                    tabIndex={0}
+                                  >
+                                    <table className="cluster-table">
+                                      <tbody>
+                                        {visibleExcludedClusters.map(
+                                          (cluster) =>
+                                            renderClusterTableRow(cluster),
+                                        )}
+                                      </tbody>
+                                    </table>
+                                  </div>
+                                )}
+                              </section>
+                            )}
+                          </div>
+                        </div>
+                      )}
+                    </section>
+
+                    {sourceDialogCluster !== null && (
+                      <div className="dialog-backdrop">
+                        <section
+                          className="source-dialog"
+                          role="dialog"
+                          aria-modal="true"
+                          aria-labelledby="source-dialog-title"
+                          ref={sourceDialogRef}
+                        >
+                          <div className="panel-title">
+                            <div>
+                              <p className="eyebrow">Quellen</p>
+                              <h2 id="source-dialog-title">
+                                {sourceDialogCluster.effectiveTitle}
+                              </h2>
+                            </div>
                             <button
                               type="button"
                               className="secondary"
-                              onClick={() =>
-                                void loadClusterSourcePage(
-                                  sourceDialogCluster,
-                                  0,
-                                  { append: false },
-                                )
-                              }
+                              ref={sourceDialogCloseRef}
+                              onClick={closeSourceDialog}
                             >
-                              Quellen erneut laden
+                              Schließen
                             </button>
                           </div>
-                        ) : clusterSources.length === 0 ? (
-                          <p className="hint">
-                            Keine Quellen für diesen Cluster vorhanden.
-                          </p>
-                        ) : (
-                          <>
-                            {sourceDialogError !== null && (
-                              <div className="status error stack" role="alert">
-                                <strong>
-                                  Weitere Quellen konnten nicht geladen werden.
-                                </strong>
-                                <p>{sourceDialogError}</p>
-                              </div>
-                            )}
-                            <div className="source-list">
-                              {clusterSources.map((source) => (
-                                <article
-                                  className="user-card"
-                                  key={source.messagePairId}
+                          {!sourceDialogLoaded ? (
+                            <p className="hint" role="status">
+                              Quellen werden geladen.
+                            </p>
+                          ) : sourceDialogError !== null &&
+                            clusterSources.length === 0 ? (
+                            <div className="status error stack" role="alert">
+                              <strong>
+                                Quellen konnten nicht geladen werden.
+                              </strong>
+                              <p>{sourceDialogError}</p>
+                              <button
+                                type="button"
+                                className="secondary"
+                                onClick={() =>
+                                  void loadClusterSourcePage(
+                                    sourceDialogCluster,
+                                    0,
+                                    { append: false },
+                                  )
+                                }
+                              >
+                                Quellen erneut laden
+                              </button>
+                            </div>
+                          ) : clusterSources.length === 0 ? (
+                            <p className="hint">
+                              Keine Quellen für diesen Cluster vorhanden.
+                            </p>
+                          ) : (
+                            <>
+                              {sourceDialogError !== null && (
+                                <div
+                                  className="status error stack"
+                                  role="alert"
                                 >
                                   <strong>
-                                    Ticket {source.ticketId} · Gruppe{" "}
-                                    {source.messageGroupId}
+                                    Weitere Quellen konnten nicht geladen
+                                    werden.
                                   </strong>
-                                  <p>Kundenfrage: {source.message}</p>
-                                  <p>Supportantwort: {source.answer}</p>
-                                  <p className="hint">
-                                    Score: {formatScore(source.membershipScore)}
-                                    ; Assignment: {source.assignmentType}
-                                    {source.isOutlier ? "; Ausreißer" : ""}
-                                  </p>
-                                </article>
-                              ))}
-                            </div>
-                            <div className="source-dialog-footer">
-                              {sourceDialogNextOffset !== null && (
-                                <button
-                                  type="button"
-                                  className="secondary"
-                                  disabled={sourceDialogLoadingMore}
-                                  onClick={() => void loadMoreClusterSources()}
-                                >
-                                  {sourceDialogLoadingMore
-                                    ? "Weitere Quellen werden geladen"
-                                    : "Weitere Quellen laden"}
-                                </button>
+                                  <p>{sourceDialogError}</p>
+                                </div>
                               )}
-                              <p className="hint">
-                                Angezeigt: {clusterSources.length} Quelle
-                                {clusterSources.length === 1 ? "" : "n"}.
-                              </p>
-                            </div>
-                          </>
-                        )}
-                      </section>
-                    </div>
-                  )}
-                </section>
-              )}
-
-              {currentProject && projectTab === "import" && (
-                <section id="imports" className="panel-grid">
-                  <form
-                    className="panel stack"
-                    onSubmit={importFile}
-                    aria-label="Import starten"
-                  >
-                    <p className="eyebrow">Import</p>
-                    <h2>CSV/JSON importieren</h2>
-                    <p className="hint">
-                      Erwartete Felder: ticket_id, message_group_id, message,
-                      answer. Ungültige Datensätze werden übersprungen und
-                      protokolliert. Maximale Dateigröße: 512 MiB.
-                    </p>
-                    <label>
-                      Importdatei
-                      <input
-                        name="importFile"
-                        type="file"
-                        accept=".csv,.json"
-                      />
-                    </label>
-                    <button type="submit" disabled={isLoading}>
-                      Import starten
-                    </button>
-                  </form>
-
-                  <section className="panel" aria-label="Importprotokolle">
-                    <h2>Importprotokolle</h2>
-                    <div className="user-list">
-                      {importLogs.length === 0 && (
-                        <p className="hint">
-                          Noch keine Imports für dieses Projekt.
-                        </p>
-                      )}
-                      {importLogs.map((log) => (
-                        <article className="user-card" key={log.id}>
-                          <div className="user-heading">
-                            <strong>{log.sourceName}</strong>
-                            <span>{log.status}</span>
-                          </div>
-                          <p className="hint">
-                            Total: {log.totalRecords}; importiert:{" "}
-                            {log.validRecords}; übersprungen:{" "}
-                            {log.skippedRecords}
-                          </p>
-                          {log.failureReason && (
-                            <p className="error">{log.failureReason}</p>
-                          )}
-                          {log.datasetVersionId && (
-                            <div className="stack">
-                              <p className="hint">
-                                Dataset-Version: {log.datasetVersionId}
-                              </p>
-                              <label>
-                                Datensatzname
-                                <input
-                                  defaultValue={datasetLabel(log)}
-                                  disabled={log.datasetDeletedAt !== null}
-                                  onBlur={(event) => {
-                                    if (
-                                      event.target.value.trim() !==
-                                      datasetLabel(log)
-                                    ) {
-                                      void renameDatasetVersion(
-                                        log.datasetVersionId ?? "",
-                                        event.target.value,
-                                      );
+                              <div className="source-list">
+                                {clusterSources.map((source) => (
+                                  <article
+                                    className="user-card"
+                                    key={source.messagePairId}
+                                  >
+                                    <strong>
+                                      Ticket {source.ticketId} · Gruppe{" "}
+                                      {source.messageGroupId}
+                                    </strong>
+                                    <p>Kundenfrage: {source.message}</p>
+                                    <p>Supportantwort: {source.answer}</p>
+                                    <p className="hint">
+                                      Score:{" "}
+                                      {formatScore(source.membershipScore)};
+                                      Assignment: {source.assignmentType}
+                                      {source.isOutlier ? "; Ausreißer" : ""}
+                                    </p>
+                                  </article>
+                                ))}
+                              </div>
+                              <div className="source-dialog-footer">
+                                {sourceDialogNextOffset !== null && (
+                                  <button
+                                    type="button"
+                                    className="secondary"
+                                    disabled={sourceDialogLoadingMore}
+                                    onClick={() =>
+                                      void loadMoreClusterSources()
                                     }
-                                  }}
-                                />
-                              </label>
-                              {log.datasetDeletedAt === null ? (
-                                <button
-                                  type="button"
-                                  className="secondary"
-                                  onClick={() =>
-                                    void deleteDatasetVersion(
-                                      log.datasetVersionId ?? "",
-                                    )
-                                  }
-                                >
-                                  Datensatz löschen
-                                </button>
-                              ) : (
-                                <p className="status warning">
-                                  Datensatz gelöscht: {log.datasetDeletedAt}
+                                  >
+                                    {sourceDialogLoadingMore
+                                      ? "Weitere Quellen werden geladen"
+                                      : "Weitere Quellen laden"}
+                                  </button>
+                                )}
+                                <p className="hint">
+                                  Angezeigt: {clusterSources.length} Quelle
+                                  {clusterSources.length === 1 ? "" : "n"}.
                                 </p>
-                              )}
-                            </div>
+                              </div>
+                            </>
                           )}
-                          <button
-                            type="button"
-                            className="secondary"
-                            onClick={() => inspectImportLog(log.id)}
-                          >
-                            Logdetails anzeigen
-                          </button>
-                        </article>
-                      ))}
-                    </div>
-                    {importLogEntries.length > 0 && (
-                      <div
-                        className="log-detail"
-                        aria-label="Import Logdetails"
-                      >
-                        <h2>Validierungsdetails</h2>
-                        {importLogEntries.map((entry) => (
-                          <p
-                            className="hint"
-                            key={`${entry.source_location}-${entry.reason}`}
-                          >
-                            {entry.source_location}: {entry.reason}
-                          </p>
-                        ))}
+                        </section>
                       </div>
                     )}
                   </section>
-                </section>
-              )}
-              {activePage === "projects" && currentProject === null && (
-                <section
-                  className="project-home"
-                  aria-label="Project Home Aktionen"
-                >
-                  <form
-                    className="panel project-create-form"
-                    onSubmit={createProject}
-                    aria-label="Projekt erstellen"
-                  >
-                    <h2>Projekt erstellen</h2>
-                    <label>
-                      Projektname
-                      <input name="projectName" required />
-                    </label>
-                    <button type="submit" disabled={isLoading}>
-                      Projekt erstellen
-                    </button>
-                  </form>
+                )}
 
-                  <section className="panel" aria-label="Bestehende Projekte">
-                    <h2>Bestehende Projekte</h2>
-                    <div className="user-list">
-                      {projects.length === 0 && (
-                        <p className="hint">Noch keine Projekte vorhanden.</p>
-                      )}
-                      {projects.map((project) => (
-                        <button
-                          type="button"
-                          className="project-row"
-                          key={project.id}
-                          aria-label={`${project.name}, zuletzt aktualisiert ${formatProjectUpdatedAt(project.updatedAt)}`}
-                          onClick={() => void openProject(project.id)}
+                {currentProject && projectTab === "import" && (
+                  <section id="imports" className="panel-grid">
+                    <form
+                      className="panel stack"
+                      onSubmit={importFile}
+                      aria-label="Import starten"
+                    >
+                      <p className="eyebrow">Import</p>
+                      <h2>CSV/JSON importieren</h2>
+                      <p className="hint">
+                        Erwartete Felder: ticket_id, message_group_id, message,
+                        answer. Ungültige Datensätze werden übersprungen und
+                        protokolliert. Maximale Dateigröße: 512 MiB.
+                      </p>
+                      <label>
+                        Importdatei
+                        <input
+                          name="importFile"
+                          type="file"
+                          accept=".csv,.json"
+                        />
+                      </label>
+                      <button type="submit" disabled={isLoading}>
+                        Import starten
+                      </button>
+                    </form>
+
+                    <section className="panel" aria-label="Importprotokolle">
+                      <h2>Importprotokolle</h2>
+                      <div className="user-list">
+                        {importLogs.length === 0 && (
+                          <p className="hint">
+                            Noch keine Imports für dieses Projekt.
+                          </p>
+                        )}
+                        {importLogs.map((log) => (
+                          <article className="user-card" key={log.id}>
+                            <div className="user-heading">
+                              <strong>{log.sourceName}</strong>
+                              <span>{log.status}</span>
+                            </div>
+                            <p className="hint">
+                              Importdatum:{" "}
+                              {formatProjectUpdatedAt(log.startedAt)}
+                            </p>
+                            <p className="hint">
+                              Total: {log.totalRecords}; importiert:{" "}
+                              {log.validRecords}; übersprungen:{" "}
+                              {log.skippedRecords}
+                            </p>
+                            {log.failureReason && (
+                              <p className="error">{log.failureReason}</p>
+                            )}
+                            {log.datasetVersionId && (
+                              <div className="stack">
+                                <p className="hint">
+                                  Dataset-Version: {log.datasetVersionId}
+                                </p>
+                                <label>
+                                  Datensatzname
+                                  <input
+                                    defaultValue={datasetLabel(log)}
+                                    disabled={log.datasetDeletedAt !== null}
+                                    onBlur={(event) => {
+                                      if (
+                                        event.target.value.trim() !==
+                                        datasetLabel(log)
+                                      ) {
+                                        void renameDatasetVersion(
+                                          log.datasetVersionId ?? "",
+                                          event.target.value,
+                                        );
+                                      }
+                                    }}
+                                  />
+                                </label>
+                                {log.datasetDeletedAt === null ? (
+                                  <button
+                                    type="button"
+                                    className="secondary"
+                                    onClick={() =>
+                                      void deleteDatasetVersion(
+                                        log.datasetVersionId ?? "",
+                                      )
+                                    }
+                                  >
+                                    Datensatz löschen
+                                  </button>
+                                ) : (
+                                  <p className="status warning">
+                                    Datensatz gelöscht: {log.datasetDeletedAt}
+                                  </p>
+                                )}
+                              </div>
+                            )}
+                            {log.skippedDetailCount > 0 ? (
+                              <button
+                                type="button"
+                                className="secondary"
+                                onClick={() => inspectImportLog(log.id)}
+                              >
+                                Logdetails anzeigen
+                              </button>
+                            ) : (
+                              <p className="hint">
+                                Keine Validierungsdetails vorhanden.
+                              </p>
+                            )}
+                          </article>
+                        ))}
+                      </div>
+                      {importLogEntries.length > 0 && (
+                        <div
+                          className="log-detail"
+                          aria-label="Import Logdetails"
                         >
-                          <strong>{project.name}</strong>
-                          <span>
-                            {formatProjectUpdatedAt(project.updatedAt)}
-                          </span>
-                        </button>
-                      ))}
-                    </div>
+                          <h2>Validierungsdetails</h2>
+                          {importLogEntries.map((entry) => (
+                            <p
+                              className="hint"
+                              key={`${entry.source_location}-${entry.reason}`}
+                            >
+                              {entry.source_location}: {entry.reason}
+                            </p>
+                          ))}
+                        </div>
+                      )}
+                    </section>
                   </section>
-                </section>
-              )}
-
-              {currentProject && projectTab === "delete" && (
-                <section className="panel-grid" aria-label="Projekt löschen">
-                  <section className="panel stack">
-                    <p className="eyebrow">Gefahrenbereich</p>
-                    <h2>Projekt löschen</h2>
-                    <p className="hint">
-                      Löscht das Projekt dauerhaft. Zur Bestätigung muss der
-                      Projektname exakt eingegeben werden.
-                    </p>
-                  </section>
-                  <form
-                    className="panel stack"
-                    onSubmit={(event) =>
-                      deleteProject(event, currentProject.id)
-                    }
-                    aria-label="Projekt löschen"
+                )}
+                {activePage === "projects" && currentProject === null && (
+                  <section
+                    className="project-home"
+                    aria-label="Project Home Aktionen"
                   >
-                    <label>
-                      Projektname bestätigen
-                      <input name="confirmationName" />
-                    </label>
-                    <button type="submit" className="danger">
-                      Projekt löschen
-                    </button>
-                  </form>
-                </section>
-              )}
-            </>
-          )}
+                    <form
+                      className="panel project-create-form"
+                      onSubmit={createProject}
+                      aria-label="Projekt erstellen"
+                    >
+                      <h2>Projekt erstellen</h2>
+                      <label>
+                        Projektname
+                        <input name="projectName" required />
+                      </label>
+                      <button type="submit" disabled={isLoading}>
+                        Projekt erstellen
+                      </button>
+                    </form>
 
-          {activePage === "settings" && settingsTab === "users" && (
-            <section id="users" className="admin-grid">
-              <form
-                className="panel user-form stack"
-                onSubmit={createUser}
-                aria-label="User anlegen"
-              >
-                <div className="panel-title">
-                  <div>
-                    <p className="eyebrow">Nutzerverwaltung</p>
-                    <h2>Nutzer anlegen</h2>
-                  </div>
-                </div>
-                <label>
-                  Name
-                  <input name="name" autoComplete="name" />
-                </label>
-                <label>
-                  E-Mail
-                  <input name="email" type="email" autoComplete="email" />
-                </label>
-                <label>
-                  Initiales Passwort
-                  <input
-                    name="password"
-                    type="password"
-                    autoComplete="new-password"
-                  />
-                </label>
-                <div className="form-actions">
-                  <button type="submit" disabled={isLoading}>
-                    User erstellen
-                  </button>
-                </div>
-              </form>
-
-              <section
-                className="panel users-panel"
-                aria-label="Bestehende User"
-              >
-                <div className="panel-title">
-                  <div>
-                    <p className="eyebrow">Konten</p>
-                    <h2>Aktive Nutzer</h2>
-                  </div>
-                </div>
-                <div
-                  className="users-table"
-                  role="table"
-                  aria-label="Aktive Nutzer"
-                >
-                  <div className="table-row table-head" role="row">
-                    <span role="columnheader">Name</span>
-                    <span role="columnheader">E-Mail</span>
-                    <span role="columnheader">Passwort</span>
-                    <span role="columnheader">Aktionen</span>
-                  </div>
-                  {users.map((user) => {
-                    const isSelf = user.id === session.user.id;
-                    return (
-                      <div
-                        className="table-row user-row"
-                        role="row"
-                        key={user.id}
-                      >
-                        <span role="cell">
-                          <input
-                            aria-label={`Name für ${user.email}`}
-                            value={user.name}
-                            onChange={(event) =>
-                              updateUser(user.id, "name", event.target.value)
-                            }
-                          />
-                        </span>
-                        <span role="cell">
-                          <input
-                            aria-label={`E-Mail für ${user.email}`}
-                            value={user.email}
-                            onChange={(event) =>
-                              updateUser(user.id, "email", event.target.value)
-                            }
-                          />
-                        </span>
-                        <span role="cell">
-                          <input
-                            aria-label={`Neues Passwort für ${user.email}`}
-                            type="password"
-                            autoComplete="new-password"
-                            onBlur={(event) =>
-                              setPassword(user.id, event.target.value)
-                            }
-                          />
-                        </span>
-                        <span className="row-actions" role="cell">
-                          {isSelf && (
-                            <span className="self-badge">Aktuell</span>
-                          )}
+                    <section className="panel" aria-label="Bestehende Projekte">
+                      <h2>Bestehende Projekte</h2>
+                      <div className="user-list">
+                        {projects.length === 0 && (
+                          <p className="hint">Noch keine Projekte vorhanden.</p>
+                        )}
+                        {projects.map((project) => (
                           <button
                             type="button"
-                            className="danger"
-                            disabled={isSelf}
-                            onClick={() => deleteUser(user.id)}
-                            aria-label={
-                              isSelf
-                                ? "Selbstlöschung gesperrt"
-                                : "User löschen"
-                            }
-                            title={
-                              isSelf
-                                ? "Selbstlöschung gesperrt"
-                                : "User löschen"
-                            }
+                            className="project-row"
+                            key={project.id}
+                            aria-label={`${project.name}, zuletzt aktualisiert ${formatProjectUpdatedAt(project.updatedAt)}`}
+                            onClick={() => void openProject(project.id)}
                           >
-                            <svg
-                              aria-hidden="true"
-                              className="button-icon-svg"
-                              viewBox="0 0 24 24"
-                            >
-                              <path d="M9 3h6l1 2h4v2H4V5h4l1-2Z" />
-                              <path d="M6 9h12l-1 11H7L6 9Zm4 2v7h2v-7h-2Zm4 0v7h2v-7h-2Z" />
-                            </svg>
+                            <strong>{project.name}</strong>
+                            <span>
+                              {formatProjectUpdatedAt(project.updatedAt)}
+                            </span>
                           </button>
-                        </span>
+                        ))}
                       </div>
-                    );
-                  })}
-                </div>
+                    </section>
+                  </section>
+                )}
+
+                {currentProject && projectTab === "delete" && (
+                  <section className="panel-grid" aria-label="Projekt löschen">
+                    <section className="panel stack">
+                      <p className="eyebrow">Gefahrenbereich</p>
+                      <h2>Projekt löschen</h2>
+                      <p className="hint">
+                        Löscht das Projekt dauerhaft. Zur Bestätigung muss der
+                        Projektname exakt eingegeben werden.
+                      </p>
+                    </section>
+                    <form
+                      className="panel stack"
+                      onSubmit={(event) =>
+                        deleteProject(event, currentProject.id)
+                      }
+                      aria-label="Projekt löschen"
+                    >
+                      <label>
+                        Projektname bestätigen
+                        <input name="confirmationName" />
+                      </label>
+                      <button type="submit" className="danger">
+                        Projekt löschen
+                      </button>
+                    </form>
+                  </section>
+                )}
+              </>
+            )}
+
+            {summaryRegenerationDialog}
+
+            {activePage === "settings" && settingsTab === "users" && (
+              <section id="users" className="admin-grid">
+                <form
+                  className="panel user-form stack"
+                  onSubmit={createUser}
+                  aria-label="User anlegen"
+                >
+                  <div className="panel-title">
+                    <div>
+                      <p className="eyebrow">Nutzerverwaltung</p>
+                      <h2>Nutzer anlegen</h2>
+                    </div>
+                  </div>
+                  <label>
+                    Name
+                    <input name="name" autoComplete="name" />
+                  </label>
+                  <label>
+                    E-Mail
+                    <input name="email" type="email" autoComplete="email" />
+                  </label>
+                  <label>
+                    Initiales Passwort
+                    <input
+                      name="password"
+                      type="password"
+                      autoComplete="new-password"
+                    />
+                  </label>
+                  <div className="form-actions">
+                    <button type="submit" disabled={isLoading}>
+                      User erstellen
+                    </button>
+                  </div>
+                </form>
+
+                <section
+                  className="panel users-panel"
+                  aria-label="Bestehende User"
+                >
+                  <div className="panel-title">
+                    <div>
+                      <p className="eyebrow">Konten</p>
+                      <h2>Aktive Nutzer</h2>
+                    </div>
+                  </div>
+                  <div
+                    className="users-table"
+                    role="table"
+                    aria-label="Aktive Nutzer"
+                  >
+                    <div className="table-row table-head" role="row">
+                      <span role="columnheader">Name</span>
+                      <span role="columnheader">E-Mail</span>
+                      <span role="columnheader">Passwort</span>
+                      <span role="columnheader">Aktionen</span>
+                    </div>
+                    {users.map((user) => {
+                      const isSelf = user.id === session.user.id;
+                      return (
+                        <div
+                          className="table-row user-row"
+                          role="row"
+                          key={user.id}
+                        >
+                          <span role="cell">
+                            <input
+                              aria-label={`Name für ${user.email}`}
+                              value={user.name}
+                              onChange={(event) =>
+                                updateUser(user.id, "name", event.target.value)
+                              }
+                            />
+                          </span>
+                          <span role="cell">
+                            <input
+                              aria-label={`E-Mail für ${user.email}`}
+                              value={user.email}
+                              onChange={(event) =>
+                                updateUser(user.id, "email", event.target.value)
+                              }
+                            />
+                          </span>
+                          <span role="cell">
+                            <input
+                              aria-label={`Neues Passwort für ${user.email}`}
+                              type="password"
+                              autoComplete="new-password"
+                              onBlur={(event) =>
+                                setPassword(user.id, event.target.value)
+                              }
+                            />
+                          </span>
+                          <span className="row-actions" role="cell">
+                            {isSelf && (
+                              <span className="self-badge">Aktuell</span>
+                            )}
+                            <button
+                              type="button"
+                              className="danger"
+                              disabled={isSelf}
+                              onClick={() => deleteUser(user.id)}
+                              aria-label={
+                                isSelf
+                                  ? "Selbstlöschung gesperrt"
+                                  : "User löschen"
+                              }
+                              title={
+                                isSelf
+                                  ? "Selbstlöschung gesperrt"
+                                  : "User löschen"
+                              }
+                            >
+                              <svg
+                                aria-hidden="true"
+                                className="button-icon-svg"
+                                viewBox="0 0 24 24"
+                              >
+                                <path d="M9 3h6l1 2h4v2H4V5h4l1-2Z" />
+                                <path d="M6 9h12l-1 11H7L6 9Zm4 2v7h2v-7h-2Zm4 0v7h2v-7h-2Z" />
+                              </svg>
+                            </button>
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </section>
               </section>
-            </section>
-          )}
-        </section>
-      </div>
-    </main>
+            )}
+          </section>
+        </div>
+      </main>
+    </>
   );
 }
 

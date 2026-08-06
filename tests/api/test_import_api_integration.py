@@ -89,6 +89,7 @@ class FakeImportService:
             total_records=2,
             valid_records=1,
             skipped_records=1,
+            skipped_detail_count=1,
             dataset_version_id=DATASET_ID,
             dataset_display_name="fixture.csv",
             dataset_deleted_at=None,
@@ -132,6 +133,7 @@ class FakeImportService:
                 total_records=1,
                 valid_records=0,
                 skipped_records=1,
+                skipped_detail_count=1,
                 dataset_version_id=None,
                 dataset_display_name=None,
                 dataset_deleted_at=None,
@@ -578,6 +580,7 @@ def test_import_log_listing_and_entry_detail(client: TestClient) -> None:
     assert logs.status_code == 200
     assert logs.json()[0]["status"] == "failed"
     assert logs.json()[0]["dataset_version_id"] is None
+    assert logs.json()[0]["skipped_detail_count"] == 1
 
     entries = client.get(
         f"/api/projects/{PROJECT_ID}/imports/{IMPORT_LOG_ID}/entries",

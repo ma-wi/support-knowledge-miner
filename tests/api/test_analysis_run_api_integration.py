@@ -19,6 +19,7 @@ from backend.auth.service import AuthenticationError
 OWNER_ID = UUID("11111111-1111-1111-1111-111111111111")
 PROJECT_ID = UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
 DATASET_ID = UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
+PROVIDER_ID = UUID("cccccccc-cccc-cccc-cccc-cccccccccccc")
 RUN_ID = UUID("dddddddd-dddd-dddd-dddd-dddddddddddd")
 RUNNING_RUN_ID = UUID("dddddddd-dddd-dddd-dddd-ddddddddddde")
 COMPLETED_RUN_ID = UUID("dddddddd-dddd-dddd-dddd-dddddddddddf")
@@ -128,7 +129,12 @@ class FakeAnalysisService:
                 text_variant="message",
                 model="local-embed",
                 dimensions=3,
-                metadata={"provider": "vllm", "source_ordinal": 1},
+                metadata={
+                    "provider": "ollama",
+                    "provider_configuration_id": str(PROVIDER_ID),
+                    "provider_display_name": "Ollama",
+                    "source_ordinal": 1,
+                },
                 created_at=NOW,
             ),
             EmbeddingRecord(
@@ -141,7 +147,12 @@ class FakeAnalysisService:
                 text_variant="answer",
                 model="local-embed",
                 dimensions=3,
-                metadata={"provider": "vllm", "source_ordinal": 1},
+                metadata={
+                    "provider": "ollama",
+                    "provider_configuration_id": str(PROVIDER_ID),
+                    "provider_display_name": "Ollama",
+                    "source_ordinal": 1,
+                },
                 created_at=NOW,
             ),
         ]
@@ -195,7 +206,9 @@ class FakeAnalysisService:
             status=status,
             progress=progress,
             phase=phase,
-            provider="vllm",
+            provider="ollama",
+            provider_configuration_id=PROVIDER_ID,
+            provider_display_name="Ollama",
             model="local-embed",
             parameters={},
             error_code=error_code,
@@ -243,7 +256,7 @@ def test_indexing_run_api_starts_lists_reads_and_exposes_embedding_metadata() ->
         headers=auth_headers(),
         json={
             "dataset_version_id": str(DATASET_ID),
-            "provider": "vllm",
+            "provider_id": str(PROVIDER_ID),
             "model": "local-embed",
         },
     )
@@ -260,8 +273,9 @@ def test_indexing_run_api_starts_lists_reads_and_exposes_embedding_metadata() ->
     assert fake_service.enqueued_run_id == RUN_ID
     assert fake_service.received is not None
     assert fake_service.received.dataset_version_id == DATASET_ID
-    assert fake_service.received.provider == "vllm"
+    assert fake_service.received.provider_id == PROVIDER_ID
     assert fake_service.received.model == "local-embed"
+    assert fake_service.received.parameters == {}
 
     listed = client.get(
         f"/api/projects/{PROJECT_ID}/indexing-runs", headers=auth_headers()
@@ -299,6 +313,43 @@ def test_indexing_run_api_starts_lists_reads_and_exposes_embedding_metadata() ->
     assert "analysis_profile_id" not in embeddings.json()[0]
 
 
+def test_indexing_run_api_accepts_line_break_normalization_parameters() -> None:
+    fake_service = FakeAnalysisService()
+    client = TestClient(
+        create_app(
+            auth_service=FakeAuthService(),  # type: ignore[arg-type]
+            analysis_service=fake_service,  # type: ignore[arg-type]
+        )
+    )
+
+    response = client.post(
+        f"/api/projects/{PROJECT_ID}/indexing-runs",
+        headers=auth_headers(),
+        json={
+            "dataset_version_id": str(DATASET_ID),
+            "provider_id": str(PROVIDER_ID),
+            "model": "local-embed",
+            "parameters": {
+                "embedding_input_normalization": {
+                    "newline_mode": "replace",
+                    "newline_replacement": ". ",
+                    "lowercase": True,
+                }
+            },
+        },
+    )
+
+    assert response.status_code == 201
+    assert fake_service.received is not None
+    assert fake_service.received.parameters == {
+        "embedding_input_normalization": {
+            "newline_mode": "replace",
+            "newline_replacement": ". ",
+            "lowercase": True,
+        }
+    }
+
+
 def test_indexing_run_api_rejects_profile_parameters_with_problem_details() -> None:
     fake_service = FakeAnalysisService()
     client = TestClient(
@@ -313,7 +364,7 @@ def test_indexing_run_api_rejects_profile_parameters_with_problem_details() -> N
         headers=auth_headers(),
         json={
             "dataset_version_id": str(DATASET_ID),
-            "provider": "vllm",
+            "provider": "ollama",
             "model": "local-embed",
             "parameters": {"analysis_profile_id": "legacy"},
         },
@@ -379,7 +430,7 @@ def test_indexing_run_api_reports_bounded_queue_overload() -> None:
         headers=auth_headers(),
         json={
             "dataset_version_id": str(DATASET_ID),
-            "provider": "vllm",
+            "provider": "ollama",
             "model": "local-embed",
         },
     )

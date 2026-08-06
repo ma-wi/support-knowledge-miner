@@ -1,0 +1,1192 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Mockup · Cluster-Summary- und Explorer-Optimierungen</title>
+    <style>
+      :root {
+        --bg: #f6f9fb;
+        --panel: #ffffff;
+        --panel-strong: #f8fbfc;
+        --line: rgba(15, 23, 42, 0.12);
+        --line-strong: rgba(8, 145, 178, 0.3);
+        --text: #172033;
+        --muted: #64748b;
+        --cyan: #0e7490;
+        --cyan-soft: #ecfeff;
+        --amber: #d97706;
+        --amber-soft: #fff7ed;
+        --emerald: #16a34a;
+        --emerald-soft: #ecfdf5;
+        --danger: #dc2626;
+        --shadow: 0 20px 50px rgba(15, 23, 42, 0.1);
+        --radius: 20px;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-width: 320px;
+        color: var(--text);
+        background:
+          radial-gradient(circle at 14% -10%, rgba(8, 145, 178, 0.14), transparent 28rem),
+          linear-gradient(180deg, #ffffff 0%, var(--bg) 100%);
+        font-family:
+          Inter,
+          system-ui,
+          -apple-system,
+          Segoe UI,
+          Roboto,
+          Ubuntu,
+          sans-serif;
+      }
+
+      button,
+      input,
+      select {
+        font: inherit;
+      }
+
+      button {
+        border: 0;
+        border-radius: 14px;
+        padding: 0.72rem 1rem;
+        color: #ffffff;
+        background: var(--cyan);
+        box-shadow: 0 10px 24px rgba(8, 145, 178, 0.16);
+        font-weight: 800;
+        cursor: pointer;
+      }
+
+      button.secondary {
+        color: var(--text);
+        background: #eef5f8;
+        box-shadow: none;
+      }
+
+      button.ghost {
+        color: var(--cyan);
+        background: transparent;
+        box-shadow: none;
+      }
+
+      button.danger {
+        background: var(--danger);
+      }
+
+      button[aria-pressed="true"],
+      .tabs button.selected {
+        color: #ffffff;
+        background: var(--cyan);
+      }
+
+      input,
+      select {
+        width: 100%;
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        padding: 0.72rem 0.85rem;
+        color: var(--text);
+        background: #ffffff;
+      }
+
+      label {
+        display: grid;
+        gap: 0.38rem;
+        color: var(--muted);
+        font-size: 0.92rem;
+      }
+
+      h1,
+      h2,
+      h3,
+      p {
+        margin: 0;
+      }
+
+      h1 {
+        max-width: 980px;
+        font-size: clamp(1.8rem, 3vw, 3rem);
+        line-height: 0.96;
+        letter-spacing: -0.06em;
+      }
+
+      h2 {
+        font-size: 1.18rem;
+      }
+
+      h3 {
+        font-size: 1rem;
+      }
+
+      .shell {
+        display: grid;
+        gap: 1.25rem;
+        padding: clamp(1rem, 3vw, 2rem);
+      }
+
+      .panel {
+        display: grid;
+        gap: 1rem;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        padding: clamp(1rem, 3vw, 1.45rem);
+        background: var(--panel);
+        box-shadow: var(--shadow);
+      }
+
+      .panel.tight {
+        gap: 0.75rem;
+      }
+
+      .app-preview {
+        position: relative;
+        display: grid;
+        grid-template-columns: minmax(0, 1fr);
+        gap: 0.9rem;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        padding: 1rem;
+        background: rgba(255, 255, 255, 0.66);
+      }
+
+      .mock-topbar {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.65rem;
+        align-items: center;
+        justify-content: space-between;
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        padding: 0.8rem 1rem;
+        background: #ffffff;
+      }
+
+      .mock-topbar h3 {
+        margin-top: 0.15rem;
+      }
+
+      .app-content-preview {
+        display: grid;
+        min-width: 0;
+        gap: 0.8rem;
+      }
+
+      .menu-button {
+        display: inline-flex;
+        gap: 0.55rem;
+        align-items: center;
+      }
+
+      .overlay-menu {
+        position: absolute;
+        top: 5.2rem;
+        right: 1rem;
+        z-index: 20;
+        display: none;
+        gap: 0.65rem;
+        width: min(260px, calc(100% - 2rem));
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        padding: 0.85rem;
+        background: #ffffff;
+        box-shadow: var(--shadow);
+      }
+
+      .overlay-menu.active {
+        display: grid;
+      }
+
+      .overlay-menu button {
+        justify-content: flex-start;
+        width: 100%;
+        color: var(--text);
+        background: transparent;
+        box-shadow: none;
+        text-align: left;
+      }
+
+      .overlay-menu button.danger-text {
+        color: var(--danger);
+      }
+
+      .hamburger {
+        position: relative;
+        display: inline-block;
+        width: 1.15rem;
+        height: 0.8rem;
+      }
+
+      .hamburger::before,
+      .hamburger::after,
+      .hamburger span {
+        position: absolute;
+        left: 0;
+        width: 100%;
+        height: 2px;
+        border-radius: 999px;
+        background: currentColor;
+        content: "";
+      }
+
+      .hamburger::before {
+        top: 0;
+      }
+
+      .hamburger span {
+        top: calc(50% - 1px);
+      }
+
+      .hamburger::after {
+        bottom: 0;
+      }
+
+      .panel-title,
+      .row,
+      .actions,
+      .tabs,
+      .split-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.72rem;
+        align-items: center;
+      }
+
+      .panel-title,
+      .split-actions {
+        justify-content: space-between;
+      }
+
+      .tabs {
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        padding: 0.55rem;
+        background: rgba(255, 255, 255, 0.78);
+      }
+
+      .tabs button {
+        color: var(--text);
+        background: transparent;
+        box-shadow: none;
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(280px, 1fr));
+        gap: 1.25rem;
+      }
+
+      .three-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(240px, 1fr));
+        gap: 1rem;
+      }
+
+      .card {
+        display: grid;
+        gap: 0.78rem;
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        padding: 1rem;
+        background: var(--panel-strong);
+      }
+
+      .option-card {
+        align-content: start;
+        border-color: rgba(8, 145, 178, 0.2);
+      }
+
+      .option-card.recommended {
+        border-color: rgba(22, 163, 74, 0.36);
+        background: linear-gradient(180deg, #ffffff 0%, var(--emerald-soft) 100%);
+      }
+
+      .eyebrow,
+      .caption {
+        color: var(--cyan);
+        font-size: 0.76rem;
+        font-weight: 850;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+      }
+
+      .hint {
+        color: var(--muted);
+        line-height: 1.55;
+      }
+
+      .small {
+        font-size: 0.88rem;
+      }
+
+      .chip-list {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem;
+      }
+
+      .chip {
+        display: inline-flex;
+        align-items: center;
+        border: 1px solid var(--line-strong);
+        border-radius: 999px;
+        padding: 0.32rem 0.58rem;
+        color: var(--cyan);
+        background: var(--cyan-soft);
+        font-size: 0.78rem;
+        font-weight: 850;
+      }
+
+      .chip.neutral {
+        border-color: var(--line);
+        color: var(--muted);
+        background: #ffffff;
+      }
+
+      .chip.success {
+        border-color: rgba(22, 163, 74, 0.32);
+        color: #047857;
+        background: var(--emerald-soft);
+      }
+
+      .chip.warning {
+        border-color: rgba(217, 119, 6, 0.32);
+        color: #9a3412;
+        background: var(--amber-soft);
+      }
+
+      .status {
+        border: 1px solid rgba(8, 145, 178, 0.34);
+        border-radius: 14px;
+        padding: 0.82rem;
+        color: var(--cyan);
+        background: var(--cyan-soft);
+      }
+
+      .status.success {
+        border-color: rgba(22, 163, 74, 0.34);
+        color: #047857;
+        background: var(--emerald-soft);
+      }
+
+      .status.warning {
+        border-color: rgba(217, 119, 6, 0.34);
+        color: #9a3412;
+        background: var(--amber-soft);
+      }
+
+      .stack {
+        display: grid;
+        gap: 0.8rem;
+      }
+
+      .inline-check {
+        display: flex;
+        gap: 0.55rem;
+        align-items: flex-start;
+        color: var(--text);
+      }
+
+      .inline-check input {
+        width: auto;
+        margin-top: 0.18rem;
+      }
+
+      .form-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(220px, 1fr));
+        gap: 0.85rem;
+      }
+
+      .timeline {
+        display: grid;
+        gap: 0.58rem;
+      }
+
+      .timeline li {
+        margin-left: 1.1rem;
+        color: var(--muted);
+        line-height: 1.5;
+      }
+
+      .summary-config {
+        display: none;
+      }
+
+      .summary-config.active {
+        display: grid;
+      }
+
+      .dialog-backdrop {
+        position: fixed;
+        inset: 0;
+        z-index: 30;
+        display: none;
+        place-items: center;
+        padding: 1rem;
+        background: rgba(15, 23, 42, 0.4);
+      }
+
+      .dialog-backdrop.active {
+        display: grid;
+      }
+
+      .dialog {
+        width: min(100%, 760px);
+        max-height: min(88svh, 900px);
+        overflow: auto;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        padding: clamp(1rem, 3vw, 1.4rem);
+        background: var(--panel);
+        box-shadow: var(--shadow);
+      }
+
+      .explorer-demo {
+        display: grid;
+        gap: 1rem;
+      }
+
+      .explorer-layout-demo {
+        display: grid;
+        gap: 1rem;
+      }
+
+      .explorer-layout-demo.side {
+        grid-template-columns: minmax(0, 1fr) 280px;
+      }
+
+      .explorer-layout-demo.controls-left {
+        grid-template-columns: minmax(260px, 0.28fr) minmax(0, 1fr);
+        align-items: start;
+      }
+
+      .control-rail {
+        position: sticky;
+        top: 1rem;
+        align-self: start;
+      }
+
+      .control-group {
+        display: grid;
+        gap: 0.72rem;
+        border-top: 1px solid var(--line);
+        padding-top: 0.9rem;
+      }
+
+      .control-group:first-of-type {
+        border-top: 0;
+        padding-top: 0;
+      }
+
+      .control-group h3 {
+        display: flex;
+        justify-content: space-between;
+        gap: 0.7rem;
+        align-items: center;
+      }
+
+      .export-box {
+        align-self: start;
+      }
+
+      .export-box.sticky {
+        position: sticky;
+        top: 1rem;
+      }
+
+      .table-wrap {
+        max-width: 100%;
+        overflow: auto;
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        background: #ffffff;
+      }
+
+      .demo-table {
+        width: 100%;
+        min-width: 1260px;
+        border-collapse: collapse;
+      }
+
+      .demo-table.compact {
+        min-width: 980px;
+        table-layout: fixed;
+      }
+
+      .demo-table th,
+      .demo-table td {
+        border-bottom: 1px solid var(--line);
+        padding: 0.76rem;
+        text-align: left;
+        vertical-align: top;
+      }
+
+      .demo-table th {
+        color: var(--muted);
+        background: var(--panel-strong);
+        font-size: 0.74rem;
+        font-weight: 850;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        white-space: nowrap;
+      }
+
+      .demo-table.compact .text {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .action-cell {
+        min-width: 180px;
+      }
+
+      .sticky-actions th:last-child,
+      .sticky-actions td:last-child {
+        position: sticky;
+        right: 0;
+        z-index: 1;
+        background: #ffffff;
+        box-shadow: -12px 0 18px rgba(15, 23, 42, 0.08);
+      }
+
+      .sticky-actions th:last-child {
+        z-index: 2;
+        background: var(--panel-strong);
+      }
+
+      .drawer-shell {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(260px, 0.36fr);
+        gap: 1rem;
+      }
+
+      .details-drawer {
+        display: grid;
+        gap: 0.75rem;
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        padding: 1rem;
+        background: var(--panel-strong);
+      }
+
+      .hidden {
+        display: none !important;
+      }
+
+      @media (max-width: 980px) {
+        .grid,
+        .three-grid,
+        .form-grid,
+        .app-preview,
+        .explorer-layout-demo.controls-left,
+        .explorer-layout-demo.side,
+        .drawer-shell {
+          grid-template-columns: 1fr;
+        }
+
+        .control-rail,
+        .export-box.sticky {
+          position: static;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="shell">
+      <section class="panel">
+        <p class="eyebrow">Design-Prototyp · nicht Production-Code</p>
+        <h1>Cluster-Summary und Explorer sauberer bedienbar machen</h1>
+        <p class="hint">
+          Dieses Mockup zeigt zwei getrennte Optimierungen: Summary-Neuerstellung ohne
+          neue Clusterberechnung und Explorer-Layout-Varianten, bei denen die
+          Aktionsbuttons sichtbar bleiben.
+        </p>
+        <div class="tabs" aria-label="Mockupbereiche">
+          <button type="button" class="selected" data-section="summary">Cluster-Sets</button>
+          <button type="button" data-section="explorer">Explorer</button>
+          <button type="button" data-section="decision">Entscheidung</button>
+        </div>
+      </section>
+
+      <section id="summary" class="section stack">
+        <section class="panel">
+          <div class="panel-title">
+            <div>
+              <p class="eyebrow">Projekt · Cluster-Sets</p>
+              <h2>Vorschlag: Summary als eigene Version eines fertigen Cluster-Sets</h2>
+            </div>
+            <span class="chip success">Empfohlen</span>
+          </div>
+          <p class="hint">
+            Die Clusterzuordnung bleibt stabil. Nur die Summary-Felder werden mit neuem
+            LLM-Provider, Modell und Sample-Strategie neu erzeugt. Der lange Hinweis im
+            Cluster-Set-Erstellformular entfällt.
+          </p>
+          <div class="grid">
+            <article class="card">
+              <div class="panel-title">
+                <div>
+                  <h3>Support-Themen · Root</h3>
+                  <p class="hint small">completed · 100% · 42 Cluster · Basis: message</p>
+                </div>
+                <span class="chip neutral">Summary v2</span>
+              </div>
+              <div class="chip-list">
+                <span class="chip">LLM: OpenAI / gpt-4.1-mini</span>
+                <span class="chip neutral">Samples: 10 je Cluster</span>
+                <span class="chip neutral">Cluster-ID stabil</span>
+              </div>
+              <p class="hint">
+                Aktuelle Summary: „Passwort, Rechnung und Retouren dominieren den
+                Supportbestand.“
+              </p>
+              <div class="actions">
+                <button type="button" class="secondary">Im Explorer laden</button>
+                <button type="button" class="secondary">Cluster verfeinern</button>
+                <button type="button" data-open-summary>Summaries neu erstellen</button>
+              </div>
+            </article>
+
+            <article class="card">
+              <h3>Neues Cluster-Set erstellen</h3>
+              <div class="form-grid">
+                <label>
+                  Indizierung
+                  <select>
+                    <option>Tickets Juli · completed</option>
+                  </select>
+                </label>
+                <label>
+                  Algorithmus
+                  <select>
+                    <option>HDBSCAN</option>
+                  </select>
+                </label>
+                <label>
+                  LLM-Summaries
+                  <select>
+                    <option>deaktiviert</option>
+                    <option>OpenAI · gpt-4.1-mini</option>
+                    <option>Ollama · llama3.1</option>
+                  </select>
+                </label>
+                <label>
+                  Beispielstrategie
+                  <select>
+                    <option>10 je Cluster</option>
+                    <option>Alle Beispiele</option>
+                  </select>
+                </label>
+              </div>
+              <p class="status">
+                Kein permanenter Bestätigungssatz im Formular. Bei Cloud-Auswahl wird
+                die Bestätigung erst beim Start als konkrete Aktion abgefragt.
+              </p>
+              <button type="button">Cluster-Set erstellen</button>
+            </article>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-title">
+            <div>
+              <p class="eyebrow">Festlegung</p>
+              <h2>Cluster-Sets nutzen Option A: Dialog</h2>
+            </div>
+            <span class="chip success">Bevorzugt</span>
+          </div>
+          <div class="grid">
+            <article class="card option-card recommended">
+              <span class="chip success">Option A</span>
+              <h3>Dialog mit neuer Parameterauswahl</h3>
+              <p class="hint">
+                Der Button auf der Cluster-Set-Karte öffnet einen fokussierten Dialog:
+                Provider, Modell, Samples und Schreibmodus. Das hält die Karten schlank
+                und trennt Clusterberechnung klar von Summary-Neuerstellung.
+              </p>
+              <button type="button" data-open-summary>Dialog öffnen</button>
+            </article>
+            <article class="card option-card">
+              <span class="chip neutral">Nicht bevorzugt</span>
+              <h3>Verworfene Alternativen</h3>
+              <p class="hint">
+                Inline-Aufklappbereiche machen lange Cluster-Set-Listen unruhig.
+                Summary-Versionen als eigenes Subpanel bleiben ein möglicher späterer
+                Ausbau, sind für diese Optimierung aber zu groß.
+              </p>
+            </article>
+          </div>
+        </section>
+      </section>
+
+      <section id="explorer" class="section stack hidden">
+        <section class="panel">
+          <div class="panel-title">
+            <div>
+              <p class="eyebrow">Projekt · Explorer</p>
+              <h2>Layoutproblem: Export-Spalte nimmt Tabellenbreite weg</h2>
+            </div>
+            <span class="chip warning">Buttons müssen sichtbar bleiben</span>
+          </div>
+          <p class="hint">
+            Umschalten zeigt drei Lösungen. Die neue Hauptvariante nutzt links eine
+            Kontrollleiste wie bei Import, Indizieren und Cluster-Sets. Rechts bleibt
+            die Tabelle als Hauptfläche; die Aktionsspalte bleibt zusätzlich sticky.
+          </p>
+          <div class="tabs" aria-label="Explorer Layoutvarianten">
+            <button type="button" class="selected" data-layout="bottom">A Kontrollleiste links</button>
+            <button type="button" data-layout="sticky">B Sticky Aktionen</button>
+            <button type="button" data-layout="drawer">C Detail-Drawer</button>
+          </div>
+        </section>
+
+        <section class="explorer-demo">
+          <div id="layout-bottom" class="layout-view">
+            <section class="panel tight">
+              <div class="panel-title">
+                <div>
+                  <p class="eyebrow">Globale Navigation</p>
+                  <h2>Menübutton rechts oben</h2>
+                </div>
+                <span class="chip success">finale Variante</span>
+              </div>
+              <p class="hint">
+                Die globale linke Leiste entfällt im Explorer-Mockup. Rechts oben,
+                dort wo aktuell „Abmelden“ sitzt, öffnet ein Menübutton das globale
+                Overlay-Menü mit Projekte, Einstellungen und Abmelden.
+              </p>
+            </section>
+
+            <div class="app-preview" id="global-nav-preview">
+              <div class="overlay-menu" id="global-overlay-menu" aria-label="Globales Overlaymenü">
+                <p class="eyebrow">Menü</p>
+                <button type="button">Projekte</button>
+                <button type="button">Einstellungen</button>
+                <button type="button" class="danger-text">Abmelden</button>
+              </div>
+
+              <header class="mock-topbar">
+                <div>
+                  <p class="eyebrow">Support Knowledge Miner</p>
+                  <h3>Projekt: Support-Themen</h3>
+                </div>
+                <button type="button" class="secondary menu-button" data-open-global-menu aria-haspopup="true" aria-expanded="false">
+                  <span class="hamburger" aria-hidden="true"><span></span></span>
+                  Menü
+                </button>
+              </header>
+
+              <div class="app-content-preview">
+                <div class="explorer-layout-demo controls-left">
+                  <aside class="panel control-rail" aria-label="Explorer Kontrollleiste">
+                <div>
+                  <p class="eyebrow">Explorer-Steuerung</p>
+                  <h2>Support-Themen</h2>
+                  <p class="hint small">42 Cluster · 38 sichtbar · Summary v2</p>
+                </div>
+                <div class="control-group">
+                  <h3>Cluster-Set <span class="chip neutral">geladen</span></h3>
+                  <button type="button" class="secondary">Cluster-Set wechseln</button>
+                  <button type="button" class="secondary">Im Cluster-Set-Baum anzeigen</button>
+                </div>
+                <div class="control-group">
+                  <h3>Suchen & filtern</h3>
+                  <label>
+                    Textsuche
+                    <input value="rechnung" aria-label="Textsuche" />
+                  </label>
+                  <label>
+                    Kategorie
+                    <select>
+                      <option>Alle Kategorien</option>
+                      <option>Abrechnung</option>
+                    </select>
+                  </label>
+                  <label class="inline-check">
+                    <input type="checkbox" checked />
+                    Ausgeschlossene anzeigen
+                  </label>
+                  <label class="inline-check">
+                    <input type="checkbox" />
+                    Nach Kategorie gruppieren
+                  </label>
+                </div>
+                <div class="control-group">
+                  <h3>Ausreißer</h3>
+                  <p class="hint small">Erstellt ein neues Child-Cluster-Set.</p>
+                  <label>
+                    Threshold
+                    <input type="number" min="0" max="1" step="0.01" value="0.18" />
+                  </label>
+                  <button type="button">Ausreißer berechnen</button>
+                </div>
+                <div class="control-group">
+                  <h3>Summaries</h3>
+                  <p class="hint small">
+                    Primärer Einstieg im Explorer, weil die Qualität hier direkt sichtbar ist.
+                  </p>
+                  <label>
+                    Schreibmodus
+                    <select>
+                      <option>Aktuelle Summaries ersetzen</option>
+                      <option>Als Summary-Version speichern</option>
+                      <option>Cluster-Set-Kopie mit neuer Summary</option>
+                    </select>
+                  </label>
+                  <button type="button" data-open-summary>Summaries neu erstellen</button>
+                </div>
+                <div class="control-group">
+                  <h3>Export</h3>
+                  <label>
+                    Format
+                    <select>
+                      <option>CSV</option>
+                      <option>JSON</option>
+                    </select>
+                  </label>
+                  <button type="button">Aktuelle Ansicht exportieren</button>
+                </div>
+              </aside>
+
+              <section class="panel">
+                <div class="panel-title">
+                  <div>
+                    <p class="eyebrow">Explorer</p>
+                    <h2>Cluster Explorer</h2>
+                  </div>
+                  <span class="chip success">Tabelle bekommt Restbreite</span>
+                </div>
+                <div class="chip-list">
+                  <span class="chip neutral">Geladenes Set: Support-Themen</span>
+                  <span class="chip neutral">42 Cluster</span>
+                  <span class="chip neutral">38 sichtbar</span>
+                  <span class="chip neutral">Filter: rechnung</span>
+                </div>
+                <div class="table-wrap">
+                  <table class="demo-table compact sticky-actions">
+                    <thead>
+                      <tr>
+                        <th>Status</th>
+                        <th>Titel</th>
+                        <th>Kategorie</th>
+                        <th>Frage</th>
+                        <th>Antwort</th>
+                        <th>Hinweise</th>
+                        <th>Aktionen</th>
+                      </tr>
+                    </thead>
+                    <tbody data-rows></tbody>
+                  </table>
+                </div>
+                <div class="actions">
+                  <button type="button">Eingeschlossene Cluster verfeinern</button>
+                  <button type="button" class="secondary">Tabellenspalten anpassen</button>
+                </div>
+              </section>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div id="layout-sticky" class="layout-view hidden">
+            <div class="explorer-layout-demo side">
+              <section class="panel">
+                <div class="panel-title">
+                  <div>
+                    <p class="eyebrow">Explorer</p>
+                    <h2>Cluster Explorer</h2>
+                  </div>
+                  <span class="chip">Sticky Aktionen</span>
+                </div>
+                <p class="hint">
+                  Export bleibt rechts. Die letzte Tabellenspalte klebt rechts im
+                  Scrollcontainer, damit „Quellen“ und „Ausschließen“ sichtbar bleiben.
+                </p>
+                <div class="table-wrap">
+                  <table class="demo-table sticky-actions">
+                    <thead>
+                      <tr>
+                        <th>Status</th>
+                        <th>Titel</th>
+                        <th>Kategorie</th>
+                        <th>Frage</th>
+                        <th>Antwort</th>
+                        <th>Kundenanfragen</th>
+                        <th>Supportantworten</th>
+                        <th>Hinweise</th>
+                        <th>Aktionen</th>
+                      </tr>
+                    </thead>
+                    <tbody data-rows></tbody>
+                  </table>
+                </div>
+              </section>
+              <section class="panel export-box sticky">
+                <p class="eyebrow">Export</p>
+                <h2>Explorer exportieren</h2>
+                <p class="hint">Rechte Box bleibt, aber die Tabelle braucht weiter horizontalen Scroll.</p>
+                <button type="button">Aktuelle Tabelle exportieren</button>
+              </section>
+            </div>
+          </div>
+
+          <div id="layout-drawer" class="layout-view hidden">
+            <section class="panel drawer-shell">
+              <div class="stack">
+                <div class="panel-title">
+                  <div>
+                    <p class="eyebrow">Explorer</p>
+                    <h2>Kompakte Tabelle + Detail-Drawer</h2>
+                  </div>
+                  <span class="chip">Mehr Umbau</span>
+                </div>
+                <p class="hint">
+                  Die Tabelle zeigt nur Vergleichsfelder. Lange Frage-/Antworttexte
+                  wandern in einen rechten Detailbereich für die ausgewählte Zeile.
+                </p>
+                <div class="table-wrap">
+                  <table class="demo-table compact">
+                    <thead>
+                      <tr>
+                        <th>Status</th>
+                        <th>Titel</th>
+                        <th>Kategorie</th>
+                        <th>Frage</th>
+                        <th>Aktionen</th>
+                      </tr>
+                    </thead>
+                    <tbody data-compact-rows></tbody>
+                  </table>
+                </div>
+              </div>
+              <aside class="details-drawer" aria-label="Cluster Details">
+                <p class="eyebrow">Ausgewählter Cluster</p>
+                <h2>Rechnung doppelt belastet</h2>
+                <p class="hint">
+                  Frage: Warum wurde eine alte Rechnung erneut abgebucht?
+                </p>
+                <p class="hint">
+                  Antwort: Prüfe Rechnungsdatum, Zahlungsanbieter und Erstattungspfad.
+                </p>
+                <div class="actions">
+                  <button type="button" class="secondary">Quellen anzeigen</button>
+                  <button type="button" class="secondary">Ausschließen</button>
+                </div>
+              </aside>
+            </section>
+            <section class="panel export-box">
+              <p class="eyebrow">Export</p>
+              <h2>Explorer exportieren</h2>
+              <button type="button">Aktuelle Tabelle exportieren</button>
+            </section>
+          </div>
+        </section>
+      </section>
+
+      <section id="decision" class="section stack hidden">
+        <section class="panel">
+          <p class="eyebrow">Planungsvorschlag</p>
+          <h2>Empfohlene Umsetzung</h2>
+          <div class="three-grid">
+            <article class="card option-card recommended">
+              <span class="chip success">1</span>
+              <h3>Summary: Dialog-Variante A</h3>
+              <p class="hint">
+                Cluster-Sets behalten einen kompakten Button, der den Dialog öffnet.
+                Der Dialog nutzt den Summary-only Endpoint mit Provider, Modell,
+                Samples und Schreibmodus. Lange Formularbestätigung entfernen.
+              </p>
+            </article>
+            <article class="card option-card recommended">
+              <span class="chip success">2</span>
+              <h3>Explorer: Kontrollleiste links + Menübutton oben rechts</h3>
+              <p class="hint">
+                Suche, Filter, Ausreißer, Summary-Neuerstellung und Export sitzen
+                links wie bei den anderen Projektbereichen. Die globale Navigation ist
+                nur noch über den Menübutton erreichbar; das Overlay enthält Projekte,
+                Einstellungen und Abmelden.
+              </p>
+            </article>
+            <article class="card option-card">
+              <span class="chip">Optional</span>
+              <h3>Sticky Aktionsspalte</h3>
+              <p class="hint">
+                Zusätzlich sinnvoll, weil die Tabelle weiterhin breit ist. So bleiben
+                „Quellen anzeigen“ und „Ausschließen“ sichtbar, auch wenn horizontal
+                gescrollt wird.
+              </p>
+            </article>
+          </div>
+        </section>
+      </section>
+    </main>
+
+    <div class="dialog-backdrop" id="summary-dialog" role="presentation">
+      <section class="dialog stack" role="dialog" aria-modal="true" aria-labelledby="summary-dialog-title">
+        <div class="panel-title">
+          <div>
+            <p class="eyebrow">Nur Summary-Job</p>
+            <h2 id="summary-dialog-title">Summaries neu erstellen</h2>
+          </div>
+          <button type="button" class="ghost" data-close-dialog aria-label="Dialog schließen">×</button>
+        </div>
+        <p class="status warning">
+          Clusterzuordnung, Ausreißerstatus und manuelle Explorer-Änderungen bleiben
+          unverändert. Es werden nur Titel, Kategorie, Frage- und Antwort-Summary neu
+          geschrieben.
+        </p>
+        <div class="form-grid">
+          <label>
+            LLM-Provider
+            <select id="dialog-provider">
+              <option value="openai">OpenAI</option>
+              <option value="ollama">Ollama lokal</option>
+            </select>
+          </label>
+          <label>
+            Modell
+            <select>
+              <option>gpt-4.1-mini</option>
+              <option>gpt-4.1</option>
+              <option>llama3.1:8b</option>
+            </select>
+          </label>
+          <label>
+            Beispiele je Cluster
+            <input type="number" min="1" value="10" />
+          </label>
+          <label>
+            Ergebnis
+            <select>
+              <option>Aktuelle Summary ersetzen</option>
+              <option>Zusätzlich als Version speichern</option>
+            </select>
+          </label>
+        </div>
+        <label class="inline-check" id="cloud-confirm">
+          <input type="checkbox" />
+          OpenAI-Übertragung für diese Aktion bestätigen.
+        </label>
+        <div class="actions">
+          <button type="button" data-close-dialog>Summary-Job starten</button>
+          <button type="button" class="secondary" data-close-dialog>Abbrechen</button>
+        </div>
+      </section>
+    </div>
+
+    <script>
+      const rows = [
+        ["reviewed", "Rechnung doppelt belastet", "Abrechnung", "Warum wurde eine alte Rechnung erneut abgebucht?", "Prüfe Rechnungsdatum, Zahlungsanbieter und Erstattungspfad.", "12", "12", "Frage/Antwort passend"],
+        ["unreviewed", "Passwort zurücksetzen", "Konto", "Wie können Kunden ihr Passwort zurücksetzen?", "Sende Reset-Link und erkläre Ablaufzeit.", "31", "30", "Hohe Häufigkeit"],
+        ["unreviewed", "Retourenlabel fehlt", "Retoure", "Wo finde ich das Label für Zubehörretouren?", "Erzeuge Label im Retourenportal.", "18", "18", "Keine Warnung"],
+      ];
+
+      function renderRows() {
+        document.querySelectorAll("[data-rows]").forEach((target) => {
+          target.innerHTML = rows
+            .map(
+              (row) => `
+                <tr>
+                  ${row
+                    .map((value, index) => `<td class="${index >= 3 && index <= 4 ? "text" : ""}">${value}</td>`)
+                    .join("")}
+                  <td class="action-cell">
+                    <div class="stack">
+                      <button type="button" class="secondary">Quellen anzeigen</button>
+                      <button type="button" class="secondary">Ausschließen</button>
+                    </div>
+                  </td>
+                </tr>`,
+            )
+            .join("");
+        });
+
+        document.querySelectorAll("[data-compact-rows]").forEach((target) => {
+          target.innerHTML = rows
+            .map(
+              (row, index) => `
+                <tr>
+                  <td>${row[0]}</td>
+                  <td>${row[1]}</td>
+                  <td>${row[2]}</td>
+                  <td class="text">${row[3]}</td>
+                  <td class="action-cell">
+                    <button type="button" class="${index === 0 ? "" : "secondary"}">Auswählen</button>
+                  </td>
+                </tr>`,
+            )
+            .join("");
+        });
+      }
+
+      function showSection(id) {
+        document.querySelectorAll(".section").forEach((section) => {
+          section.classList.toggle("hidden", section.id !== id);
+        });
+        document.querySelectorAll("[data-section]").forEach((button) => {
+          button.classList.toggle("selected", button.dataset.section === id);
+        });
+      }
+
+      function showLayout(id) {
+        document.querySelectorAll(".layout-view").forEach((section) => {
+          section.classList.toggle("hidden", section.id !== `layout-${id}`);
+        });
+        document.querySelectorAll("[data-layout]").forEach((button) => {
+          button.classList.toggle("selected", button.dataset.layout === id);
+        });
+      }
+
+      function openDialog() {
+        document.getElementById("summary-dialog").classList.add("active");
+      }
+
+      function closeDialog() {
+        document.getElementById("summary-dialog").classList.remove("active");
+      }
+
+      renderRows();
+
+      document.querySelectorAll("[data-section]").forEach((button) => {
+        button.addEventListener("click", () => showSection(button.dataset.section));
+      });
+      document.querySelectorAll("[data-layout]").forEach((button) => {
+        button.addEventListener("click", () => showLayout(button.dataset.layout));
+      });
+      document.querySelectorAll("[data-open-global-menu]").forEach((button) => {
+        button.addEventListener("click", () => {
+          const menu = document.getElementById("global-overlay-menu");
+          menu.classList.toggle("active");
+          button.setAttribute("aria-expanded", menu.classList.contains("active") ? "true" : "false");
+        });
+      });
+      document.querySelectorAll("[data-open-summary]").forEach((button) => {
+        button.addEventListener("click", openDialog);
+      });
+      document.querySelectorAll("[data-close-dialog]").forEach((button) => {
+        button.addEventListener("click", closeDialog);
+      });
+      document.getElementById("dialog-provider").addEventListener("change", (event) => {
+        document.getElementById("cloud-confirm").classList.toggle("hidden", event.target.value !== "openai");
+      });
+      document.getElementById("summary-dialog").addEventListener("click", (event) => {
+        if (event.target.id === "summary-dialog") closeDialog();
+      });
+      document.addEventListener("keydown", (event) => {
+        if (event.key === "Escape") {
+          closeDialog();
+          document.getElementById("global-overlay-menu").classList.remove("active");
+          document.querySelectorAll("[data-open-global-menu]").forEach((button) => {
+            button.setAttribute("aria-expanded", "false");
+          });
+        }
+      });
+    </script>
+  </body>
+</html>

@@ -61,6 +61,7 @@ class ImportLog:
     dataset_deleted_at: datetime | None
     started_at: datetime
     completed_at: datetime
+    skipped_detail_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -138,6 +139,7 @@ def _log_from_row(row: dict[str, object]) -> ImportLog:
         dataset_deleted_at=row.get("dataset_deleted_at"),  # type: ignore[arg-type]
         started_at=row["started_at"],  # type: ignore[arg-type]
         completed_at=row["completed_at"],  # type: ignore[arg-type]
+        skipped_detail_count=int(str(row.get("skipped_detail_count", 0))),
     )
 
 
@@ -214,7 +216,7 @@ class ImportService:
                     RETURNING id, project_id, source_type, source_name, status,
                               failure_reason, total_records, valid_records,
                               skipped_records, dataset_version_id, started_at,
-                              completed_at
+                              completed_at, %s::integer AS skipped_detail_count
                     """,
                     (
                         log_id,
@@ -228,6 +230,7 @@ class ImportService:
                         parsed.skipped_records,
                         None,
                         actor_user_id,
+                        len(parsed.skipped_entries),
                     ),
                 ).fetchone()
 
@@ -313,9 +316,15 @@ class ImportService:
                                   skipped_records, dataset_version_id,
                                   %s::text AS dataset_display_name,
                                   NULL::timestamptz AS dataset_deleted_at,
-                                  started_at, completed_at
+                                  started_at, completed_at,
+                                  %s::integer AS skipped_detail_count
                         """,
-                        (dataset_version_id, log_id, clean_source_name),
+                        (
+                            dataset_version_id,
+                            log_id,
+                            clean_source_name,
+                            len(parsed.skipped_entries),
+                        ),
                     ).fetchone()
 
                 self._audit.record_event(
@@ -354,7 +363,12 @@ class ImportService:
                        l.skipped_records, l.dataset_version_id,
                        d.display_name AS dataset_display_name,
                        d.deleted_at AS dataset_deleted_at,
-                       l.started_at, l.completed_at
+                       l.started_at, l.completed_at,
+                       (
+                           SELECT COUNT(e.id)
+                           FROM import_log_entries e
+                           WHERE e.import_log_id = l.id
+                       )::integer AS skipped_detail_count
                 FROM import_logs l
                 LEFT JOIN dataset_versions d
                   ON d.id = l.dataset_version_id AND d.project_id = l.project_id

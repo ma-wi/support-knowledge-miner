@@ -25,6 +25,8 @@ def test_auth_migration_is_ordered_after_foundation() -> None:
         "0014_indexing_runs_without_profiles.sql",
         "0015_cluster_sets_llm_summaries.sql",
         "0016_explorer_exports.sql",
+        "0017_provider_instances_and_global_jobs.sql",
+        "0018_provider_available_models.sql",
     ]
 
 

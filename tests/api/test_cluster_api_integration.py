@@ -15,6 +15,7 @@ from backend.clusters import (
     ClusterSet,
     ClusterSetEvent,
     ClusterSetInput,
+    ClusterSetSummaryInput,
     ClusterSource,
     ClusterSourcePage,
 )
@@ -23,6 +24,7 @@ OWNER_ID = UUID("11111111-1111-1111-1111-111111111111")
 PROJECT_ID = UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
 RUN_ID = UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
 DATASET_ID = UUID("cccccccc-cccc-cccc-cccc-cccccccccccc")
+LLM_PROVIDER_ID = UUID("77777777-7777-7777-7777-777777777777")
 CLUSTER_ID = UUID("dddddddd-dddd-dddd-dddd-dddddddddddd")
 CLUSTER_SET_ID = UUID("99999999-9999-9999-9999-999999999999")
 PAIR_ID = UUID("eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee")
@@ -55,6 +57,9 @@ class FakeClusterService:
         self.started_by: UUID | None = None
         self.enqueued_id: UUID | None = None
         self.cancelled_by: UUID | None = None
+        self.summary_regeneration_by: UUID | None = None
+        self.summary_regeneration_payload: ClusterSetSummaryInput | None = None
+        self.summary_regeneration_enqueued_id: UUID | None = None
         self.deleted_by: UUID | None = None
         self.cluster = self._cluster()
         self.cluster_set = self._cluster_set()
@@ -148,6 +153,24 @@ class FakeClusterService:
     def enqueue_cluster_set(self, cluster_set_id: UUID) -> None:
         self.enqueued_id = cluster_set_id
 
+    def start_cluster_set_summary_regeneration(
+        self,
+        project_id: UUID,
+        cluster_set_id: UUID,
+        payload: ClusterSetSummaryInput,
+        *,
+        actor_user_id: UUID,
+    ) -> ClusterSet:
+        assert project_id == PROJECT_ID
+        assert cluster_set_id == CLUSTER_SET_ID
+        self.summary_regeneration_by = actor_user_id
+        self.summary_regeneration_payload = payload
+        self.cluster_set = self._cluster_set(status="queued", phase="queued_summary")
+        return self.cluster_set
+
+    def enqueue_cluster_set_summary_regeneration(self, cluster_set_id: UUID) -> None:
+        self.summary_regeneration_enqueued_id = cluster_set_id
+
     def list_cluster_sets(self, project_id: UUID) -> list[ClusterSet]:
         assert project_id == PROJECT_ID
         return [self.cluster_set]
@@ -232,6 +255,8 @@ class FakeClusterService:
             parameters={"min_cluster_size": 2},
             source_snapshot={"type": "all_dataset_pairs", "source_pair_count": 2},
             llm_provider="ollama",
+            llm_provider_configuration_id=LLM_PROVIDER_ID,
+            llm_provider_display_name="Ollama",
             llm_model="llama3.1",
             llm_parameters={"enabled": True},
             llm_sample_strategy={"strategy": "random", "requested": 2, "seed": 7},
@@ -461,7 +486,7 @@ def test_cluster_set_api_creates_lists_cancels_deletes_and_exposes_events() -> N
             "answer_weight": 0.6,
             "algorithm_settings": {"algorithm": "hdbscan", "min_cluster_size": 2},
             "outlier_threshold": 0.7,
-            "llm_provider": "ollama",
+            "llm_provider_id": str(LLM_PROVIDER_ID),
             "llm_model": "llama3.1",
             "llm_sample_count": 2,
         },
@@ -471,6 +496,7 @@ def test_cluster_set_api_creates_lists_cancels_deletes_and_exposes_events() -> N
     assert created.json()["vector_basis"] == "combined"
     assert fake_service.started_by == OWNER_ID
     assert fake_service.started_payload is not None
+    assert fake_service.started_payload.llm_provider_id == LLM_PROVIDER_ID
     assert fake_service.started_payload.answer_weight == 0.6
     assert fake_service.started_payload.outlier_threshold == 0.7
     assert fake_service.enqueued_id == CLUSTER_SET_ID
@@ -511,6 +537,35 @@ def test_cluster_set_api_creates_lists_cancels_deletes_and_exposes_events() -> N
     )
     assert deleted.status_code == 204
     assert fake_service.deleted_by == OWNER_ID
+
+
+def test_cluster_set_api_regenerates_summaries_without_reclustering() -> None:
+    fake_service = FakeClusterService()
+    client = TestClient(
+        create_app(
+            auth_service=FakeAuthService(),  # type: ignore[arg-type]
+            cluster_service=fake_service,  # type: ignore[arg-type]
+        )
+    )
+
+    response = client.post(
+        f"/api/projects/{PROJECT_ID}/cluster-sets/{CLUSTER_SET_ID}/summaries",
+        headers=auth_headers(),
+        json={
+            "llm_provider_id": str(LLM_PROVIDER_ID),
+            "llm_model": "llama3.1",
+            "llm_sample_count": 3,
+        },
+    )
+
+    assert response.status_code == 202
+    assert response.json()["phase"] == "queued_summary"
+    assert fake_service.summary_regeneration_by == OWNER_ID
+    assert fake_service.summary_regeneration_payload is not None
+    assert fake_service.summary_regeneration_payload.llm_provider_id == LLM_PROVIDER_ID
+    assert fake_service.summary_regeneration_payload.llm_sample_count == 3
+    assert fake_service.summary_regeneration_enqueued_id == CLUSTER_SET_ID
+    assert fake_service.enqueued_id is None
 
 
 def test_cluster_set_api_returns_catalogued_problem_details() -> None:
@@ -597,6 +652,48 @@ def test_cluster_set_api_maps_invalid_llm_sample_count_to_problem_details() -> N
     assert exponent_response.status_code == 422
     assert exponent_response.json()["code"] == "CLUSTER_SUMMARY_SAMPLE_COUNT_INVALID"
     assert fake_service.started_by is None
+
+
+def test_cluster_set_summary_api_maps_invalid_llm_sample_count_to_problem_details() -> (
+    None
+):
+    fake_service = FakeClusterService()
+    client = TestClient(
+        create_app(
+            auth_service=FakeAuthService(),  # type: ignore[arg-type]
+            cluster_service=fake_service,  # type: ignore[arg-type]
+        )
+    )
+
+    for request_body in (
+        {"llm_provider_id": str(LLM_PROVIDER_ID), "llm_sample_count": 1.5},
+        {"llm_provider_id": str(LLM_PROVIDER_ID), "llm_sample_count": "2"},
+    ):
+        response = client.post(
+            f"/api/projects/{PROJECT_ID}/cluster-sets/{CLUSTER_SET_ID}/summaries",
+            headers=auth_headers(),
+            json=request_body,
+        )
+        assert response.status_code == 422
+        payload = response.json()
+        assert payload["type"] == "urn:skm:error:CLUSTER_SUMMARY_SAMPLE_COUNT_INVALID"
+        assert payload["code"] == "CLUSTER_SUMMARY_SAMPLE_COUNT_INVALID"
+        assert payload["suggestedAction"] == "correct-input"
+        assert payload["fieldErrors"] == [
+            {
+                "field": "llm_sample_count",
+                "message": ("LLM summary sample count must be a positive integer"),
+            }
+        ]
+
+    exponent_response = client.post(
+        f"/api/projects/{PROJECT_ID}/cluster-sets/{CLUSTER_SET_ID}/summaries",
+        headers={**auth_headers(), "Content-Type": "application/json"},
+        content=f'{{"llm_provider_id":"{LLM_PROVIDER_ID}","llm_sample_count":1e2}}',
+    )
+    assert exponent_response.status_code == 422
+    assert exponent_response.json()["code"] == "CLUSTER_SUMMARY_SAMPLE_COUNT_INVALID"
+    assert fake_service.summary_regeneration_by is None
 
 
 def test_cluster_set_api_unexpected_error_uses_stable_suggested_action() -> None:

@@ -1,0 +1,728 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Mockup · Provider-Einstellungen</title>
+    <style>
+      :root {
+        --bg: #f6f9fb;
+        --bg-soft: #edf5f8;
+        --panel: #ffffff;
+        --panel-strong: #f8fbfc;
+        --line: rgba(15, 23, 42, 0.12);
+        --line-strong: rgba(8, 145, 178, 0.3);
+        --text: #172033;
+        --muted: #64748b;
+        --darktext: #ffffff;
+        --cyan: #0e7490;
+        --amber: #d97706;
+        --emerald: #16a34a;
+        --danger: #dc2626;
+        --shadow: 0 20px 50px rgba(15, 23, 42, 0.1);
+        --radius: 20px;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-width: 320px;
+        color: var(--text);
+        background:
+          radial-gradient(circle at 16% -12%, rgba(8, 145, 178, 0.12), transparent 32rem),
+          radial-gradient(circle at 100% 8%, rgba(217, 119, 6, 0.1), transparent 28rem),
+          linear-gradient(180deg, #ffffff 0%, var(--bg) 100%);
+        font-family:
+          Inter,
+          system-ui,
+          -apple-system,
+          Segoe UI,
+          Roboto,
+          Ubuntu,
+          sans-serif;
+      }
+
+      button,
+      input,
+      select {
+        font: inherit;
+      }
+
+      button {
+        border: 0;
+        border-radius: 14px;
+        padding: 0.72rem 1rem;
+        color: var(--darktext);
+        background: var(--cyan);
+        box-shadow: 0 10px 24px rgba(8, 145, 178, 0.16);
+        cursor: default;
+        font-weight: 700;
+      }
+
+      button.secondary,
+      .nav-item,
+      .nav-subitem {
+        color: var(--text);
+        background: #eef5f8;
+        box-shadow: none;
+      }
+
+      button.danger {
+        background: var(--danger);
+        box-shadow: 0 10px 24px rgba(220, 38, 38, 0.16);
+      }
+
+      button.icon-only {
+        display: inline-grid;
+        width: 2rem;
+        height: 2rem;
+        place-items: center;
+        border-radius: 999px;
+        padding: 0;
+        color: var(--text);
+        background: rgba(255, 255, 255, 0.72);
+        box-shadow: none;
+      }
+
+      button:disabled {
+        cursor: not-allowed;
+        opacity: 0.5;
+      }
+
+      input,
+      select {
+        width: 100%;
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        padding: 0.72rem 0.85rem;
+        color: var(--text);
+        background: #ffffff;
+        outline: none;
+      }
+
+      label {
+        display: grid;
+        gap: 0.4rem;
+        color: var(--muted);
+        font-size: 0.92rem;
+      }
+
+      h1,
+      h2,
+      h3,
+      p {
+        margin: 0;
+      }
+
+      h1 {
+        color: var(--text);
+        font-size: clamp(1.7rem, 3vw, 2.7rem);
+        line-height: 0.96;
+        letter-spacing: -0.06em;
+      }
+
+      h2 {
+        color: var(--text);
+        font-size: 1.2rem;
+      }
+
+      h3 {
+        color: var(--text);
+        font-size: 1rem;
+      }
+
+      .app-shell {
+        display: grid;
+        grid-template-rows: auto 1fr;
+        min-height: 100svh;
+      }
+
+      .topbar {
+        position: sticky;
+        top: 0;
+        z-index: 10;
+        display: flex;
+        gap: 1rem;
+        align-items: center;
+        justify-content: space-between;
+        border-bottom: 1px solid var(--line);
+        padding: 1rem clamp(1rem, 3vw, 2rem);
+        background: rgba(255, 255, 255, 0.86);
+        backdrop-filter: blur(10px);
+      }
+
+      .topbar-actions {
+        display: flex;
+        gap: 0.75rem;
+        align-items: center;
+        color: var(--muted);
+      }
+
+      .workspace {
+        display: grid;
+        grid-template-columns: 230px minmax(0, 1fr);
+        min-height: 0;
+      }
+
+      .sidebar {
+        position: sticky;
+        top: 85px;
+        align-self: start;
+        height: calc(100svh - 85px);
+        border-right: 1px solid var(--line);
+        padding: 1rem;
+        background: rgba(255, 255, 255, 0.72);
+        overflow: auto;
+      }
+
+      .sidebar nav,
+      .sidebar-submenu,
+      .stack,
+      .model-selection,
+      .provider-section {
+        display: grid;
+        gap: 0.85rem;
+      }
+
+      .sidebar nav,
+      .sidebar-submenu {
+        gap: 0.55rem;
+      }
+
+      .sidebar-submenu {
+        margin: -0.2rem 0 0.45rem;
+        padding-left: 0.75rem;
+      }
+
+      .nav-item,
+      .nav-subitem {
+        width: 100%;
+        text-align: left;
+      }
+
+      .nav-item.active,
+      .nav-subitem.active,
+      .page-tabs button.selected {
+        color: #ffffff;
+        background: var(--cyan);
+      }
+
+      .nav-subitem {
+        border-left: 2px solid var(--line);
+        border-radius: 0 12px 12px 0;
+        padding: 0.56rem 0.8rem;
+        color: var(--muted);
+        font-size: 0.88rem;
+      }
+
+      .content {
+        display: grid;
+        align-content: start;
+        gap: 1.25rem;
+        width: 100%;
+        min-width: 0;
+        padding: clamp(1rem, 2vw, 1.5rem);
+        overflow-x: clip;
+      }
+
+      .panel,
+      .feedback-overlay {
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: var(--panel);
+        box-shadow: var(--shadow);
+      }
+
+      .panel {
+        padding: clamp(1rem, 3vw, 1.5rem);
+      }
+
+      .feedback-overlay {
+        position: fixed;
+        top: 6.1rem;
+        right: clamp(1rem, 2vw, 1.5rem);
+        z-index: 25;
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 0.75rem;
+        align-items: start;
+        width: min(540px, calc(100vw - 2rem));
+        border-color: var(--line-strong);
+        padding: 0.85rem 1rem;
+        color: #0e7490;
+        background: #ecfeff;
+      }
+
+      .page-tabs {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.6rem;
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        padding: 0.55rem;
+        background: rgba(255, 255, 255, 0.74);
+      }
+
+      .page-tabs button {
+        color: var(--text);
+        background: transparent;
+        box-shadow: none;
+      }
+
+      .eyebrow {
+        margin-bottom: 0.75rem;
+        color: #0e7490;
+        font-size: 0.76rem;
+        font-weight: 800;
+        letter-spacing: 0.18em;
+        text-transform: uppercase;
+      }
+
+      .hint,
+      .intro {
+        color: var(--muted);
+        line-height: 1.6;
+      }
+
+      .screen-note {
+        border-left: 4px solid rgba(8, 145, 178, 0.3);
+        padding: 0.75rem 1rem;
+        color: var(--muted);
+        background: rgba(236, 254, 255, 0.55);
+      }
+
+      .add-provider-bar,
+      .form-actions,
+      .purpose-row,
+      .download-row,
+      .provider-card-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.7rem;
+        align-items: end;
+      }
+
+      .add-provider-bar {
+        justify-content: space-between;
+      }
+
+      .add-provider-bar label {
+        min-width: min(100%, 240px);
+      }
+
+      .provider-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(320px, 1fr));
+        gap: 1.25rem;
+        align-items: start;
+      }
+
+      .provider-card {
+        display: grid;
+        gap: 1rem;
+      }
+
+      .panel-title {
+        display: flex;
+        gap: 1rem;
+        align-items: flex-start;
+        justify-content: space-between;
+      }
+
+      .provider-title-edit {
+        display: grid;
+        grid-template-columns: minmax(160px, 1fr) auto;
+        gap: 0.7rem;
+        align-items: end;
+      }
+
+      .inline-check {
+        display: flex;
+        gap: 0.65rem;
+        align-items: center;
+        color: var(--text);
+      }
+
+      .inline-check input {
+        width: auto;
+      }
+
+      .field-caption {
+        color: var(--muted);
+        font-size: 0.76rem;
+        font-weight: 800;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .provider-section {
+        border-top: 1px solid var(--line);
+        padding-top: 1rem;
+      }
+
+      .model-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(180px, 1fr));
+        gap: 0.85rem;
+      }
+
+      .model-column {
+        display: grid;
+        gap: 0.55rem;
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        padding: 0.9rem;
+        background: var(--panel-strong);
+      }
+
+      .download-status {
+        display: grid;
+        gap: 0.55rem;
+        border: 1px solid rgba(217, 119, 6, 0.34);
+        border-radius: 16px;
+        padding: 0.85rem;
+        color: #9a3412;
+        background: #fff7ed;
+      }
+
+      .progress {
+        width: 100%;
+        height: 0.65rem;
+        overflow: hidden;
+        border-radius: 999px;
+        background: #fed7aa;
+      }
+
+      .progress > span {
+        display: block;
+        height: 100%;
+        border-radius: inherit;
+        background: var(--amber);
+      }
+
+      @media (max-width: 980px) {
+        .workspace,
+        .provider-grid,
+        .model-grid {
+          grid-template-columns: 1fr;
+        }
+
+        .provider-title-edit {
+          grid-template-columns: 1fr;
+        }
+
+        .sidebar {
+          position: static;
+          height: auto;
+          border-right: 0;
+          border-bottom: 1px solid var(--line);
+        }
+
+        .topbar {
+          position: static;
+          align-items: flex-start;
+          flex-direction: column;
+        }
+
+        .feedback-overlay {
+          top: auto;
+          bottom: 1rem;
+          left: 1rem;
+          right: 1rem;
+          width: auto;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Support Knowledge Miner</p>
+          <h1>Einstellungen</h1>
+        </div>
+        <div class="topbar-actions">
+          <span>Max Mustermann</span>
+          <button type="button" class="secondary">Abmelden</button>
+        </div>
+      </header>
+
+      <div class="feedback-overlay" role="status" aria-label="Benachrichtigung">
+        <p>
+          <strong>Hinweis:</strong> Ollama Modell <strong>llama3.1:8b</strong> wird heruntergeladen.
+          Automatisches Ausblenden bleibt aktiv.
+        </p>
+        <button type="button" class="icon-only" aria-label="Benachrichtigung schließen">×</button>
+      </div>
+
+      <div class="workspace">
+        <aside class="sidebar">
+          <nav aria-label="Hauptnavigation">
+            <button type="button" class="nav-item">Projekte</button>
+            <div class="sidebar-submenu" aria-label="Projektliste">
+              <button type="button" class="nav-subitem">Demo Support</button>
+            </div>
+            <button type="button" class="nav-item active">Einstellungen</button>
+          </nav>
+        </aside>
+
+        <section class="content">
+          <div class="page-tabs" role="tablist" aria-label="Einstellungen">
+            <button type="button" role="tab" aria-selected="true" class="selected">Provider</button>
+            <button type="button" role="tab" aria-selected="false">Nutzer</button>
+          </div>
+
+          <section class="panel stack" aria-labelledby="provider-tab-title">
+            <div>
+              <p class="eyebrow">Zentral</p>
+              <h2 id="provider-tab-title">Provider</h2>
+              <p class="intro">
+                Hier werden Verbindungen, API-Keys, Anzeigenamen, Modellfreigaben und Ollama-Downloads verwaltet.
+                Provider können für Embedding und/oder LLM bereitgestellt werden.
+              </p>
+            </div>
+
+            <div class="add-provider-bar">
+              <label>
+                Provider-Basistyp hinzufügen
+                <select>
+                  <option>OpenAI</option>
+                  <option>Ollama</option>
+                </select>
+              </label>
+              <button type="button">Provider hinzufügen</button>
+            </div>
+
+            <p class="screen-note">
+              Neuer Standardname: erster Provider „OpenAI“/„Ollama“, danach automatisch „OpenAI 2“, „Ollama 2“ usw.
+              Der Nutzer kann den Namen anschließend frei ändern.
+            </p>
+
+            <div class="provider-grid">
+              <article class="panel provider-card" aria-label="OpenAI Provider konfigurieren">
+                <div class="panel-title">
+                  <div>
+                    <p class="eyebrow">OpenAI</p>
+                    <h2>OpenAI</h2>
+                  </div>
+                  <button type="button" class="danger">Entfernen</button>
+                </div>
+
+                <div class="provider-title-edit">
+                  <label>
+                    Anzeigename
+                    <input value="OpenAI" aria-label="Anzeigename OpenAI" />
+                  </label>
+                  <button type="button" class="secondary">Umbenennen</button>
+                </div>
+
+                <div class="purpose-row" aria-label="Provider-Zweck">
+                  <label class="inline-check">
+                    <input type="checkbox" checked />
+                    für Embedding bereitstellen
+                  </label>
+                  <label class="inline-check">
+                    <input type="checkbox" checked />
+                    für LLM bereitstellen
+                  </label>
+                </div>
+
+                <div class="provider-section">
+                  <label>
+                    OpenAI API-Key
+                    <input type="password" placeholder="•••••••• gespeichert" />
+                  </label>
+                  <p class="hint">
+                    Gespeicherte Schlüssel bleiben write-only. Zum Ersetzen einfach einen neuen Wert eintragen.
+                  </p>
+                  <label class="inline-check">
+                    <input type="checkbox" />
+                    Gespeicherten API-Key entfernen
+                  </label>
+                  <div class="form-actions">
+                    <button type="button">Speichern</button>
+                    <button type="button" class="secondary">Verbindung testen</button>
+                    <button type="button" class="secondary">Modelle abrufen</button>
+                  </div>
+                </div>
+
+                <div class="provider-section model-selection">
+                  <span class="field-caption">Freigegebene Modelle</span>
+                  <div class="model-grid">
+                    <div class="model-column">
+                      <h3>Embedding</h3>
+                      <label class="inline-check">
+                        <input type="checkbox" checked />
+                        text-embedding-3-small
+                      </label>
+                      <label class="inline-check">
+                        <input type="checkbox" checked />
+                        text-embedding-3-large
+                      </label>
+                    </div>
+                    <div class="model-column">
+                      <h3>LLM</h3>
+                      <label class="inline-check">
+                        <input type="checkbox" checked />
+                        gpt-4.1-mini
+                      </label>
+                      <label class="inline-check">
+                        <input type="checkbox" />
+                        gpt-4.1
+                      </label>
+                    </div>
+                  </div>
+                </div>
+              </article>
+
+              <article class="panel provider-card" aria-label="Ollama Provider konfigurieren">
+                <div class="panel-title">
+                  <div>
+                    <p class="eyebrow">Ollama</p>
+                    <h2>Ollama</h2>
+                  </div>
+                  <button type="button" class="danger">Entfernen</button>
+                </div>
+
+                <div class="provider-title-edit">
+                  <label>
+                    Anzeigename
+                    <input value="Ollama" aria-label="Anzeigename Ollama" />
+                  </label>
+                  <button type="button" class="secondary">Umbenennen</button>
+                </div>
+
+                <div class="purpose-row">
+                  <label class="inline-check">
+                    <input type="checkbox" checked />
+                    für Embedding bereitstellen
+                  </label>
+                  <label class="inline-check">
+                    <input type="checkbox" checked />
+                    für LLM bereitstellen
+                  </label>
+                </div>
+
+                <div class="provider-section">
+                  <label>
+                    Endpoint URL
+                    <input value="http://localhost:11434" />
+                  </label>
+                  <div class="form-actions">
+                    <button type="button">Speichern</button>
+                    <button type="button" class="secondary">Verbindung testen</button>
+                    <button type="button" class="secondary">Modelle abrufen</button>
+                  </div>
+                </div>
+
+                <div class="provider-section model-selection">
+                  <span class="field-caption">Freigegebene Modelle</span>
+                  <div class="model-grid">
+                    <div class="model-column">
+                      <h3>Embedding</h3>
+                      <label class="inline-check">
+                        <input type="checkbox" checked />
+                        nomic-embed-text
+                      </label>
+                      <label class="inline-check">
+                        <input type="checkbox" checked />
+                        mxbai-embed-large
+                      </label>
+                    </div>
+                    <div class="model-column">
+                      <h3>LLM</h3>
+                      <label class="inline-check">
+                        <input type="checkbox" checked />
+                        llama3.1:8b
+                      </label>
+                      <label class="inline-check">
+                        <input type="checkbox" />
+                        qwen2.5:7b
+                      </label>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="provider-section">
+                  <span class="field-caption">Neues Ollama Modell</span>
+                  <div class="download-row">
+                    <label>
+                      Modellname
+                      <input value="llama3.1:8b" />
+                    </label>
+                    <button type="button" disabled>Herunterladen und hinzufügen</button>
+                  </div>
+                  <div class="download-status" role="status">
+                    <strong>Download läuft</strong>
+                    <div class="progress" aria-label="Download-Fortschritt">
+                      <span style="width: 62%"></span>
+                    </div>
+                    <p>Ein zweiter Download ist bis zum Abschluss oder Fehler gesperrt.</p>
+                  </div>
+                </div>
+              </article>
+
+              <article class="panel provider-card" aria-label="Zweiter Ollama Provider konfigurieren">
+                <div class="panel-title">
+                  <div>
+                    <p class="eyebrow">Ollama</p>
+                    <h2>Ollama 2</h2>
+                  </div>
+                  <button type="button" class="danger">Entfernen</button>
+                </div>
+
+                <div class="provider-title-edit">
+                  <label>
+                    Anzeigename
+                    <input value="Ollama 2" aria-label="Anzeigename Ollama 2" />
+                  </label>
+                  <button type="button" class="secondary">Umbenennen</button>
+                </div>
+
+                <div class="purpose-row">
+                  <label class="inline-check">
+                    <input type="checkbox" checked />
+                    für Embedding bereitstellen
+                  </label>
+                  <label class="inline-check">
+                    <input type="checkbox" checked />
+                    für LLM bereitstellen
+                  </label>
+                </div>
+
+                <div class="provider-section">
+                  <label>
+                    Endpoint URL
+                    <input value="http://ollama:11434" />
+                  </label>
+                  <div class="form-actions">
+                    <button type="button">Speichern</button>
+                    <button type="button" class="secondary">Verbindung testen</button>
+                    <button type="button" class="secondary">Modelle abrufen</button>
+                  </div>
+                </div>
+
+                <div class="provider-section model-selection">
+                  <span class="field-caption">Freigegebene Modelle</span>
+                  <div class="model-grid">
+                    <div class="model-column">
+                      <h3>Embedding</h3>
+                      <p class="hint">Noch keine Modelle freigegeben.</p>
+                    </div>
+                    <div class="model-column">
+                      <h3>LLM</h3>
+                      <p class="hint">Noch keine Modelle freigegeben.</p>
+                    </div>
+                  </div>
+                </div>
+              </article>
+            </div>
+          </section>
+        </section>
+      </div>
+    </main>
+  </body>
+</html>

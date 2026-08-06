@@ -3,7 +3,9 @@
 from backend.providers.service import (
     ProviderCheckResult,
     ProviderConfiguration,
+    ProviderDeleteBlocked,
     ProviderError,
+    ProviderPullInProgress,
     ProviderService,
     ProviderSettingsInput,
 )
@@ -11,7 +13,9 @@ from backend.providers.service import (
 __all__ = [
     "ProviderCheckResult",
     "ProviderConfiguration",
+    "ProviderDeleteBlocked",
     "ProviderError",
+    "ProviderPullInProgress",
     "ProviderService",
     "ProviderSettingsInput",
 ]

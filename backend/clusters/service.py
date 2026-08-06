@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+import ast
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
+import importlib
 import json
 import logging
 import math
+import re
 from queue import Full, Queue
 from random import Random
 from threading import Thread
+from time import perf_counter
 from typing import Any, cast
 from uuid import UUID, uuid4
 
@@ -20,6 +24,7 @@ from psycopg.types.json import Jsonb
 from scipy.sparse.csgraph import connected_components  # type: ignore[import-untyped]
 from sklearn import config_context  # type: ignore[import-untyped]
 from sklearn.cluster import AgglomerativeClustering, HDBSCAN  # type: ignore[import-untyped]
+from sklearn.decomposition import PCA  # type: ignore[import-untyped]
 from sklearn.neighbors import kneighbors_graph  # type: ignore[import-untyped]
 
 from backend.audit import AuditService
@@ -54,6 +59,7 @@ AGGLOMERATIVE_BYTES_PER_VECTOR_VALUE = (
 )
 HDBSCAN_NEIGHBOR_BYTES_PER_CELL = 16
 HDBSCAN_FIXED_BYTES_PER_RECORD = 256
+HDBSCAN_N_JOBS = -1
 AGGLOMERATIVE_NEIGHBOR_COUNT = 30
 AGGLOMERATIVE_NEIGHBOR_WORKING_BYTES = 64 * 1024 * 1024
 AGGLOMERATIVE_GRAPH_BYTES_PER_CELL = 256
@@ -61,15 +67,76 @@ AGGLOMERATIVE_DISTANCE_BYTES_PER_CELL_VALUE = 3 * NATIVE_MATRIX_BYTES_PER_VALUE
 AGGLOMERATIVE_FIXED_BYTES_PER_RECORD = 512
 SUPPORTED_ALGORITHMS = {"hdbscan", "agglomerative"}
 AGGLOMERATIVE_LINKAGES = {"ward", "complete", "average", "single"}
+HDBSCAN_REDUCTION_METHODS = {"none", "pca", "umap"}
+HDBSCAN_EXECUTION_BACKENDS = {"auto", "cpu", "cuml"}
+HDBSCAN_DEFAULT_REDUCTION_DIMENSIONS = 10
+HDBSCAN_MAX_REDUCTION_DIMENSIONS = 512
+UMAP_DEFAULT_N_NEIGHBORS = 15
+UMAP_MAX_N_NEIGHBORS = 512
 CLUSTER_SET_START_PROGRESS = 5
 CLUSTER_SET_LOAD_PROGRESS = 25
+CLUSTER_SET_REDUCTION_PROGRESS = 40
 CLUSTER_SET_CLUSTERING_PROGRESS = 60
+CLUSTER_SET_PERSIST_PROGRESS = 75
 CLUSTER_SET_SUMMARY_PROGRESS = 85
-DEFAULT_CLUSTER_SET_ALGORITHM = {"algorithm": "hdbscan", "min_cluster_size": 2}
+DEFAULT_CLUSTER_SET_ALGORITHM = {
+    "algorithm": "hdbscan",
+    "min_cluster_size": 2,
+    "reduction_method": "none",
+    "execution_backend": "auto",
+}
 MAX_CLUSTER_SET_NAME_LENGTH = 160
 MAX_SUMMARY_PROMPT_CHARACTERS = 50_000
+MAX_SUMMARY_EXAMPLE_FIELD_CHARACTERS = 1_200
 MAX_SUMMARY_FIELD_CHARACTERS = 500
 MAX_LLM_SUMMARY_CLUSTERS = 500
+SUMMARY_RESPONSE_WRAPPER_KEYS = {
+    "cluster",
+    "cluster_summary",
+    "clusters",
+    "data",
+    "output",
+    "result",
+    "summary",
+    "zusammenfassung",
+}
+SUMMARY_FIELD_ALIASES = {
+    "title": ("title", "titel", "headline", "überschrift", "ueberschrift"),
+    "category": (
+        "category",
+        "kategorie",
+        "theme",
+        "thema",
+        "bereich",
+        "themenbereich",
+    ),
+    "question": (
+        "question",
+        "frage",
+        "summary_question",
+        "zusammengefasste_frage",
+        "customer_question",
+        "kundenfrage",
+        "kundenanfrage",
+    ),
+    "answer": (
+        "answer",
+        "antwort",
+        "summary_answer",
+        "zusammengefasste_antwort",
+        "support_answer",
+        "antwortvorschlag",
+    ),
+    "rationale": (
+        "rationale",
+        "begründung",
+        "begruendung",
+        "reasoning",
+        "grund",
+    ),
+}
+SUMMARY_REQUIRED_FIELDS = ("title", "question", "answer")
+SUMMARY_PLACEHOLDER_VALUES = {"...", "null", "string", "string|null"}
 DEFAULT_CLUSTER_SOURCE_PAGE_SIZE = 50
 MAX_CLUSTER_SOURCE_PAGE_SIZE = 50
 MAX_CLUSTER_SOURCE_OFFSET = 100_000
@@ -192,6 +259,17 @@ class ClusterSetInput:
     source_cluster_ids: list[UUID] = field(default_factory=list)
     source_pair_ids: list[UUID] = field(default_factory=list)
     outlier_threshold: float | None = None
+    llm_provider_id: UUID | None = None
+    llm_provider: str | None = None
+    llm_model: str | None = None
+    llm_sample_count: int | None = 10
+    llm_sample_all: bool = False
+    llm_cloud_use_confirmed: bool = False
+
+
+@dataclass(frozen=True)
+class ClusterSetSummaryInput:
+    llm_provider_id: UUID | None = None
     llm_provider: str | None = None
     llm_model: str | None = None
     llm_sample_count: int | None = 10
@@ -220,6 +298,8 @@ class ClusterSet:
     parameters: dict[str, Any]
     source_snapshot: dict[str, Any]
     llm_provider: str | None
+    llm_provider_configuration_id: UUID | None
+    llm_provider_display_name: str | None
     llm_model: str | None
     llm_parameters: dict[str, Any]
     llm_sample_strategy: dict[str, Any]
@@ -320,7 +400,12 @@ def _integer(
 
 
 def _number(
-    settings: dict[str, Any], field: str, *, default: float, minimum: float
+    settings: dict[str, Any],
+    field: str,
+    *,
+    default: float,
+    minimum: float,
+    maximum: float | None = None,
 ) -> float:
     value = settings.get(field, default)
     if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -328,7 +413,25 @@ def _number(
     result = float(value)
     if not math.isfinite(result) or result < minimum:
         raise ClusterError(f"{field} must be a number >= {minimum}")
+    if maximum is not None and result > maximum:
+        raise ClusterError(f"{field} must be a number <= {maximum}")
     return result
+
+
+def _choice(
+    settings: dict[str, Any],
+    field: str,
+    *,
+    default: str,
+    allowed: set[str],
+) -> str:
+    value = settings.get(field, default)
+    if not isinstance(value, str):
+        raise ClusterError(f"{field} must be one of {', '.join(sorted(allowed))}")
+    cleaned = value.strip().lower()
+    if cleaned not in allowed:
+        raise ClusterError(f"{field} must be one of {', '.join(sorted(allowed))}")
+    return cleaned
 
 
 def validate_algorithm_settings(settings: dict[str, Any]) -> AlgorithmConfiguration:
@@ -346,11 +449,39 @@ def validate_algorithm_settings(settings: dict[str, Any]) -> AlgorithmConfigurat
             "min_samples",
             "cluster_selection_epsilon",
             "outlier_threshold",
+            "reduction_method",
+            "reduction_dimensions",
+            "umap_n_neighbors",
+            "umap_min_dist",
+            "execution_backend",
         }
         unknown = set(settings) - allowed
         if unknown:
             raise ClusterError(f"unknown hdbscan setting: {sorted(unknown)[0]}")
         outlier_threshold = _outlier_threshold(settings.get("outlier_threshold"))
+        reduction_method = _choice(
+            settings,
+            "reduction_method",
+            default="none",
+            allowed=HDBSCAN_REDUCTION_METHODS,
+        )
+        reduction_dimensions = (
+            _integer(
+                settings,
+                "reduction_dimensions",
+                default=HDBSCAN_DEFAULT_REDUCTION_DIMENSIONS,
+                minimum=2,
+                maximum=HDBSCAN_MAX_REDUCTION_DIMENSIONS,
+            )
+            if reduction_method != "none"
+            else None
+        )
+        execution_backend = _choice(
+            settings,
+            "execution_backend",
+            default="auto",
+            allowed=HDBSCAN_EXECUTION_BACKENDS,
+        )
         return AlgorithmConfiguration(
             name=algorithm,
             parameters={
@@ -373,6 +504,31 @@ def validate_algorithm_settings(settings: dict[str, Any]) -> AlgorithmConfigurat
                     minimum=0.0,
                 ),
                 "outlier_threshold": outlier_threshold,
+                "reduction_method": reduction_method,
+                "reduction_dimensions": reduction_dimensions,
+                "umap_n_neighbors": (
+                    _integer(
+                        settings,
+                        "umap_n_neighbors",
+                        default=UMAP_DEFAULT_N_NEIGHBORS,
+                        minimum=2,
+                        maximum=UMAP_MAX_N_NEIGHBORS,
+                    )
+                    if reduction_method == "umap"
+                    else None
+                ),
+                "umap_min_dist": (
+                    _number(
+                        settings,
+                        "umap_min_dist",
+                        default=0.0,
+                        minimum=0.0,
+                        maximum=0.99,
+                    )
+                    if reduction_method == "umap"
+                    else None
+                ),
+                "execution_backend": execution_backend,
             },
         )
 
@@ -441,12 +597,21 @@ def validate_cluster_input_budget(
         )
     if config.name == "hdbscan" and record_count > HDBSCAN_MAX_RECORDS:
         raise ClusterError("hdbscan supports at most 100000 records")
-    bytes_per_value = (
-        AGGLOMERATIVE_BYTES_PER_VECTOR_VALUE
-        if config.name == "agglomerative"
-        else HDBSCAN_BYTES_PER_VECTOR_VALUE
-    )
-    estimated_bytes = record_count * dimensions * bytes_per_value
+    if config.name == "hdbscan":
+        reduction_dimensions = config.parameters.get("reduction_dimensions")
+        estimator_dimensions = (
+            min(cast(int, reduction_dimensions), dimensions, max(record_count - 1, 1))
+            if isinstance(reduction_dimensions, int)
+            else dimensions
+        )
+        estimated_bytes = record_count * dimensions * NATIVE_MATRIX_BYTES_PER_VALUE
+        estimated_bytes += (
+            record_count * estimator_dimensions * ESTIMATOR_MATRIX_BYTES_PER_VALUE
+        )
+    else:
+        estimated_bytes = (
+            record_count * dimensions * AGGLOMERATIVE_BYTES_PER_VECTOR_VALUE
+        )
     estimated_bytes += (
         min(record_count, NATIVE_VECTOR_FETCH_BATCH_SIZE)
         * dimensions
@@ -600,6 +765,16 @@ def _cluster_set_from_row(row: dict[str, object]) -> ClusterSet:
             dict(source_snapshot) if isinstance(source_snapshot, dict) else {}
         ),
         llm_provider=str(llm_provider) if llm_provider is not None else None,
+        llm_provider_configuration_id=(
+            UUID(str(row["llm_provider_configuration_id"]))
+            if row.get("llm_provider_configuration_id") is not None
+            else None
+        ),
+        llm_provider_display_name=(
+            str(row["llm_provider_display_name"])
+            if row.get("llm_provider_display_name") is not None
+            else None
+        ),
         llm_model=str(llm_model) if llm_model is not None else None,
         llm_parameters=(
             dict(llm_parameters) if isinstance(llm_parameters, dict) else {}
@@ -802,7 +977,8 @@ def _safe_cluster_failure(exc: Exception) -> tuple[str, str, bool]:
     if isinstance(exc, ClusterError):
         return exc.code, str(exc)[:500], exc.retryable
     if isinstance(exc, ProviderError):
-        return "LLM_PROVIDER_UNAVAILABLE", "LLM provider is unavailable", True
+        message = str(exc).strip() or "LLM provider is unavailable"
+        return "LLM_PROVIDER_UNAVAILABLE", message[:500], True
     return "UNEXPECTED_ERROR", exc.__class__.__name__, False
 
 
@@ -853,10 +1029,17 @@ class ClusterService:
         if payload.outlier_threshold is not None:
             algorithm_settings["outlier_threshold"] = payload.outlier_threshold
         config = validate_algorithm_settings(algorithm_settings)
-        llm_provider = _llm_provider(payload.llm_provider)
         llm_model = _llm_model(payload.llm_model)
-        llm_enabled = llm_provider is not None or llm_model is not None
-        if llm_enabled and (llm_provider is None or llm_model is None):
+        legacy_llm_provider = _llm_provider(payload.llm_provider)
+        llm_enabled = (
+            payload.llm_provider_id is not None
+            or legacy_llm_provider is not None
+            or llm_model is not None
+        )
+        if llm_enabled and (
+            llm_model is None
+            or (payload.llm_provider_id is None and legacy_llm_provider is None)
+        ):
             raise ClusterError(
                 "LLM provider and model must be set together",
                 code="LLM_PROVIDER_UNAVAILABLE",
@@ -866,28 +1049,40 @@ class ClusterService:
                     "llm_model": "LLM provider and model must be set together",
                 },
             )
-        if llm_provider == "openai" and payload.llm_cloud_use_confirmed is not True:
-            raise ClusterError(
-                "OpenAI LLM summaries require explicit cloud confirmation",
-                code="LLM_CLOUD_CONFIRMATION_REQUIRED",
-                status_code=422,
-                field_errors={
-                    "llm_cloud_use_confirmed": "OpenAI cloud confirmation is required"
-                },
-            )
-        if llm_provider is not None and llm_model is not None:
+        llm_provider: str | None = None
+        llm_provider_configuration_id: UUID | None = None
+        llm_provider_display_name: str | None = None
+        if llm_enabled and llm_model is not None:
             try:
-                self._provider_service.ensure_text_generation_model(
-                    llm_provider, llm_model
+                provider_config = self._provider_service.ensure_text_generation_model(
+                    payload.llm_provider_id
+                    if payload.llm_provider_id is not None
+                    else str(legacy_llm_provider),
+                    llm_model,
                 )
             except ProviderError as exc:
+                provider_message = str(exc).strip() or "LLM provider is unavailable"
                 raise ClusterError(
-                    "LLM provider is unavailable",
+                    provider_message,
                     code="LLM_PROVIDER_UNAVAILABLE",
                     status_code=503,
                     retryable=True,
-                    field_errors={"llm_provider": "LLM provider is unavailable"},
+                    field_errors={"llm_provider": provider_message[:500]},
                 ) from exc
+            llm_provider = provider_config.provider
+            llm_provider_configuration_id = provider_config.id
+            llm_provider_display_name = provider_config.display_name
+            if llm_provider == "openai" and payload.llm_cloud_use_confirmed is not True:
+                raise ClusterError(
+                    "OpenAI LLM summaries require explicit cloud confirmation",
+                    code="LLM_CLOUD_CONFIRMATION_REQUIRED",
+                    status_code=422,
+                    field_errors={
+                        "llm_cloud_use_confirmed": (
+                            "OpenAI cloud confirmation is required"
+                        )
+                    },
+                )
         llm_sample_strategy = _summary_sample_strategy(payload) if llm_enabled else {}
         source_cluster_ids = list(dict.fromkeys(payload.source_cluster_ids))
         source_pair_ids = list(dict.fromkeys(payload.source_pair_ids))
@@ -1027,12 +1222,14 @@ class ClusterService:
                         parent_cluster_set_id, display_name, status, progress,
                         phase, derivation_type, vector_basis, message_weight,
                         answer_weight, algorithm, parameters, source_snapshot,
-                        llm_provider, llm_model, llm_parameters,
+                        llm_provider, llm_provider_configuration_id,
+                        llm_provider_display_name, llm_model, llm_parameters,
                         llm_sample_strategy, created_by_user_id
                     )
                     VALUES (
                         %s, %s, %s, %s, %s, %s, 'queued', 0, 'queued',
-                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                        %s
                     )
                     RETURNING id, project_id, indexing_run_id, dataset_version_id,
                               %s::text AS dataset_display_name,
@@ -1041,7 +1238,9 @@ class ClusterService:
                               progress, phase, derivation_type, vector_basis,
                               message_weight, answer_weight, algorithm,
                               parameters, source_snapshot, llm_provider,
-                              llm_model, llm_parameters, llm_sample_strategy,
+                              llm_provider_configuration_id,
+                              llm_provider_display_name, llm_model, llm_parameters,
+                              llm_sample_strategy,
                               error_code, error_message, diagnostics,
                               started_at, completed_at, cancel_requested_at,
                               deleted_at, created_at, updated_at,
@@ -1062,6 +1261,8 @@ class ClusterService:
                         Jsonb(config.parameters),
                         Jsonb(source_snapshot),
                         llm_provider,
+                        llm_provider_configuration_id,
+                        llm_provider_display_name,
                         llm_model,
                         Jsonb({"enabled": llm_enabled}),
                         Jsonb(llm_sample_strategy),
@@ -1098,6 +1299,11 @@ class ClusterService:
                         "project_id": str(project_id),
                         "indexing_run_id": str(payload.indexing_run_id),
                         "llm_provider": llm_provider,
+                        "llm_provider_configuration_id": (
+                            str(llm_provider_configuration_id)
+                            if llm_provider_configuration_id is not None
+                            else None
+                        ),
                     },
                 )
         return _cluster_set_from_row(dict(row))
@@ -1128,6 +1334,212 @@ class ClusterService:
                     )
             raise
 
+    def start_cluster_set_summary_regeneration(
+        self,
+        project_id: UUID,
+        cluster_set_id: UUID,
+        payload: ClusterSetSummaryInput,
+        *,
+        actor_user_id: UUID,
+    ) -> ClusterSet:
+        llm_model = _llm_model(payload.llm_model)
+        legacy_llm_provider = _llm_provider(payload.llm_provider)
+        if llm_model is None or (
+            payload.llm_provider_id is None and legacy_llm_provider is None
+        ):
+            raise ClusterError(
+                "LLM provider and model must be set together",
+                code="LLM_PROVIDER_UNAVAILABLE",
+                status_code=422,
+                field_errors={
+                    "llm_provider": "LLM provider and model must be set together",
+                    "llm_model": "LLM provider and model must be set together",
+                },
+            )
+        try:
+            provider_config = self._provider_service.ensure_text_generation_model(
+                payload.llm_provider_id
+                if payload.llm_provider_id is not None
+                else str(legacy_llm_provider),
+                llm_model,
+            )
+        except ProviderError as exc:
+            provider_message = str(exc).strip() or "LLM provider is unavailable"
+            raise ClusterError(
+                provider_message,
+                code="LLM_PROVIDER_UNAVAILABLE",
+                status_code=503,
+                retryable=True,
+                field_errors={"llm_provider": provider_message[:500]},
+            ) from exc
+        if (
+            provider_config.provider == "openai"
+            and payload.llm_cloud_use_confirmed is not True
+        ):
+            raise ClusterError(
+                "OpenAI LLM summaries require explicit cloud confirmation",
+                code="LLM_CLOUD_CONFIRMATION_REQUIRED",
+                status_code=422,
+                field_errors={
+                    "llm_cloud_use_confirmed": "OpenAI cloud confirmation is required"
+                },
+            )
+        sample_strategy = _summary_sample_strategy(
+            ClusterSetInput(
+                indexing_run_id=UUID(int=0),
+                llm_provider_id=payload.llm_provider_id,
+                llm_provider=payload.llm_provider,
+                llm_model=payload.llm_model,
+                llm_sample_count=payload.llm_sample_count,
+                llm_sample_all=payload.llm_sample_all,
+            )
+        )
+        with open_database_connection(self._settings) as connection:
+            with connection.transaction():
+                current = connection.execute(
+                    """
+                    SELECT cs.id, cs.status, COUNT(c.id) AS cluster_count
+                    FROM cluster_sets cs
+                    LEFT JOIN clusters c
+                      ON c.cluster_set_id = cs.id AND c.project_id = cs.project_id
+                    WHERE cs.id = %s
+                      AND cs.project_id = %s
+                      AND cs.deleted_at IS NULL
+                    GROUP BY cs.id
+                    """,
+                    (cluster_set_id, project_id),
+                ).fetchone()
+                if current is None:
+                    raise ClusterError(
+                        "Cluster-Set not found",
+                        code="CLUSTER_SET_NOT_FOUND",
+                        status_code=404,
+                    )
+                if current["status"] != "completed":
+                    raise ClusterError(
+                        "Cluster-Set is not completed",
+                        code="CLUSTER_SET_NOT_COMPLETE",
+                        status_code=409,
+                        retryable=True,
+                        suggested_action="wait",
+                    )
+                if int(str(current["cluster_count"])) < 1:
+                    raise ClusterError(
+                        "Cluster-Set contains no clusters",
+                        code="CLUSTER_SET_NOT_COMPLETE",
+                        status_code=409,
+                        retryable=True,
+                        suggested_action="wait",
+                    )
+                updated = connection.execute(
+                    """
+                    UPDATE cluster_sets
+                    SET status = 'queued',
+                        progress = %s,
+                        phase = 'queued_summary',
+                        llm_provider = %s,
+                        llm_provider_configuration_id = %s,
+                        llm_provider_display_name = %s,
+                        llm_model = %s,
+                        llm_parameters = %s,
+                        llm_sample_strategy = %s,
+                        error_code = NULL,
+                        error_message = NULL,
+                        cancel_requested_at = NULL,
+                        updated_at = now(),
+                        diagnostics = diagnostics || %s
+                    WHERE id = %s
+                      AND project_id = %s
+                      AND status = 'completed'
+                      AND deleted_at IS NULL
+                    RETURNING id
+                    """,
+                    (
+                        CLUSTER_SET_SUMMARY_PROGRESS,
+                        provider_config.provider,
+                        provider_config.id,
+                        provider_config.display_name,
+                        llm_model,
+                        Jsonb({"enabled": True, "regeneration": True}),
+                        Jsonb(sample_strategy),
+                        Jsonb({"summary_regeneration_queued": True}),
+                        cluster_set_id,
+                        project_id,
+                    ),
+                ).fetchone()
+                if updated is None:
+                    raise ClusterError(
+                        "Cluster-Set is not completed",
+                        code="CLUSTER_SET_NOT_COMPLETE",
+                        status_code=409,
+                        retryable=True,
+                        suggested_action="wait",
+                    )
+                self._record_cluster_set_event(
+                    connection,
+                    project_id=project_id,
+                    cluster_set_id=cluster_set_id,
+                    actor_user_id=actor_user_id,
+                    event_type="summary_regeneration_requested",
+                    metadata={
+                        "llm_provider": provider_config.provider,
+                        "llm_provider_configuration_id": str(provider_config.id),
+                        "llm_model": llm_model,
+                        "sample_strategy": sample_strategy,
+                    },
+                )
+                self._audit.record_event(
+                    connection,
+                    actor_user_id=actor_user_id,
+                    action="cluster_set.summary_regenerate",
+                    target_type="cluster_set",
+                    target_id=cluster_set_id,
+                    metadata={
+                        "project_id": str(project_id),
+                        "llm_provider": provider_config.provider,
+                        "llm_provider_configuration_id": str(provider_config.id),
+                    },
+                )
+                row = self._fetch_cluster_set_row(
+                    connection, project_id, cluster_set_id
+                )
+        if row is None:
+            raise RuntimeError("Cluster-Set disappeared after summary regeneration")
+        return _cluster_set_from_row(dict(row))
+
+    def enqueue_cluster_set_summary_regeneration(self, cluster_set_id: UUID) -> None:
+        try:
+            self._job_runner.submit(
+                lambda: self.execute_queued_cluster_set_summary_regeneration(
+                    cluster_set_id
+                )
+            )
+        except ClusterSetQueueFull:
+            with open_database_connection(self._settings) as connection:
+                with connection.transaction():
+                    connection.execute(
+                        """
+                        UPDATE cluster_sets
+                        SET status = 'completed',
+                            progress = 100,
+                            phase = 'completed',
+                            error_code = 'CLUSTER_SUMMARY_FAILED',
+                            error_message = 'ClusterSetQueueFull',
+                            completed_at = COALESCE(completed_at, now()),
+                            updated_at = now(),
+                            diagnostics = diagnostics || %s
+                        WHERE id = %s
+                          AND status = 'queued'
+                          AND phase = 'queued_summary'
+                          AND deleted_at IS NULL
+                        """,
+                        (
+                            Jsonb({"failure_type": "ClusterSetQueueFull"}),
+                            cluster_set_id,
+                        ),
+                    )
+            raise
+
     def list_cluster_sets(self, project_id: UUID) -> list[ClusterSet]:
         with open_database_connection(self._settings) as connection:
             rows = connection.execute(
@@ -1140,8 +1552,10 @@ class ClusterService:
                        cs.progress, cs.phase, cs.derivation_type,
                        cs.vector_basis, cs.message_weight, cs.answer_weight,
                        cs.algorithm, cs.parameters, cs.source_snapshot,
-                       cs.llm_provider, cs.llm_model, cs.llm_parameters,
-                       cs.llm_sample_strategy, cs.error_code, cs.error_message,
+                       cs.llm_provider, cs.llm_provider_configuration_id,
+                       cs.llm_provider_display_name, cs.llm_model,
+                       cs.llm_parameters, cs.llm_sample_strategy,
+                       cs.error_code, cs.error_message,
                        cs.diagnostics, cs.started_at, cs.completed_at,
                        cs.cancel_requested_at, cs.deleted_at, cs.created_at,
                        cs.updated_at, COUNT(c.id) AS cluster_count
@@ -1164,11 +1578,24 @@ class ClusterService:
                       )
                   )
                 GROUP BY cs.id, d.display_name, r.deleted_at
-                ORDER BY cs.created_at DESC
+                ORDER BY cs.updated_at DESC, cs.created_at DESC
                 """,
                 (project_id,),
             ).fetchall()
         return [_cluster_set_from_row(dict(row)) for row in rows]
+
+    def has_active_cluster_set(self) -> bool:
+        with open_database_connection(self._settings) as connection:
+            row = connection.execute(
+                """
+                SELECT id
+                FROM cluster_sets
+                WHERE deleted_at IS NULL
+                  AND status IN ('queued', 'running', 'cancelling')
+                LIMIT 1
+                """
+            ).fetchone()
+        return row is not None
 
     def get_cluster_set(
         self, project_id: UUID, cluster_set_id: UUID
@@ -1223,7 +1650,7 @@ class ClusterService:
             with connection.transaction():
                 current = connection.execute(
                     """
-                    SELECT status
+                    SELECT status, phase
                     FROM cluster_sets
                     WHERE id = %s AND project_id = %s AND deleted_at IS NULL
                     """,
@@ -1236,6 +1663,7 @@ class ClusterService:
                         status_code=404,
                     )
                 status_value = str(current["status"])
+                phase_value = str(current["phase"])
                 if status_value in TERMINAL_CLUSTER_SET_STATUSES:
                     raise ClusterError(
                         "Cluster-Set can no longer be cancelled",
@@ -1243,24 +1671,49 @@ class ClusterService:
                         status_code=409,
                         suggested_action="reload",
                     )
-                next_status = "cancelled" if status_value == "queued" else "cancelling"
+                is_queued_summary = (
+                    status_value == "queued" and phase_value == "queued_summary"
+                )
+                next_status = (
+                    "completed"
+                    if is_queued_summary
+                    else ("cancelled" if status_value == "queued" else "cancelling")
+                )
+                next_phase = (
+                    "completed"
+                    if is_queued_summary
+                    else ("cancelled" if next_status == "cancelled" else "cancelling")
+                )
                 connection.execute(
                     """
                     UPDATE cluster_sets
                     SET status = %s,
                         phase = %s,
+                        progress = CASE
+                            WHEN %s THEN 100
+                            ELSE progress
+                        END,
                         cancel_requested_at = COALESCE(cancel_requested_at, now()),
                         completed_at = CASE
+                            WHEN %s THEN COALESCE(completed_at, now())
                             WHEN %s = 'cancelled' THEN COALESCE(completed_at, now())
                             ELSE completed_at
                         END,
-                        updated_at = now()
+                        updated_at = now(),
+                        diagnostics = CASE
+                            WHEN %s THEN diagnostics || %s
+                            ELSE diagnostics
+                        END
                     WHERE id = %s AND project_id = %s AND deleted_at IS NULL
                     """,
                     (
                         next_status,
-                        "cancelled" if next_status == "cancelled" else "cancelling",
+                        next_phase,
+                        is_queued_summary,
+                        is_queued_summary,
                         next_status,
+                        is_queued_summary,
+                        Jsonb({"summary_regeneration_cancelled": True}),
                         cluster_set_id,
                         project_id,
                     ),
@@ -1271,7 +1724,7 @@ class ClusterService:
                     cluster_set_id=cluster_set_id,
                     actor_user_id=actor_user_id,
                     event_type="cancel_requested",
-                    metadata={"status": next_status},
+                    metadata={"status": next_status, "phase": next_phase},
                 )
         fresh = self.get_cluster_set(project_id, cluster_set_id)
         if fresh is None:
@@ -1611,6 +2064,16 @@ class ClusterService:
                     else None
                 )
                 if cluster_set_id is not None:
+                    connection.execute(
+                        """
+                        UPDATE cluster_sets
+                        SET updated_at = now()
+                        WHERE id = %s
+                          AND project_id = %s
+                          AND deleted_at IS NULL
+                        """,
+                        (cluster_set_id, project_id),
+                    )
                     self._record_cluster_set_event(
                         connection,
                         project_id=project_id,
@@ -1740,6 +2203,7 @@ class ClusterService:
                     FROM analysis_runs r
                     WHERE cs.id = %s
                       AND cs.status = 'queued'
+                      AND cs.phase = 'queued'
                       AND cs.deleted_at IS NULL
                       AND r.id = cs.indexing_run_id
                       AND r.project_id = cs.project_id
@@ -1747,7 +2211,8 @@ class ClusterService:
                               cs.dataset_version_id, cs.vector_basis,
                               cs.message_weight, cs.answer_weight,
                               cs.algorithm, cs.parameters, cs.source_snapshot,
-                              cs.llm_provider, cs.llm_model,
+                              cs.llm_provider, cs.llm_provider_configuration_id,
+                              cs.llm_provider_display_name, cs.llm_model,
                               cs.llm_sample_strategy, r.provider, r.model
                     """,
                     (CLUSTER_SET_START_PROGRESS, cluster_set_id),
@@ -1755,6 +2220,10 @@ class ClusterService:
                 if cluster_set is None:
                     return
         try:
+            job_started_at = perf_counter()
+            loaded_at = job_started_at
+            clustered_at = job_started_at
+            persisted_at = job_started_at
             config = validate_algorithm_settings(
                 {
                     "algorithm": str(cluster_set["algorithm"]),
@@ -1816,9 +2285,35 @@ class ClusterService:
                     )
                     self._raise_if_cluster_set_cancelled(connection, cluster_set_id)
 
-            labels, probabilities = self._cluster_vectors(config, vectors)
+            loaded_at = perf_counter()
+            clustering_diagnostics: dict[str, object] = {}
+            if config.name == "hdbscan":
+                if config.parameters.get("reduction_method") == "none":
+                    reduced_vectors = vectors
+                else:
+                    self._publish_cluster_set_progress(
+                        cluster_set_id, CLUSTER_SET_REDUCTION_PROGRESS, "reducing"
+                    )
+                    reduced_vectors = self._reduce_hdbscan_vectors(config, vectors)
+                self._publish_cluster_set_progress(
+                    cluster_set_id, CLUSTER_SET_CLUSTERING_PROGRESS, "clustering"
+                )
+                normalized_labels, probabilities, clustering_diagnostics = (
+                    self._fit_hdbscan_vectors(config, reduced_vectors)
+                )
+                labels = _apply_outlier_threshold(
+                    normalized_labels,
+                    probabilities,
+                    cast(float | None, config.parameters.get("outlier_threshold")),
+                )
+            else:
+                self._publish_cluster_set_progress(
+                    cluster_set_id, CLUSTER_SET_CLUSTERING_PROGRESS, "clustering"
+                )
+                labels, probabilities = self._cluster_vectors(config, vectors)
+            clustered_at = perf_counter()
             self._publish_cluster_set_progress(
-                cluster_set_id, CLUSTER_SET_CLUSTERING_PROGRESS, "clustering"
+                cluster_set_id, CLUSTER_SET_PERSIST_PROGRESS, "persisting"
             )
             with open_database_connection(self._settings) as connection:
                 with connection.transaction():
@@ -1852,6 +2347,7 @@ class ClusterService:
                         },
                     )
 
+            persisted_at = perf_counter()
             summary_error: Exception | None = None
             if (
                 cluster_set["llm_provider"] is not None
@@ -1863,10 +2359,26 @@ class ClusterService:
                         CLUSTER_SET_SUMMARY_PROGRESS,
                         "summarizing",
                     )
+                    llm_provider_configuration_id = cluster_set[
+                        "llm_provider_configuration_id"
+                    ]
+                    if llm_provider_configuration_id is None:
+                        raise ClusterError(
+                            "LLM provider configuration is no longer available",
+                            code="LLM_PROVIDER_UNAVAILABLE",
+                            status_code=503,
+                            retryable=True,
+                        )
                     self._generate_cluster_summaries(
                         project_id=project_id,
                         cluster_set_id=cluster_set_id,
-                        llm_provider=str(cluster_set["llm_provider"]),
+                        llm_provider=UUID(str(llm_provider_configuration_id)),
+                        llm_provider_type=str(cluster_set["llm_provider"]),
+                        llm_provider_display_name=(
+                            str(cluster_set["llm_provider_display_name"])
+                            if cluster_set["llm_provider_display_name"] is not None
+                            else None
+                        ),
                         llm_model=str(cluster_set["llm_model"]),
                         sample_strategy=_json_object(
                             cluster_set["llm_sample_strategy"]
@@ -1875,6 +2387,12 @@ class ClusterService:
                 except Exception as exc:
                     summary_error = exc
 
+            timings_seconds = {
+                "load": round(loaded_at - job_started_at, 3),
+                "cluster": round(clustered_at - loaded_at, 3),
+                "persist": round(persisted_at - clustered_at, 3),
+                "total": round(perf_counter() - job_started_at, 3),
+            }
             with open_database_connection(self._settings) as connection:
                 with connection.transaction():
                     self._raise_if_cluster_set_cancelled(connection, cluster_set_id)
@@ -1890,7 +2408,16 @@ class ClusterService:
                                 diagnostics = diagnostics || %s
                             WHERE id = %s AND status = 'running'
                             """,
-                            (Jsonb({"completed": True}), cluster_set_id),
+                            (
+                                Jsonb(
+                                    {
+                                        "completed": True,
+                                        "timings_seconds": timings_seconds,
+                                        "clustering": clustering_diagnostics,
+                                    }
+                                ),
+                                cluster_set_id,
+                            ),
                         )
                     else:
                         code, message, retryable = _safe_cluster_failure(summary_error)
@@ -1918,6 +2445,8 @@ class ClusterService:
                                         "summary_failed": True,
                                         "summary_failure_retryable": retryable,
                                         "summary_failure_type": summary_error.__class__.__name__,
+                                        "timings_seconds": timings_seconds,
+                                        "clustering": clustering_diagnostics,
                                     }
                                 ),
                                 cluster_set_id,
@@ -1936,7 +2465,10 @@ class ClusterService:
                             diagnostics = diagnostics || %s
                         WHERE id = %s AND status IN ('running', 'cancelling')
                         """,
-                        (Jsonb({"cancelled": True}), cluster_set_id),
+                        (
+                            Jsonb({"cancelled": True}),
+                            cluster_set_id,
+                        ),
                     )
         except Exception as exc:
             code, message, retryable = _safe_cluster_failure(exc)
@@ -1967,6 +2499,130 @@ class ClusterService:
                         ),
                     )
 
+    def execute_queued_cluster_set_summary_regeneration(
+        self, cluster_set_id: UUID
+    ) -> None:
+        with open_database_connection(self._settings) as connection:
+            with connection.transaction():
+                cluster_set = connection.execute(
+                    """
+                    UPDATE cluster_sets
+                    SET status = 'running',
+                        progress = %s,
+                        phase = 'summarizing',
+                        started_at = COALESCE(started_at, now()),
+                        updated_at = now()
+                    WHERE id = %s
+                      AND status = 'queued'
+                      AND phase = 'queued_summary'
+                      AND deleted_at IS NULL
+                    RETURNING id, project_id, llm_provider,
+                              llm_provider_configuration_id,
+                              llm_provider_display_name, llm_model,
+                              llm_sample_strategy
+                    """,
+                    (CLUSTER_SET_SUMMARY_PROGRESS, cluster_set_id),
+                ).fetchone()
+                if cluster_set is None:
+                    return
+        try:
+            project_id = UUID(str(cluster_set["project_id"]))
+            llm_provider_configuration_id = cluster_set["llm_provider_configuration_id"]
+            if (
+                cluster_set["llm_provider"] is None
+                or cluster_set["llm_model"] is None
+                or llm_provider_configuration_id is None
+            ):
+                raise ClusterError(
+                    "LLM provider configuration is no longer available",
+                    code="LLM_PROVIDER_UNAVAILABLE",
+                    status_code=503,
+                    retryable=True,
+                )
+            self._generate_cluster_summaries(
+                project_id=project_id,
+                cluster_set_id=cluster_set_id,
+                llm_provider=UUID(str(llm_provider_configuration_id)),
+                llm_provider_type=str(cluster_set["llm_provider"]),
+                llm_provider_display_name=(
+                    str(cluster_set["llm_provider_display_name"])
+                    if cluster_set["llm_provider_display_name"] is not None
+                    else None
+                ),
+                llm_model=str(cluster_set["llm_model"]),
+                sample_strategy=_json_object(cluster_set["llm_sample_strategy"]),
+            )
+            with open_database_connection(self._settings) as connection:
+                with connection.transaction():
+                    self._raise_if_cluster_set_cancelled(connection, cluster_set_id)
+                    connection.execute(
+                        """
+                        UPDATE cluster_sets
+                        SET status = 'completed',
+                            progress = 100,
+                            phase = 'completed',
+                            error_code = NULL,
+                            error_message = NULL,
+                            updated_at = now(),
+                            diagnostics = diagnostics || %s
+                        WHERE id = %s AND status = 'running'
+                        """,
+                        (
+                            Jsonb({"summary_regenerated": True}),
+                            cluster_set_id,
+                        ),
+                    )
+        except ClusterSetCancelled:
+            with open_database_connection(self._settings) as connection:
+                with connection.transaction():
+                    connection.execute(
+                        """
+                        UPDATE cluster_sets
+                        SET status = 'completed',
+                            progress = 100,
+                            phase = 'completed',
+                            updated_at = now(),
+                            diagnostics = diagnostics || %s
+                        WHERE id = %s AND status IN ('running', 'cancelling')
+                        """,
+                        (
+                            Jsonb({"summary_regeneration_cancelled": True}),
+                            cluster_set_id,
+                        ),
+                    )
+        except Exception as exc:
+            code, message, retryable = _safe_cluster_failure(exc)
+            if code == "UNEXPECTED_ERROR":
+                code = "CLUSTER_SUMMARY_FAILED"
+                message = "Cluster summary generation failed"
+            with open_database_connection(self._settings) as connection:
+                with connection.transaction():
+                    connection.execute(
+                        """
+                        UPDATE cluster_sets
+                        SET status = 'completed',
+                            progress = 100,
+                            phase = 'completed',
+                            error_code = %s,
+                            error_message = %s,
+                            updated_at = now(),
+                            diagnostics = diagnostics || %s
+                        WHERE id = %s AND deleted_at IS NULL
+                        """,
+                        (
+                            code,
+                            message,
+                            Jsonb(
+                                {
+                                    "summary_regeneration_failed": True,
+                                    "summary_failure_retryable": retryable,
+                                    "summary_failure_type": exc.__class__.__name__,
+                                }
+                            ),
+                            cluster_set_id,
+                        ),
+                    )
+
     def _fetch_cluster_set_row(
         self, connection: Any, project_id: UUID, cluster_set_id: UUID
     ) -> dict[str, object] | None:
@@ -1980,8 +2636,10 @@ class ClusterService:
                    cs.progress, cs.phase, cs.derivation_type,
                    cs.vector_basis, cs.message_weight, cs.answer_weight,
                    cs.algorithm, cs.parameters, cs.source_snapshot,
-                   cs.llm_provider, cs.llm_model, cs.llm_parameters,
-                   cs.llm_sample_strategy, cs.error_code, cs.error_message,
+                   cs.llm_provider, cs.llm_provider_configuration_id,
+                   cs.llm_provider_display_name, cs.llm_model,
+                   cs.llm_parameters, cs.llm_sample_strategy,
+                   cs.error_code, cs.error_message,
                    cs.diagnostics, cs.started_at, cs.completed_at,
                    cs.cancel_requested_at, cs.deleted_at, cs.created_at,
                    cs.updated_at, COUNT(c.id) AS cluster_count
@@ -2778,6 +3436,194 @@ class ClusterService:
             return 1.0
         return max(0.0, min(2.0, 1.0 - similarity))
 
+    def _reduce_hdbscan_vectors(
+        self,
+        config: AlgorithmConfiguration,
+        vectors: np.ndarray[Any, np.dtype[np.float32]],
+    ) -> np.ndarray[Any, np.dtype[np.float32]]:
+        method = str(config.parameters.get("reduction_method") or "none")
+        if method == "none" or len(vectors) <= 2:
+            return vectors
+        requested_dimensions = cast(int, config.parameters["reduction_dimensions"])
+        target_dimensions = min(
+            requested_dimensions, vectors.shape[1], len(vectors) - 1
+        )
+        if target_dimensions < 2 or target_dimensions >= vectors.shape[1]:
+            return vectors
+        if method == "pca":
+            reduced = PCA(
+                n_components=target_dimensions,
+                random_state=42,
+            ).fit_transform(vectors)
+            return np.ascontiguousarray(reduced, dtype=np.float32)
+        if method == "umap":
+            return self._reduce_hdbscan_vectors_with_umap(
+                config, vectors, target_dimensions=target_dimensions
+            )
+        raise ClusterError(
+            "reduction method is unavailable",
+            code="CLUSTER_REDUCTION_UNAVAILABLE",
+            status_code=422,
+            retryable=True,
+            field_errors={"reduction_method": "reduction method is unavailable"},
+        )
+
+    def _reduce_hdbscan_vectors_with_umap(
+        self,
+        config: AlgorithmConfiguration,
+        vectors: np.ndarray[Any, np.dtype[np.float32]],
+        *,
+        target_dimensions: int,
+    ) -> np.ndarray[Any, np.dtype[np.float32]]:
+        backend = str(config.parameters.get("execution_backend") or "auto")
+        if backend in {"auto", "cuml"}:
+            try:
+                umap_class = getattr(importlib.import_module("cuml.manifold"), "UMAP")
+                reducer = umap_class(
+                    n_components=target_dimensions,
+                    n_neighbors=min(
+                        cast(int, config.parameters["umap_n_neighbors"]),
+                        len(vectors) - 1,
+                    ),
+                    min_dist=cast(float, config.parameters["umap_min_dist"]),
+                    metric="cosine",
+                    random_state=42,
+                    output_type="numpy",
+                )
+                return np.ascontiguousarray(
+                    reducer.fit_transform(vectors),
+                    dtype=np.float32,
+                )
+            except Exception as exc:
+                if backend == "cuml":
+                    raise ClusterError(
+                        "cuML UMAP is unavailable",
+                        code="CLUSTER_ACCELERATOR_UNAVAILABLE",
+                        status_code=422,
+                        retryable=True,
+                        field_errors={
+                            "execution_backend": (
+                                "cuML UMAP is unavailable in this runtime"
+                            )
+                        },
+                    ) from exc
+                LOGGER.info("cuML UMAP unavailable, falling back to CPU UMAP")
+        try:
+            umap_module = importlib.import_module("umap")
+            umap_class = getattr(umap_module, "UMAP")
+        except (ImportError, AttributeError) as exc:
+            raise ClusterError(
+                "umap-learn is not installed",
+                code="CLUSTER_REDUCTION_UNAVAILABLE",
+                status_code=422,
+                retryable=True,
+                field_errors={
+                    "reduction_method": (
+                        "UMAP requires the optional umap-learn dependency"
+                    )
+                },
+            ) from exc
+        reducer = umap_class(
+            n_components=target_dimensions,
+            n_neighbors=min(
+                cast(int, config.parameters["umap_n_neighbors"]),
+                len(vectors) - 1,
+            ),
+            min_dist=cast(float, config.parameters["umap_min_dist"]),
+            metric="cosine",
+            random_state=42,
+        )
+        return np.ascontiguousarray(reducer.fit_transform(vectors), dtype=np.float32)
+
+    def _fit_cpu_hdbscan(
+        self,
+        config: AlgorithmConfiguration,
+        vectors: np.ndarray[Any, np.dtype[np.float32]],
+    ) -> tuple[list[int], list[float]]:
+        estimator = HDBSCAN(
+            min_cluster_size=cast(int, config.parameters["min_cluster_size"]),
+            min_samples=config.parameters["min_samples"],  # type: ignore[arg-type]
+            cluster_selection_epsilon=cast(
+                float, config.parameters["cluster_selection_epsilon"]
+            ),
+            n_jobs=HDBSCAN_N_JOBS,
+            copy=False,
+        )
+        labels = estimator.fit_predict(vectors)
+        probabilities = [float(value) for value in estimator.probabilities_]
+        return [int(label) for label in labels], probabilities
+
+    def _fit_cuml_hdbscan(
+        self,
+        config: AlgorithmConfiguration,
+        vectors: np.ndarray[Any, np.dtype[np.float32]],
+    ) -> tuple[list[int], list[float]]:
+        try:
+            hdbscan_class = getattr(importlib.import_module("cuml.cluster"), "HDBSCAN")
+            estimator = hdbscan_class(
+                min_cluster_size=cast(int, config.parameters["min_cluster_size"]),
+                min_samples=config.parameters["min_samples"],
+                cluster_selection_epsilon=cast(
+                    float, config.parameters["cluster_selection_epsilon"]
+                ),
+                output_type="numpy",
+            )
+            labels = estimator.fit_predict(vectors)
+            probabilities_attr = getattr(estimator, "probabilities_", None)
+        except Exception as exc:
+            raise ClusterError(
+                "cuML HDBSCAN is unavailable",
+                code="CLUSTER_ACCELERATOR_UNAVAILABLE",
+                status_code=422,
+                retryable=True,
+                field_errors={
+                    "execution_backend": "cuML HDBSCAN is unavailable in this runtime"
+                },
+            ) from exc
+        normalized_labels = [int(label) for label in np.asarray(labels).tolist()]
+        if probabilities_attr is None:
+            probabilities = [1.0] * len(normalized_labels)
+        else:
+            probabilities = [
+                float(value) for value in np.asarray(probabilities_attr).tolist()
+            ]
+        return normalized_labels, probabilities
+
+    def _fit_hdbscan_vectors(
+        self,
+        config: AlgorithmConfiguration,
+        vectors: np.ndarray[Any, np.dtype[np.float32]],
+    ) -> tuple[list[int], list[float], dict[str, object]]:
+        backend = str(config.parameters.get("execution_backend") or "auto")
+        diagnostics: dict[str, object] = {
+            "algorithm": "hdbscan",
+            "reduction_method": str(
+                config.parameters.get("reduction_method") or "none"
+            ),
+            "effective_dimensions": int(vectors.shape[1]),
+            "execution_backend_requested": backend,
+            "execution_backend_effective": backend,
+            "execution_backend_fallback": False,
+        }
+        if backend == "cuml":
+            labels, probabilities = self._fit_cuml_hdbscan(config, vectors)
+            diagnostics["execution_backend_effective"] = "cuml"
+            return labels, probabilities, diagnostics
+        if backend == "auto":
+            try:
+                labels, probabilities = self._fit_cuml_hdbscan(config, vectors)
+                diagnostics["execution_backend_effective"] = "cuml"
+                return labels, probabilities, diagnostics
+            except ClusterError:
+                diagnostics["execution_backend_effective"] = "cpu"
+                diagnostics["execution_backend_fallback"] = True
+                LOGGER.info("cuML HDBSCAN unavailable, falling back to CPU HDBSCAN")
+                labels, probabilities = self._fit_cpu_hdbscan(config, vectors)
+                return labels, probabilities, diagnostics
+        labels, probabilities = self._fit_cpu_hdbscan(config, vectors)
+        diagnostics["execution_backend_effective"] = "cpu"
+        return labels, probabilities, diagnostics
+
     def _cluster_vectors(
         self,
         config: AlgorithmConfiguration,
@@ -2787,17 +3633,10 @@ class ClusterService:
             float | None, config.parameters.get("outlier_threshold")
         )
         if config.name == "hdbscan":
-            estimator = HDBSCAN(
-                min_cluster_size=cast(int, config.parameters["min_cluster_size"]),
-                min_samples=config.parameters["min_samples"],  # type: ignore[arg-type]
-                cluster_selection_epsilon=cast(
-                    float, config.parameters["cluster_selection_epsilon"]
-                ),
-                copy=False,
+            reduced_vectors = self._reduce_hdbscan_vectors(config, vectors)
+            normalized_labels, probabilities, _diagnostics = self._fit_hdbscan_vectors(
+                config, reduced_vectors
             )
-            labels = estimator.fit_predict(vectors)
-            probabilities = [float(value) for value in estimator.probabilities_]
-            normalized_labels = [int(label) for label in labels]
             return (
                 _apply_outlier_threshold(
                     normalized_labels, probabilities, outlier_threshold
@@ -2956,7 +3795,9 @@ class ClusterService:
         *,
         project_id: UUID,
         cluster_set_id: UUID,
-        llm_provider: str,
+        llm_provider: UUID | str,
+        llm_provider_type: str,
+        llm_provider_display_name: str | None,
         llm_model: str,
         sample_strategy: dict[str, Any],
     ) -> None:
@@ -2994,6 +3835,7 @@ class ClusterService:
         if not summarizable:
             return
         _validate_summary_call_budget(len(summarizable))
+        provider_fallback_reason: str | None = None
         for index, (cluster_id, item) in enumerate(summarizable, start=1):
             with open_database_connection(self._settings) as connection:
                 with connection.transaction():
@@ -3005,10 +3847,29 @@ class ClusterService:
                 cluster_id=cluster_id,
             )
             prompt = self._cluster_summary_prompt(sampled)
-            response_text = self._provider_service.generate_text(
-                llm_provider, llm_model, prompt
-            )
-            summary = self._parse_cluster_summary_response(response_text)
+            if provider_fallback_reason is None:
+                summary, summary_mode, fallback_reason = (
+                    self._cluster_summary_from_provider_or_examples(
+                        llm_provider=llm_provider,
+                        llm_model=llm_model,
+                        prompt=prompt,
+                        examples=sampled,
+                    )
+                )
+                if fallback_reason is not None and fallback_reason.startswith(
+                    "provider_error:"
+                ):
+                    provider_fallback_reason = fallback_reason
+            else:
+                fallback_reason = (
+                    f"provider_skipped_after_failure:{provider_fallback_reason}"
+                )
+                summary = self._fallback_cluster_summary_from_examples(
+                    sampled,
+                    fallback_reason=fallback_reason,
+                )
+                summary_mode = "fallback"
+                fallback_reason = fallback_reason[:160]
             with open_database_connection(self._settings) as connection:
                 with connection.transaction():
                     self._raise_if_cluster_set_cancelled(connection, cluster_set_id)
@@ -3031,9 +3892,19 @@ class ClusterService:
                             Jsonb(
                                 {
                                     "llm_summary": {
-                                        "provider": llm_provider,
+                                        "provider": llm_provider_type,
+                                        "provider_configuration_id": (
+                                            str(llm_provider)
+                                            if isinstance(llm_provider, UUID)
+                                            else None
+                                        ),
+                                        "provider_display_name": (
+                                            llm_provider_display_name
+                                        ),
                                         "model": llm_model,
                                         "sample_count": len(sampled),
+                                        "mode": summary_mode,
+                                        "fallback_reason": fallback_reason,
                                         "rationale": summary.get("rationale"),
                                     }
                                 }
@@ -3049,6 +3920,95 @@ class ClusterService:
                 + (14 * index // max(len(summarizable), 1)),
             )
             self._publish_cluster_set_progress(cluster_set_id, progress, "summarizing")
+
+    def _cluster_summary_from_provider_or_examples(
+        self,
+        *,
+        llm_provider: UUID | str,
+        llm_model: str,
+        prompt: str,
+        examples: list[dict[str, str]],
+    ) -> tuple[dict[str, str | None], str, str | None]:
+        try:
+            response_text = self._provider_service.generate_text(
+                llm_provider, llm_model, prompt
+            )
+            return self._parse_cluster_summary_response(response_text), "llm", None
+        except ProviderError as exc:
+            fallback_reason = f"provider_error:{exc.__class__.__name__}"
+        except ClusterError as exc:
+            if exc.code != "CLUSTER_SUMMARY_FAILED":
+                raise
+            fallback_reason = f"parse_error:{exc}"
+        LOGGER.warning(
+            "cluster summary fallback used for provider=%s model=%s reason=%s",
+            llm_provider,
+            llm_model,
+            fallback_reason,
+        )
+        return (
+            self._fallback_cluster_summary_from_examples(
+                examples,
+                fallback_reason=fallback_reason,
+            ),
+            "fallback",
+            fallback_reason[:160],
+        )
+
+    def _fallback_cluster_summary_from_examples(
+        self,
+        examples: list[dict[str, str]],
+        *,
+        fallback_reason: str,
+    ) -> dict[str, str | None]:
+        first = examples[0] if examples else {"message": "", "answer": ""}
+        message = self._compact_summary_sentence(first.get("message", ""))
+        answer = self._compact_summary_sentence(first.get("answer", ""))
+        title_source = message or answer or "Cluster Summary"
+        title = self._summary_title_from_text(title_source)
+        question = message or "Welche Supportanfrage beschreibt dieser Cluster?"
+        if not question.endswith("?"):
+            question = f"Wie ist diese Anfrage zu bearbeiten: {question}"
+        support_answer = (
+            answer
+            or "Die passende Supportantwort muss anhand der Quellen geprüft werden."
+        )
+        return {
+            "title": title,
+            "category": None,
+            "question": question[:MAX_SUMMARY_FIELD_CHARACTERS],
+            "answer": support_answer[:MAX_SUMMARY_FIELD_CHARACTERS],
+            "rationale": (
+                "Extraktive Fallback-Summary aus den Cluster-Beispielen, weil die "
+                f"LLM-Antwort nicht nutzbar war ({fallback_reason[:120]})."
+            )[:MAX_SUMMARY_FIELD_CHARACTERS],
+        }
+
+    def _summary_title_from_text(self, value: str) -> str:
+        cleaned = self._compact_summary_sentence(value)
+        if not cleaned:
+            return "Cluster Summary"
+        title = re.sub(
+            r"^(wie|was|warum|wann|wo|welche|welcher|welches)\s+",
+            "",
+            cleaned,
+            flags=re.IGNORECASE,
+        )
+        title = title.strip(" ?!.,;:")
+        if not title:
+            title = cleaned.strip(" ?!.,;:")
+        if len(title) > 80:
+            title = title[:77].rstrip() + "..."
+        return title or "Cluster Summary"
+
+    def _compact_summary_sentence(self, value: str) -> str:
+        cleaned = " ".join(value.split())
+        if not cleaned:
+            return ""
+        sentence_match = re.match(r"^(.{1,240}?[.!?])(?:\s|$)", cleaned)
+        if sentence_match is not None:
+            return sentence_match.group(1).strip()
+        return cleaned[:240].strip()
 
     def _sample_summary_examples(
         self,
@@ -3086,15 +4046,26 @@ class ClusterService:
 
     def _cluster_summary_prompt(self, examples: list[dict[str, str]]) -> str:
         lines = [
-            "Analysiere die Support-Beispiele und gib ausschließlich JSON zurück.",
-            'Schema: {"title": string, "category": string|null, '
-            '"question": string, "answer": string, "rationale": string|null}.',
-            "Keine Markdown-Fences, keine Zusatztexte.",
-            "Beispiele:",
+            "Aufgabe: Fasse diese Support-Beispiele zu genau einer FAQ-ähnlichen Cluster-Summary zusammen.",
+            "Antworte ausschließlich mit einem einzelnen JSON-Objekt.",
+            "Erlaubte Felder: title, category, question, answer, rationale.",
+            "Pflicht: title, question und answer müssen nicht-leere Strings sein.",
+            "category und rationale dürfen String oder null sein.",
+            "Keine Markdown-Fences. Kein Fließtext. Keine Erklärungen außerhalb des JSON-Objekts.",
+            "title: kurz und unterscheidbar, maximal 80 Zeichen.",
+            "question: eine kanonische Kundenfrage, kein Listenformat.",
+            "answer: eine kanonische Support-Antwort, konkret und knapp.",
+            "rationale: ein kurzer Grund für die Zuordnung oder null.",
+            "Wenn Beispiele widersprüchlich sind, bilde den gemeinsamen Kern und erwähne Unsicherheit nur in rationale.",
+            "Support-Beispiele:",
         ]
         for index, example in enumerate(examples, start=1):
-            lines.append(f"#{index} Nachricht: {example['message']}")
-            lines.append(f"#{index} Antwort: {example['answer']}")
+            lines.append(
+                f"#{index} Nachricht: {self._summary_prompt_field(example['message'])}"
+            )
+            lines.append(
+                f"#{index} Antwort: {self._summary_prompt_field(example['answer'])}"
+            )
         prompt = "\n".join(lines)
         if len(prompt) > MAX_SUMMARY_PROMPT_CHARACTERS:
             raise ClusterError(
@@ -3107,46 +4078,276 @@ class ClusterService:
             )
         return prompt
 
+    def _summary_prompt_field(self, value: str) -> str:
+        cleaned = " ".join(value.split())
+        if len(cleaned) <= MAX_SUMMARY_EXAMPLE_FIELD_CHARACTERS:
+            return cleaned
+        return cleaned[:MAX_SUMMARY_EXAMPLE_FIELD_CHARACTERS].rstrip() + " …"
+
     def _parse_cluster_summary_response(self, text: str) -> dict[str, str | None]:
-        candidate = text.strip()
-        if candidate.startswith("```"):
-            lines = candidate.splitlines()
-            if lines and lines[0].startswith("```"):
-                lines = lines[1:]
-            if lines and lines[-1].startswith("```"):
-                lines = lines[:-1]
-            candidate = "\n".join(lines).strip()
-        try:
-            payload = json.loads(candidate)
-        except json.JSONDecodeError as exc:
-            raise ClusterError(
-                "Cluster summary response is invalid",
-                code="CLUSTER_SUMMARY_FAILED",
-                status_code=422,
-                retryable=True,
-            ) from exc
-        if not isinstance(payload, dict):
-            raise ClusterError(
-                "Cluster summary response is invalid",
-                code="CLUSTER_SUMMARY_FAILED",
-                status_code=422,
-                retryable=True,
-            )
+        payload = self._summary_json_payload(text)
+        payload_object = self._summary_payload_object(payload)
         return {
-            "title": self._summary_field(payload.get("title"), "title", required=True),
+            "title": self._summary_field(
+                self._summary_payload_value(payload_object, "title"),
+                "title",
+                required=True,
+            ),
             "category": self._summary_field(
-                payload.get("category"), "category", required=False
+                self._summary_payload_value(payload_object, "category"),
+                "category",
+                required=False,
             ),
             "question": self._summary_field(
-                payload.get("question"), "question", required=True
+                self._summary_payload_value(payload_object, "question"),
+                "question",
+                required=True,
             ),
             "answer": self._summary_field(
-                payload.get("answer"), "answer", required=True
+                self._summary_payload_value(payload_object, "answer"),
+                "answer",
+                required=True,
             ),
             "rationale": self._summary_field(
-                payload.get("rationale"), "rationale", required=False
+                self._summary_payload_value(payload_object, "rationale"),
+                "rationale",
+                required=False,
             ),
         }
+
+    def _summary_json_payload(self, text: str) -> object:
+        candidate = self._normalize_summary_response_text(
+            self._strip_markdown_json_fence(text.strip())
+        )
+        payload = self._try_load_summary_json(candidate)
+        if payload is None:
+            payload = self._try_load_summary_python_literal(candidate)
+        if payload is None:
+            payload = self._extract_summary_json_payload(candidate)
+        return payload
+
+    def _try_load_summary_json(self, candidate: str) -> object | None:
+        try:
+            return json.loads(candidate, strict=False)
+        except json.JSONDecodeError:
+            return None
+
+    def _try_load_summary_python_literal(self, candidate: str) -> object | None:
+        try:
+            return ast.literal_eval(candidate)
+        except (SyntaxError, ValueError):
+            return None
+
+    def _summary_payload_object(self, payload: object) -> dict[str, object]:
+        candidates = list(self._summary_payload_candidates(payload))
+        if candidates:
+            return max(
+                candidates,
+                key=lambda item: self._summary_payload_score(item),
+            )
+        raise ClusterError(
+            "Cluster summary response has no summary object",
+            code="CLUSTER_SUMMARY_FAILED",
+            status_code=422,
+            retryable=True,
+        )
+
+    def _summary_payload_candidates(
+        self, payload: object, *, depth: int = 0
+    ) -> list[dict[str, object]]:
+        if depth > 3:
+            return []
+        if isinstance(payload, dict):
+            typed_payload = cast(dict[str, object], payload)
+            candidates: list[dict[str, object]] = [typed_payload]
+            for key, value in typed_payload.items():
+                if (
+                    self._normalize_summary_key(str(key))
+                    in SUMMARY_RESPONSE_WRAPPER_KEYS
+                ):
+                    candidates.extend(
+                        self._summary_payload_candidates(value, depth=depth + 1)
+                    )
+            return candidates
+        if isinstance(payload, list):
+            candidates = []
+            for item in payload:
+                candidates.extend(
+                    self._summary_payload_candidates(item, depth=depth + 1)
+                )
+            return candidates
+        if isinstance(payload, str):
+            nested = self._summary_payload_from_text(payload)
+            if nested is not None:
+                return self._summary_payload_candidates(nested, depth=depth + 1)
+        return []
+
+    def _summary_payload_score(self, payload: dict[str, object]) -> int:
+        score = 0
+        for summary_field in SUMMARY_REQUIRED_FIELDS:
+            value = self._summary_payload_value(payload, summary_field)
+            if (
+                isinstance(value, str)
+                and value.strip()
+                and not self._is_summary_placeholder_value(value)
+            ):
+                score += 2
+            elif value is not None:
+                score += 1
+        for optional_field in ("category", "rationale"):
+            value = self._summary_payload_value(payload, optional_field)
+            if value is None or isinstance(value, str):
+                score += 1
+        return score
+
+    def _summary_payload_value(
+        self, payload: dict[str, object], field: str
+    ) -> object | None:
+        for alias in SUMMARY_FIELD_ALIASES[field]:
+            if alias in payload:
+                return payload[alias]
+        normalized = {
+            self._normalize_summary_key(str(key)): value
+            for key, value in payload.items()
+        }
+        for alias in SUMMARY_FIELD_ALIASES[field]:
+            value = normalized.get(self._normalize_summary_key(alias))
+            if value is not None:
+                return value
+        return None
+
+    def _normalize_summary_key(self, value: str) -> str:
+        return (
+            value.strip()
+            .casefold()
+            .replace("-", "_")
+            .replace(" ", "_")
+            .replace("__", "_")
+        )
+
+    def _is_summary_placeholder_value(self, value: str) -> bool:
+        return value.strip().casefold() in SUMMARY_PLACEHOLDER_VALUES
+
+    def _extract_summary_json_payload(self, candidate: str) -> object:
+        decoder = json.JSONDecoder(strict=False)
+        valid_payloads: list[object] = []
+        for index, char in enumerate(candidate):
+            if char not in "{[":
+                continue
+            decoded = self._try_decode_summary_json(decoder, candidate[index:])
+            if decoded is not None:
+                payload, _end = decoded
+                valid_payloads.append(payload)
+                continue
+            literal_payload = self._try_load_summary_python_literal(candidate[index:])
+            if literal_payload is not None:
+                valid_payloads.append(literal_payload)
+        if valid_payloads:
+            return max(
+                valid_payloads,
+                key=lambda item: max(
+                    (
+                        self._summary_payload_score(candidate_payload)
+                        for candidate_payload in self._summary_payload_candidates(item)
+                    ),
+                    default=0,
+                ),
+            )
+        labeled_payload = self._summary_labeled_text_payload(candidate)
+        if labeled_payload is not None:
+            return labeled_payload
+        raise ClusterError(
+            "Cluster summary response contains no parseable JSON object",
+            code="CLUSTER_SUMMARY_FAILED",
+            status_code=422,
+            retryable=True,
+        )
+
+    def _summary_payload_from_text(self, value: str) -> object | None:
+        candidate = self._normalize_summary_response_text(
+            self._strip_markdown_json_fence(value.strip())
+        )
+        payload = self._try_load_summary_json(candidate)
+        if payload is not None:
+            return payload
+        payload = self._try_load_summary_python_literal(candidate)
+        if payload is not None:
+            return payload
+        try:
+            return self._extract_summary_json_payload(candidate)
+        except ClusterError:
+            return self._summary_labeled_text_payload(candidate)
+
+    def _summary_labeled_text_payload(self, candidate: str) -> dict[str, object] | None:
+        field_by_label = {
+            self._normalize_summary_key(alias): field
+            for field, aliases in SUMMARY_FIELD_ALIASES.items()
+            for alias in aliases
+        }
+        values: dict[str, list[str]] = {}
+        current_field: str | None = None
+        for raw_line in candidate.splitlines():
+            line = raw_line.strip()
+            if not line:
+                current_field = None
+                continue
+            match = re.match(
+                r"^(?:[-*]\s*)?(?P<label>[\wÄÖÜäöüß -]{2,64})\s*[:：]\s*(?P<value>.*)$",
+                line,
+            )
+            if match is not None:
+                field = field_by_label.get(
+                    self._normalize_summary_key(match.group("label"))
+                )
+                if field is not None:
+                    current_field = field
+                    values.setdefault(field, [])
+                    value = match.group("value").strip()
+                    if value:
+                        values[field].append(value)
+                    continue
+            if current_field is not None:
+                values[current_field].append(line)
+        payload: dict[str, object] = {
+            field: "\n".join(parts).strip()
+            for field, parts in values.items()
+            if "\n".join(parts).strip()
+        }
+        if all(field in payload for field in SUMMARY_REQUIRED_FIELDS):
+            return payload
+        return None
+
+    def _normalize_summary_response_text(self, value: str) -> str:
+        return (
+            value.replace("\ufeff", "")
+            .replace("\u00a0", " ")
+            .replace("“", '"')
+            .replace("”", '"')
+            .replace("„", '"')
+            .replace("‟", '"')
+            .replace("’", "'")
+            .replace("‘", "'")
+        )
+
+    def _strip_markdown_json_fence(self, candidate: str) -> str:
+        if not candidate.startswith("```"):
+            return candidate
+        lines = candidate.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].startswith("```"):
+            lines = lines[:-1]
+        return "\n".join(lines).strip()
+
+    def _try_decode_summary_json(
+        self,
+        decoder: json.JSONDecoder,
+        candidate: str,
+    ) -> tuple[object, int] | None:
+        try:
+            return decoder.raw_decode(candidate)
+        except json.JSONDecodeError:
+            return None
 
     def _summary_field(
         self, value: object, field: str, *, required: bool
@@ -3161,6 +4362,13 @@ class ClusterService:
                 retryable=True,
             )
         cleaned = value.strip()
+        if required and self._is_summary_placeholder_value(cleaned):
+            raise ClusterError(
+                f"Cluster summary field {field} is invalid",
+                code="CLUSTER_SUMMARY_FAILED",
+                status_code=422,
+                retryable=True,
+            )
         return cleaned[:MAX_SUMMARY_FIELD_CHARACTERS]
 
     def _validate_and_insert_clusters(
@@ -3177,54 +4385,7 @@ class ClusterService:
         vectors: np.ndarray[Any, np.dtype[np.float32]],
         expected_dimensions: int,
     ) -> None:
-        if config.name == "hdbscan":
-            estimator = HDBSCAN(
-                min_cluster_size=cast(int, config.parameters["min_cluster_size"]),
-                min_samples=config.parameters["min_samples"],  # type: ignore[arg-type]
-                cluster_selection_epsilon=cast(
-                    float, config.parameters["cluster_selection_epsilon"]
-                ),
-                copy=False,
-            )
-            labels = estimator.fit_predict(vectors)
-            probabilities = [float(value) for value in estimator.probabilities_]
-        else:
-            n_clusters = config.parameters["n_clusters"]
-            if isinstance(n_clusters, int) and n_clusters > len(vectors):
-                raise ClusterError("n_clusters cannot exceed the number of records")
-            if len(vectors) == 1:
-                labels = [0]
-            else:
-                with config_context(
-                    working_memory=AGGLOMERATIVE_NEIGHBOR_WORKING_BYTES // (1024 * 1024)
-                ):
-                    connectivity = kneighbors_graph(
-                        vectors,
-                        n_neighbors=min(
-                            AGGLOMERATIVE_NEIGHBOR_COUNT,
-                            len(vectors) - 1,
-                        ),
-                        include_self=False,
-                    )
-                component_count = connected_components(
-                    connectivity,
-                    directed=False,
-                    return_labels=False,
-                )
-                if component_count != 1:
-                    raise ClusterError(
-                        "agglomerative neighbor graph has "
-                        f"{component_count} disconnected components; "
-                        "select HDBSCAN or adjust the dataset"
-                    )
-                estimator = AgglomerativeClustering(
-                    n_clusters=n_clusters,  # type: ignore[arg-type]
-                    distance_threshold=config.parameters["distance_threshold"],  # type: ignore[arg-type]
-                    linkage=str(config.parameters["linkage"]),
-                    connectivity=connectivity,
-                )
-                labels = estimator.fit_predict(vectors)
-            probabilities = [1.0] * len(vectors)
+        labels, probabilities = self._cluster_vectors(config, vectors)
 
         grouped: dict[int, list[tuple[object, float]]] = {}
         for pair_id, label, probability in zip(

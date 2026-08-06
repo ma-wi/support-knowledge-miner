@@ -39,7 +39,8 @@ reason and removal strategy.
   gaps.
 - Radii: controls `14px`, cards/sections `16px`, large panels `--radius 20px`.
 - Shadows: one soft panel shadow `--shadow`.
-- Z-index conventions: dialogs use `z-index: 30`; avoid new stacking contexts.
+- Z-index conventions: dialogs use `z-index: 30`; global feedback overlays use
+  `z-index: 50`; avoid other new stacking contexts.
 - Animation and motion conventions: hover elevation is minimal; browser evidence
   disables animations; no required motion for comprehension.
 
@@ -53,9 +54,11 @@ reason and removal strategy.
 - Form widths: forms use full available panel width with stacked labels.
 - Breakpoints: primary responsive breakpoint `980px`; mobile stacks metrics and
   actions.
-- Desktop behavior: sidebar plus content region; Explorer uses table-first main
-  column and export side column.
-- Mobile behavior: project tabs wrap, Explorer/export stack, wide tables scroll
+- Desktop behavior: signed-in pages use the top-right menu for global navigation;
+  no persistent left global sidebar is present. The Explorer workspace adds a left
+  control rail for Explorer-only controls while the table remains the main
+  workspace.
+- Mobile behavior: project tabs wrap, Explorer rail/table stack, wide tables scroll
   horizontally inside bordered containers.
 - Scroll and sticky behavior: tables scroll within `.cluster-table-wrap`; dialogs
   scroll internally with bounded viewport height.
@@ -74,6 +77,12 @@ Labels wrap their controls. Cloud-provider confirmations are explicit checkbox
 fields. Write-only secrets never render saved values. Failed actions preserve safe
 input where practical.
 
+### Feedback
+
+Global feedback/status messages render as fixed overlays outside the content flow
+so page content does not shift. They retain the established success/info/warning
+and error styling, include a manual close action and auto-dismiss when appropriate.
+
 ### Tables and lists
 
 Use tables for analyst comparison across Cluster rows. Tables keep left-aligned
@@ -83,14 +92,16 @@ nodes.
 
 ### Navigation
 
-Primary app navigation is the sidebar. Project workflow tabs are: Import,
-Indizieren, Cluster-Sets, Explorer and Projekt löschen. Removed Profile, Runs,
-Kandidaten and separate Export tabs must not be reintroduced without an accepted
-requirement.
+Primary app navigation is opened from a top-right three-bar menu with exactly
+Projekte, Einstellungen and Abmelden. No signed-in view renders a persistent left
+global sidebar. Project workflow tabs are: Import, Indizieren, Cluster-Sets,
+Explorer and Projekt löschen. Removed Profile, Runs, Kandidaten and separate
+Export tabs must not be reintroduced without an accepted requirement.
 
 ### Dialogs and drawers
 
-Source dialogs use modal semantics with `role="dialog"` and `aria-modal="true"`.
+Source and Summary-regeneration dialogs use modal semantics with `role="dialog"`
+and `aria-modal="true"`.
 They focus the close button on open, trap Tab/Shift+Tab inside the dialog, close by
 button or Escape, and return focus to the opener.
 

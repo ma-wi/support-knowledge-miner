@@ -73,29 +73,28 @@ with TestClient(create_app()) as client:
         raise SystemExit("sign-in failed")
     headers = {"Authorization": f"Bearer {token_response.json()['access_token']}"}
 
+    created_openai = client.post(
+        "/api/providers",
+        headers=headers,
+        json={"provider": "openai"},
+    )
+    if created_openai.status_code != 201:
+        raise SystemExit(f"openai provider creation failed: {created_openai.text}")
+    openai_id = created_openai.json()["id"]
+
     openai = client.put(
-        "/api/providers/openai",
+        f"/api/providers/{openai_id}",
         headers=headers,
         json={
             "api_key": secret,
             "manual_models": ["text-embedding-3-small", "gpt-4.1-mini"],
+            "llm_models": ["gpt-4.1-mini"],
         },
     )
     if openai.status_code != 200 or not openai.json()["api_key_set"]:
         raise SystemExit("openai provider configuration failed")
     if secret in str(openai.json()):
         raise SystemExit("openai secret leaked in write response")
-
-    vllm = client.put(
-        "/api/providers/vllm",
-        headers=headers,
-        json={
-            "endpoint_url": "http://localhost:8000",
-            "manual_models": ["local-embed", "local-chat"],
-        },
-    )
-    if vllm.status_code != 200:
-        raise SystemExit("vllm provider configuration failed")
 
     listed = client.get("/api/providers", headers=headers)
     if listed.status_code != 200 or secret in str(listed.json()):
@@ -129,26 +128,12 @@ with TestClient(create_app()) as client:
         raise SystemExit(f"import failed: {imported.text}")
     dataset_id = imported.json()["dataset_version"]["id"]
 
-    local_run = client.post(
-        f"/api/projects/{project_id}/indexing-runs",
-        headers=headers,
-        json={
-            "dataset_version_id": dataset_id,
-            "provider": "vllm",
-            "model": "local-embed",
-        },
-    )
-    if local_run.status_code != 201:
-        raise SystemExit(f"local indexing run creation failed: {local_run.text}")
-    if local_run.json()["provider"] != "vllm":
-        raise SystemExit("local indexing run provider was not persisted")
-
     rejected_cloud = client.post(
         f"/api/projects/{project_id}/indexing-runs",
         headers=headers,
         json={
             "dataset_version_id": dataset_id,
-            "provider": "openai",
+            "provider_id": openai_id,
             "model": "gpt-4.1-mini",
         },
     )
@@ -164,7 +149,7 @@ with TestClient(create_app()) as client:
         headers=headers,
         json={
             "dataset_version_id": dataset_id,
-            "provider": "openai",
+            "provider_id": openai_id,
             "model": "gpt-4.1-mini",
             "cloud_use_confirmed": True,
         },
@@ -175,13 +160,13 @@ with TestClient(create_app()) as client:
         raise SystemExit("cloud indexing run provider was not persisted")
 
     runs = client.get(f"/api/projects/{project_id}/indexing-runs", headers=headers)
-    if runs.status_code != 200 or len(runs.json()) != 2:
+    if runs.status_code != 200 or len(runs.json()) != 1:
         raise SystemExit("indexing runs were not persisted")
     if any("analysis_profile_id" in run for run in runs.json()):
         raise SystemExit("indexing run response exposed an analysis profile id")
 
     removed = client.put(
-        "/api/providers/openai",
+        f"/api/providers/{openai_id}",
         headers=headers,
         json={"remove_api_key": True, "manual_models": ["gpt-4.1-mini"]},
     )
@@ -200,7 +185,7 @@ with open_database_connection() as connection:
     ).fetchone()
 if secret_row is None or secret_row["api_key_secret"] is not None:
     raise SystemExit("openai secret was not removed in storage")
-if int(run_count["count"]) != 2:
+if int(run_count["count"]) != 1:
     raise SystemExit("indexing runs were not persisted as expected")
 if profile_table["table_name"] is not None:
     raise SystemExit("analysis profile table still exists")

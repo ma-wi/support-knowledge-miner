@@ -97,7 +97,7 @@ run_smoke_script() {
   assert_contains "${FAKE_UV_LOG}" \
     "UPGRADE_DATABASE_URL=postgresql://support_knowledge_miner:support_knowledge_miner_dev_password@localhost:56111/support_knowledge_miner_upgrade"
   assert_contains "${FAKE_UV_PAYLOAD_LOG}" \
-    "fresh_and_0009_to_0014_migrations=ok"
+    "fresh_and_0009_to_0018_migrations=ok"
 }
 
 @test "readiness exhaustion fails closed, skips Python, and removes Compose resources" {

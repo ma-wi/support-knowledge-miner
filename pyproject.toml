@@ -13,6 +13,14 @@ dependencies = [
     "uvicorn>=0.38,<1",
 ]
 
+[project.optional-dependencies]
+gpu-cu12 = [
+    "cuml-cu12>=26.6,<26.7; sys_platform == 'linux' and (platform_machine == 'x86_64' or platform_machine == 'aarch64')",
+]
+gpu-cu13 = [
+    "cuml-cu13>=26.6,<26.7; sys_platform == 'linux' and (platform_machine == 'x86_64' or platform_machine == 'aarch64')",
+]
+
 [dependency-groups]
 dev = [
     "bandit==1.9.4",
@@ -23,6 +31,14 @@ dev = [
     "pytest==9.1.1",
     "pytest-cov==7.1.0",
     "ruff==0.15.22",
+]
+
+[tool.uv]
+conflicts = [
+    [
+        { extra = "gpu-cu12" },
+        { extra = "gpu-cu13" },
+    ],
 ]
 
 [tool.setuptools.packages.find]

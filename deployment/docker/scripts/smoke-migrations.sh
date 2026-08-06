@@ -88,9 +88,17 @@ def assert_indexing_provider_constraints(database: DatabaseSettings, user_id: UU
         )
         connection.execute(
             """
-            INSERT INTO provider_configurations (provider, manual_models)
-            VALUES ('ollama', '["local-model"]'::jsonb)
-            """
+            INSERT INTO provider_configurations (
+                id, provider, display_name, manual_models, available_models,
+                embedding_models, llm_models
+            )
+            VALUES (
+                %s, 'ollama', 'Ollama', '["local-model"]'::jsonb,
+                '["local-model"]'::jsonb, '["local-model"]'::jsonb,
+                '[]'::jsonb
+            )
+            """,
+            (uuid4(),),
         )
         connection.execute(
             """
@@ -107,8 +115,8 @@ def assert_indexing_provider_constraints(database: DatabaseSettings, user_id: UU
             (
                 "provider_configurations",
                 """
-                INSERT INTO provider_configurations (provider)
-                VALUES ('unsupported')
+                INSERT INTO provider_configurations (id, provider, display_name)
+                VALUES (%s, 'unsupported', 'Unsupported')
                 """,
             ),
             (
@@ -122,7 +130,7 @@ def assert_indexing_provider_constraints(database: DatabaseSettings, user_id: UU
             ),
         ):
             parameters = {
-                "provider_configurations": (),
+                "provider_configurations": (uuid4(),),
                 "analysis_runs": (uuid4(), project_id, dataset_id),
             }[table]
             try:
@@ -338,6 +346,10 @@ if upgrade_result.applied_versions != (
     "0012_import_snake_case_fields.sql",
     "0013_remove_prompt_identifier_run_mode.sql",
     "0014_indexing_runs_without_profiles.sql",
+    "0015_cluster_sets_llm_summaries.sql",
+    "0016_explorer_exports.sql",
+    "0017_provider_instances_and_global_jobs.sql",
+    "0018_provider_available_models.sql",
 ):
     raise AssertionError(f"unexpected upgrade set: {upgrade_result.applied_versions}")
 assert_import_source_id_columns(upgrade)
@@ -358,5 +370,5 @@ token = AuthService(upgrade).sign_in("user-b@example.test", "user-b-password")
 if token.user.id != second_user_id:
     raise AssertionError("email login resolved the wrong legacy account")
 assert_indexing_provider_constraints(upgrade, second_user_id)
-print("fresh_and_0009_to_0014_migrations=ok")
+print("fresh_and_0009_to_0018_migrations=ok")
 PY

@@ -1,0 +1,336 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Mockup · Projekt-Workflow-Anpassungen</title>
+    <style>
+      :root {
+        --bg: #f6f9fb;
+        --panel: #ffffff;
+        --panel-strong: #f8fbfc;
+        --line: rgba(15, 23, 42, 0.12);
+        --line-strong: rgba(8, 145, 178, 0.3);
+        --text: #172033;
+        --muted: #64748b;
+        --cyan: #0e7490;
+        --amber: #d97706;
+        --danger: #dc2626;
+        --shadow: 0 20px 50px rgba(15, 23, 42, 0.1);
+        --radius: 20px;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-width: 320px;
+        color: var(--text);
+        background:
+          radial-gradient(circle at 16% -12%, rgba(8, 145, 178, 0.12), transparent 32rem),
+          linear-gradient(180deg, #ffffff 0%, var(--bg) 100%);
+        font-family:
+          Inter,
+          system-ui,
+          -apple-system,
+          Segoe UI,
+          Roboto,
+          Ubuntu,
+          sans-serif;
+      }
+
+      button,
+      input,
+      select {
+        font: inherit;
+      }
+
+      button {
+        border: 0;
+        border-radius: 14px;
+        padding: 0.72rem 1rem;
+        color: #ffffff;
+        background: var(--cyan);
+        box-shadow: 0 10px 24px rgba(8, 145, 178, 0.16);
+        font-weight: 700;
+      }
+
+      button.secondary {
+        color: var(--text);
+        background: #eef5f8;
+        box-shadow: none;
+      }
+
+      button:disabled {
+        opacity: 0.5;
+      }
+
+      input,
+      select {
+        width: 100%;
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        padding: 0.72rem 0.85rem;
+        color: var(--text);
+        background: #ffffff;
+      }
+
+      label {
+        display: grid;
+        gap: 0.4rem;
+        color: var(--muted);
+        font-size: 0.92rem;
+      }
+
+      h1,
+      h2,
+      h3,
+      p {
+        margin: 0;
+      }
+
+      h1 {
+        font-size: clamp(1.7rem, 3vw, 2.7rem);
+        line-height: 0.96;
+        letter-spacing: -0.06em;
+      }
+
+      h2 {
+        font-size: 1.2rem;
+      }
+
+      .shell {
+        display: grid;
+        gap: 1.25rem;
+        padding: clamp(1rem, 3vw, 2rem);
+      }
+
+      .panel {
+        display: grid;
+        gap: 1rem;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        padding: clamp(1rem, 3vw, 1.5rem);
+        background: var(--panel);
+        box-shadow: var(--shadow);
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(280px, 1fr));
+        gap: 1.25rem;
+      }
+
+      .row,
+      .actions,
+      .tabs {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.7rem;
+        align-items: center;
+      }
+
+      .tabs {
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        padding: 0.55rem;
+        background: rgba(255, 255, 255, 0.74);
+      }
+
+      .tabs button {
+        color: var(--text);
+        background: transparent;
+        box-shadow: none;
+      }
+
+      .tabs .selected {
+        color: #ffffff;
+        background: var(--cyan);
+      }
+
+      .card {
+        display: grid;
+        gap: 0.75rem;
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        padding: 1rem;
+        background: var(--panel-strong);
+      }
+
+      .eyebrow,
+      .caption {
+        color: #0e7490;
+        font-size: 0.76rem;
+        font-weight: 800;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+      }
+
+      .hint {
+        color: var(--muted);
+        line-height: 1.6;
+      }
+
+      .status {
+        border: 1px solid rgba(8, 145, 178, 0.34);
+        border-radius: 14px;
+        padding: 0.8rem;
+        color: #0e7490;
+        background: #ecfeff;
+      }
+
+      .status.warning {
+        border-color: rgba(217, 119, 6, 0.34);
+        color: #9a3412;
+        background: #fff7ed;
+      }
+
+      .table {
+        display: grid;
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        overflow: hidden;
+      }
+
+      .table-row {
+        display: grid;
+        grid-template-columns: minmax(180px, 1fr) minmax(150px, 0.6fr) minmax(140px, 0.55fr) minmax(160px, 0.7fr);
+        gap: 0.75rem;
+        border-top: 1px solid var(--line);
+        padding: 0.8rem;
+      }
+
+      .table-row:first-child {
+        border-top: 0;
+      }
+
+      .table-head {
+        color: var(--muted);
+        background: var(--panel-strong);
+        font-size: 0.78rem;
+        font-weight: 850;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      @media (max-width: 880px) {
+        .grid,
+        .table-row {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="shell">
+      <header class="panel">
+        <p class="eyebrow">Support Knowledge Miner</p>
+        <h1>Projekt-Workflow-Anpassungen</h1>
+        <p class="hint">
+          Separater Entwurf für die neuen Punkte außerhalb der Provider-Einstellungen.
+        </p>
+      </header>
+
+      <section class="panel" aria-labelledby="import-title">
+        <div class="tabs" role="tablist" aria-label="Projektbereiche">
+          <button type="button" class="selected">Import</button>
+          <button type="button">Indizieren</button>
+          <button type="button">Cluster-Sets</button>
+          <button type="button">Explorer</button>
+          <button type="button">Projekt löschen</button>
+        </div>
+
+        <div>
+          <p class="eyebrow">Import</p>
+          <h2 id="import-title">Importprotokolle mit Datum</h2>
+          <p class="hint">
+            Logdetails zeigen nur Validierungsdetails für übersprungene/fehlerhafte Zeilen. Wenn es keine Details gibt,
+            wird kein „Logdetails anzeigen“-Button angeboten.
+          </p>
+        </div>
+
+        <div class="table" aria-label="Importprotokolle">
+          <div class="table-row table-head">
+            <span>Datei</span>
+            <span>Datum</span>
+            <span>Status</span>
+            <span>Aktion</span>
+          </div>
+          <div class="table-row">
+            <strong>support-import.csv</strong>
+            <span>05.08.2026, 14:22</span>
+            <span>completed · 0 übersprungen</span>
+            <span class="hint">Keine Logdetails</span>
+          </div>
+          <div class="table-row">
+            <strong>historie.json</strong>
+            <span>05.08.2026, 13:04</span>
+            <span>completed · 12 übersprungen</span>
+            <button type="button" class="secondary">Validierungsdetails anzeigen</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="grid">
+        <article class="panel" aria-labelledby="explorer-title">
+          <p class="eyebrow">Explorer</p>
+          <h2 id="explorer-title">Automatische Set-Auswahl</h2>
+          <p class="hint">
+            Beim direkten Öffnen des Explorer-Tabs wird das zuletzt aktualisierte abgeschlossene Cluster-Set geladen.
+            Explorer-Bearbeitungen aktualisieren dieses Datum.
+          </p>
+          <div class="card">
+            <span class="caption">Geladenes Cluster-Set</span>
+            <strong>FAQ Versandprobleme · aktualisiert 05.08.2026, 15:11</strong>
+            <p class="hint">42 Cluster · Quelle: Indizierung #812f</p>
+          </div>
+        </article>
+
+        <article class="panel" aria-labelledby="explorer-empty-title">
+          <p class="eyebrow">Explorer · leer</p>
+          <h2 id="explorer-empty-title">Kein Export ohne Cluster</h2>
+          <p class="status" role="status">
+            Noch kein Cluster-Set vorhanden. Erstelle zuerst ein Cluster-Set.
+          </p>
+          <p class="hint">
+            Das Export-Feld wird in diesem Zustand nicht angezeigt.
+          </p>
+        </article>
+      </section>
+
+      <section class="grid">
+        <article class="panel" aria-labelledby="indexing-running-title">
+          <p class="eyebrow">Indizieren</p>
+          <h2 id="indexing-running-title">Nur eine laufende Indizierung</h2>
+          <label>
+            Datensatz
+            <select disabled>
+              <option>Supportdaten August</option>
+            </select>
+          </label>
+          <button type="button" disabled>Indizierung starten</button>
+          <p class="status warning" role="status">
+            Eine Indizierung läuft bereits. Starte eine neue erst nach Abschluss oder Abbruch.
+          </p>
+          <button type="button" class="secondary">Laufende Indizierung abbrechen</button>
+        </article>
+
+        <article class="panel" aria-labelledby="cluster-running-title">
+          <p class="eyebrow">Cluster-Sets</p>
+          <h2 id="cluster-running-title">Nur eine laufende Cluster-Berechnung</h2>
+          <label>
+            Name
+            <input value="Neue Verfeinerung" disabled />
+          </label>
+          <button type="button" disabled>Cluster-Set erstellen</button>
+          <p class="status warning" role="status">
+            Eine Cluster-Set-Berechnung läuft bereits. Erstellung, Verfeinerung und Neuberechnung sind bis dahin gesperrt.
+          </p>
+          <button type="button" class="secondary">Laufende Cluster-Berechnung abbrechen</button>
+        </article>
+      </section>
+    </main>
+  </body>
+</html>

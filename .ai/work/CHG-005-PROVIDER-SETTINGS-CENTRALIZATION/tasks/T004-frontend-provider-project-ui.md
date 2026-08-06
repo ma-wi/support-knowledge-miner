@@ -1,0 +1,164 @@
+# Task T004: Frontend Provider- und Projekt-UI
+
+- Status: ready
+- Parent requirement or change: CHG-005-PROVIDER-SETTINGS-CENTRALIZATION
+- Plan: `.ai/work/CHG-005-PROVIDER-SETTINGS-CENTRALIZATION/PLAN.md`
+- Work type: incremental-change
+- Review batch: RB004
+- Depends on: T002,T003
+- Owner/agent: Codex
+- Last updated: 2026-08-05
+
+## Objective
+
+Implement the approved production UI: single Provider settings tab, feedback overlay,
+provider instance cards, connection tests, stable model checkbox allow-lists, import
+dates/details behavior, Explorer defaults/export visibility and parallel job start
+behavior.
+
+## Scope
+
+- Settings tabs only `Provider` and `Nutzer`.
+- Add/remove/update/test OpenAI/Ollama instances; duplicate display names allowed.
+- API-key placeholder is masked only.
+- No provider status tags and no vLLM UI.
+- Feedback overlay has close button and auto-dismiss.
+- Import protocols display date and only offer details when details exist.
+- Explorer auto-loads last updated completed Cluster-Set and hides export panel
+  without loaded clusters.
+- Frontend does not block starts solely because another indexing/Cluster-Set job is
+  active; it still shows job state and keeps cancel actions available.
+
+## Security Assurance
+
+- Security assurance: required
+- Security triggers: secret input handling, local endpoint input, public API error
+  rendering, job state and destructive provider deletion.
+- Assets and data classes: OpenAI API-key input, Ollama endpoint URL,
+  provider/model availability, model allow-lists, job state, imported support-text
+  provenance and safe diagnostics.
+- Trust boundaries and untrusted inputs: browser form fields, API Problem Details,
+  provider check/pull results and active-job status.
+- Authorization model: frontend relies on authenticated API responses; server-side
+  authorization remains authoritative.
+- Threats and abuse cases: rendering saved secrets, leaking raw provider errors,
+  treating display name as identity, unstable model lists causing unintended
+  allow-list changes, hiding cancel during parallel jobs and false success after
+  failed provider actions.
+- Mitigations: masked API-key placeholder, provider instance IDs, stable
+  available-model ordering, central `ERROR_MESSAGES_BY_CODE`, overlay close without
+  clearing state and preserved cancel actions.
+- Security verification: frontend tests for safe feedback, provider IDs, hidden
+  details/export states, model discovery reconciliation and parallel start behavior;
+  backend/API tests own authority.
+- Residual security risk: UI can only mirror queue/job status polling; API remains
+  the enforcement boundary.
+- Specialist security review: required through the provider/API/runtime review
+  because UI handles secret inputs and endpoint values.
+
+## UI classification
+
+- Design class: 3
+- Approved design source: `DESIGN_DELTA.md`.
+- Visual evidence required after implementation: desktop and mobile screenshots plus
+  configured browser/accessibility/visual checks.
+
+## Component impact
+
+### Existing components reused
+
+- App shell, tabs, panels, forms, checkbox groups, job cards, import logs, Explorer
+  table and feedback styles.
+
+### Existing components extended
+
+- Provider forms become central provider-instance cards with connection test and
+  model discovery.
+- Global feedback renders as overlay with close and auto-dismiss.
+- Import rows show dates and conditionally expose details.
+- Explorer auto-loads the last updated completed Cluster-Set and hides export
+  controls without loaded clusters.
+- Indizieren and Cluster-Set forms allow bounded parallel starts while keeping
+  queue/failure feedback safe.
+
+### New shared components
+
+| Name/responsibility | Target path/layer | API/variants/states | Tests | Accessibility | Story/equivalent | Catalog entry |
+|---|---|---|---|---|---|---|
+| none | not-applicable | not-applicable | not-applicable | not-applicable | not-applicable | not-applicable |
+
+### New feature-local components
+
+- Provider instance card composition.
+- Add-provider toolbar.
+- Provider connection-test action.
+- Ollama pull row.
+- Feedback overlay close action.
+
+### Components replaced or removed
+
+- Separate Settings tabs „Embedding-Provider“ and „LLM-Provider“.
+- Visible vLLM provider card/choice.
+- Free-text OpenAI LLM model field.
+
+### Rejected reuse options
+
+- Keeping the old purpose-specific Settings tabs was rejected because connection
+  settings must be centralized by provider instance.
+
+### Rationale
+
+The implementation reuses the monolithic MVP shell and updates the smallest
+feature-local compositions required by the approved design.
+
+## Visual evidence
+
+- Required screens: Provider, Import, Indizieren, Cluster-Sets, Explorer and
+  feedback overlay.
+- Required states: default, save/check/discover/pull success, blocked pull, hidden export,
+  conditional import details, safe error.
+- Required viewports: desktop 1440x1000 and mobile 390x844.
+- Manifest: generated by UI-quality/browser review when entering visual-review or
+  closeout.
+
+## Error and recovery implementation
+
+### User actions covered
+
+Provider save/delete/check/discover/pull, indexing start, Cluster-Set start/refine,
+import log details visibility, Explorer default load/export visibility and feedback
+overlay close/auto-dismiss.
+
+### Expected failures
+
+Uses PLAN/CHANGE rows for provider save/delete/pull, indexing start and Cluster-Set
+start. Known API codes route through central `ERROR_MESSAGES_BY_CODE`; unknown API
+codes route through the safe unknown-code fallback.
+
+### Unknown failure behavior
+
+- User-facing fallback: central safe unknown-code message in the affected UI surface
+  and feedback overlay.
+- Correlation ID: not displayed unless returned as safe text by an owning action.
+- Retry behavior: retry via the original action after correcting input, waiting or
+  reloading.
+- Input preservation: preserve safe form selections and provider fields; API-key
+  inputs remain write-only.
+- Support behavior: reload provider/job/project data and retry.
+
+### Required negative tests
+
+- [x] frontend renders safe messages for provider failures.
+- [x] start actions are not disabled solely because other jobs are active.
+- [x] provider discovery keeps unchecked models visible, preserves order and removes
+  unavailable models only after successful discovery.
+- [x] OpenAI model lists are filtered separately for Embedding and LLM.
+- [x] feedback overlay can be manually closed and still auto-dismisses.
+- [x] import details button is hidden when no skipped details exist.
+- [x] explorer export controls are hidden without loaded clusters.
+
+## Verification
+
+- Frontend App tests for settings/provider UI, feedback overlay, import/explorer and
+  job-blocking states.
+- Browser evidence under `.ai/work/.../evidence/ui/`.

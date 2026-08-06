@@ -9,7 +9,12 @@ from pgvector import Vector
 import pytest
 
 import backend.clusters.service as cluster_service_module
-from backend.clusters import ClusterError, ClusterService
+from backend.clusters import (
+    ClusterError,
+    ClusterManualUpdate,
+    ClusterService,
+    ClusterSet,
+)
 from backend.clusters.service import (
     AGGLOMERATIVE_BYTES_PER_VECTOR_VALUE,
     HDBSCAN_BYTES_PER_VECTOR_VALUE,
@@ -18,13 +23,16 @@ from backend.clusters.service import (
     MAX_CLUSTER_WORKING_SET_BYTES,
     NATIVE_FETCH_BYTES_PER_VALUE,
     NATIVE_VECTOR_FETCH_BATCH_SIZE,
+    ClusterSetBasisBudget,
     ClusterSetInput,
+    ClusterSetSummaryInput,
     _apply_outlier_threshold,
     _summary_sample_strategy,
     _validate_summary_call_budget,
     validate_algorithm_settings,
     validate_cluster_input_budget,
 )
+from backend.providers import ProviderConfiguration, ProviderError
 
 ACTOR_ID = UUID("11111111-1111-1111-1111-111111111111")
 PROJECT_ID = UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
@@ -223,6 +231,10 @@ class ParentStatusConnection:
                     }
                 ]
             )
+        if normalized.startswith("LOCK TABLE cluster_sets"):
+            return FakeResult()
+        if normalized.startswith("SELECT id FROM cluster_sets"):
+            return FakeResult()
         if normalized.startswith("SELECT id, indexing_run_id, status"):
             return FakeResult(
                 [
@@ -234,6 +246,69 @@ class ParentStatusConnection:
                 ]
             )
         raise AssertionError(f"unexpected query: {normalized}")
+
+
+class ClusterStartConnectionWithoutGlobalGuard(ParentStatusConnection):
+    def __init__(self) -> None:
+        super().__init__(parent_status="completed")
+
+    def execute(
+        self, query: str, params: tuple[object, ...] | None = None
+    ) -> FakeResult:
+        normalized = " ".join(query.split())
+        if normalized.startswith("LOCK TABLE cluster_sets") or normalized.startswith(
+            "SELECT id FROM cluster_sets"
+        ):
+            raise AssertionError("global Cluster-Set start guard must not be used")
+        if normalized.startswith("SELECT COUNT(id) AS record_count"):
+            return FakeResult([{"record_count": 4}])
+        if normalized.startswith("INSERT INTO cluster_sets"):
+            assert params is not None
+            return FakeResult(
+                [
+                    {
+                        "id": params[0],
+                        "project_id": params[1],
+                        "indexing_run_id": params[2],
+                        "dataset_version_id": params[3],
+                        "dataset_display_name": params[20],
+                        "indexing_deleted_at": params[21],
+                        "parent_cluster_set_id": params[4],
+                        "display_name": params[5],
+                        "status": "queued",
+                        "progress": 0,
+                        "phase": "queued",
+                        "derivation_type": params[6],
+                        "vector_basis": params[7],
+                        "message_weight": params[8],
+                        "answer_weight": params[9],
+                        "algorithm": params[10],
+                        "parameters": unwrap_json(params[11]),
+                        "source_snapshot": unwrap_json(params[12]),
+                        "llm_provider": params[13],
+                        "llm_provider_configuration_id": params[14],
+                        "llm_provider_display_name": params[15],
+                        "llm_model": params[16],
+                        "llm_parameters": unwrap_json(params[17]),
+                        "llm_sample_strategy": unwrap_json(params[18]),
+                        "error_code": None,
+                        "error_message": None,
+                        "diagnostics": {},
+                        "started_at": None,
+                        "completed_at": None,
+                        "cancel_requested_at": None,
+                        "deleted_at": None,
+                        "created_at": NOW,
+                        "updated_at": NOW,
+                        "cluster_count": 0,
+                    }
+                ]
+            )
+        if normalized.startswith("INSERT INTO cluster_set_events"):
+            return FakeResult()
+        if normalized.startswith("INSERT INTO audit_events"):
+            return FakeResult()
+        return super().execute(query, params)
 
 
 class ClusterConnection:
@@ -300,7 +375,7 @@ class ClusterConnection:
                         "dataset_version_id": DATASET_ID,
                         "status": "completed",
                         "parameters": {"algorithm_settings": self.algorithm_settings},
-                        "provider": "vllm",
+                        "provider": "ollama",
                         "model": "local-embed",
                     }
                 ]
@@ -311,6 +386,10 @@ class ClusterConnection:
                 if self.clusters
                 else FakeResult()
             )
+        if normalized.startswith("LOCK TABLE cluster_sets"):
+            return FakeResult()
+        if normalized.startswith("SELECT id FROM cluster_sets"):
+            return FakeResult()
         if normalized.startswith("SELECT COUNT(mp.id) AS record_count"):
             present = [
                 row for row in self.embedding_rows if row["embedding"] is not None
@@ -428,6 +507,76 @@ class SourcePagingConnection:
         raise AssertionError(f"unexpected query: {normalized}")
 
 
+class ClusterManualUpdateConnection:
+    def __init__(self) -> None:
+        self.cluster_set_touch_count = 0
+
+    def __enter__(self) -> ClusterManualUpdateConnection:
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        return None
+
+    def transaction(self) -> FakeTransaction:
+        return FakeTransaction()
+
+    def execute(
+        self, query: str, params: tuple[object, ...] | None = None
+    ) -> FakeResult:
+        normalized = " ".join(query.split())
+        if normalized.startswith("UPDATE clusters c"):
+            assert params is not None
+            assert params[6:] == (CLUSTER_A, PROJECT_ID)
+            return FakeResult(
+                [
+                    {
+                        "analysis_run_id": RUN_ID,
+                        "cluster_set_id": PARENT_CLUSTER_SET_ID,
+                    }
+                ]
+            )
+        if normalized.startswith("UPDATE cluster_sets SET updated_at"):
+            assert params == (PARENT_CLUSTER_SET_ID, PROJECT_ID)
+            self.cluster_set_touch_count += 1
+            return FakeResult()
+        if normalized.startswith("INSERT INTO audit_events"):
+            return FakeResult()
+        if normalized.startswith("INSERT INTO cluster_set_events"):
+            return FakeResult()
+        if normalized.startswith("SELECT id, status FROM cluster_sets"):
+            assert params == (PARENT_CLUSTER_SET_ID, PROJECT_ID)
+            return FakeResult([{"id": PARENT_CLUSTER_SET_ID, "status": "completed"}])
+        if normalized.startswith("SELECT c.id, c.project_id"):
+            assert params == (PROJECT_ID, PARENT_CLUSTER_SET_ID)
+            return FakeResult(
+                [
+                    {
+                        "id": CLUSTER_A,
+                        "project_id": PROJECT_ID,
+                        "analysis_run_id": RUN_ID,
+                        "dataset_version_id": DATASET_ID,
+                        "cluster_set_id": PARENT_CLUSTER_SET_ID,
+                        "auto_title": "Cluster A",
+                        "manual_title": "Manual title",
+                        "auto_category": "General",
+                        "manual_category": None,
+                        "auto_status": "unreviewed",
+                        "manual_status": "reviewed",
+                        "auto_summary_question": None,
+                        "auto_summary_answer": None,
+                        "score": 0.9,
+                        "is_outlier": False,
+                        "algorithm": "hdbscan",
+                        "metadata": {},
+                        "created_at": NOW,
+                        "updated_at": NOW,
+                        "member_count": 1,
+                    }
+                ]
+            )
+        raise AssertionError(f"unexpected query: {normalized}")
+
+
 def unwrap_json(value: object) -> object:
     return getattr(value, "obj", value)
 
@@ -503,6 +652,28 @@ def test_list_sources_returns_bounded_page(
     assert page.offset == 2
     assert page.next_offset == 4
     assert page.has_more is True
+
+
+def test_manual_cluster_update_touches_cluster_set_updated_at(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_connection = ClusterManualUpdateConnection()
+    monkeypatch.setattr(
+        cluster_service_module,
+        "open_database_connection",
+        lambda _: fake_connection,
+    )
+
+    cluster = ClusterService().update_cluster(
+        PROJECT_ID,
+        CLUSTER_A,
+        ClusterManualUpdate(manual_title="Manual title", manual_status="reviewed"),
+        actor_user_id=ACTOR_ID,
+    )
+
+    assert cluster.manual_title == "Manual title"
+    assert cluster.manual_status == "reviewed"
+    assert fake_connection.cluster_set_touch_count == 1
 
 
 def test_list_sources_rejects_unbounded_page_before_database_access() -> None:
@@ -627,6 +798,401 @@ def test_refinement_source_cluster_ids_from_parent_are_accepted() -> None:
     )
 
     assert selected == sorted([PAIR_A, PAIR_B], key=str)
+
+
+def test_active_cluster_set_does_not_block_second_start(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        cluster_service_module,
+        "open_database_connection",
+        lambda _: ClusterStartConnectionWithoutGlobalGuard(),
+    )
+
+    cluster_set = ClusterService().start_cluster_set(
+        PROJECT_ID,
+        ClusterSetInput(indexing_run_id=RUN_ID),
+        actor_user_id=ACTOR_ID,
+    )
+
+    assert cluster_set.status == "queued"
+    assert cluster_set.phase == "queued"
+
+
+def test_cancel_queued_summary_regeneration_keeps_cluster_set_completed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class SummaryCancelConnection:
+        def __init__(self) -> None:
+            self.update_params: tuple[object, ...] | None = None
+            self.event_metadata: dict[str, object] | None = None
+
+        def __enter__(self) -> SummaryCancelConnection:
+            return self
+
+        def __exit__(self, *_: object) -> None:
+            return None
+
+        def transaction(self) -> FakeTransaction:
+            return FakeTransaction()
+
+        def execute(
+            self, query: str, params: tuple[object, ...] | None = None
+        ) -> FakeResult:
+            normalized = " ".join(query.split())
+            if normalized.startswith("SELECT status, phase FROM cluster_sets"):
+                return FakeResult([{"status": "queued", "phase": "queued_summary"}])
+            if normalized.startswith("UPDATE cluster_sets SET status = %s"):
+                assert params is not None
+                self.update_params = params
+                return FakeResult()
+            if normalized.startswith("INSERT INTO cluster_set_events"):
+                assert params is not None
+                self.event_metadata = cast(dict[str, object], unwrap_json(params[5]))
+                return FakeResult()
+            raise AssertionError(f"unexpected query: {normalized}")
+
+    fake_connection = SummaryCancelConnection()
+    monkeypatch.setattr(
+        cluster_service_module,
+        "open_database_connection",
+        lambda _: fake_connection,
+    )
+    service = ClusterService()
+    monkeypatch.setattr(
+        service,
+        "get_cluster_set",
+        lambda *_args, **_kwargs: ClusterSet(
+            id=PARENT_CLUSTER_SET_ID,
+            project_id=PROJECT_ID,
+            indexing_run_id=RUN_ID,
+            dataset_version_id=DATASET_ID,
+            dataset_display_name="Fixture dataset",
+            indexing_deleted_at=None,
+            parent_cluster_set_id=None,
+            display_name="Summary Set",
+            status="completed",
+            progress=100,
+            phase="completed",
+            derivation_type="root",
+            vector_basis="message",
+            message_weight=1.0,
+            answer_weight=0.0,
+            algorithm="hdbscan",
+            parameters={"min_cluster_size": 2},
+            source_snapshot={},
+            llm_provider="ollama",
+            llm_provider_configuration_id=None,
+            llm_provider_display_name="Ollama",
+            llm_model="llama3.1",
+            llm_parameters={},
+            llm_sample_strategy={},
+            error_code=None,
+            error_message=None,
+            diagnostics={"summary_regeneration_cancelled": True},
+            started_at=NOW,
+            completed_at=NOW,
+            cancel_requested_at=NOW,
+            deleted_at=None,
+            created_at=NOW,
+            updated_at=NOW,
+            cluster_count=2,
+        ),
+    )
+
+    cluster_set = service.cancel_cluster_set(
+        PROJECT_ID, PARENT_CLUSTER_SET_ID, actor_user_id=ACTOR_ID
+    )
+
+    assert cluster_set.status == "completed"
+    assert cluster_set.phase == "completed"
+    assert fake_connection.update_params is not None
+    assert fake_connection.update_params[:5] == (
+        "completed",
+        "completed",
+        True,
+        True,
+        "completed",
+    )
+    assert fake_connection.event_metadata == {
+        "status": "completed",
+        "phase": "completed",
+    }
+
+
+def test_execute_cancelled_cluster_set_generation_stays_cancelled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class CancelledClusterExecutionConnection:
+        def __init__(self) -> None:
+            self.update_params: tuple[object, ...] | None = None
+
+        def __enter__(self) -> CancelledClusterExecutionConnection:
+            return self
+
+        def __exit__(self, *_: object) -> None:
+            return None
+
+        def transaction(self) -> FakeTransaction:
+            return FakeTransaction()
+
+        def execute(
+            self, query: str, params: tuple[object, ...] | None = None
+        ) -> FakeResult:
+            normalized = " ".join(query.split())
+            if normalized.startswith("UPDATE cluster_sets cs SET status = 'running'"):
+                return FakeResult(
+                    [
+                        {
+                            "id": PARENT_CLUSTER_SET_ID,
+                            "project_id": PROJECT_ID,
+                            "indexing_run_id": RUN_ID,
+                            "dataset_version_id": DATASET_ID,
+                            "vector_basis": "message",
+                            "message_weight": 1.0,
+                            "answer_weight": 0.0,
+                            "algorithm": "hdbscan",
+                            "parameters": {"min_cluster_size": 2},
+                            "source_snapshot": {},
+                            "llm_provider": None,
+                            "llm_provider_configuration_id": None,
+                            "llm_provider_display_name": None,
+                            "llm_model": None,
+                            "llm_sample_strategy": {},
+                            "provider": "ollama",
+                            "model": "bge-m3:latest",
+                        }
+                    ]
+                )
+            if normalized.startswith("SELECT status FROM cluster_sets"):
+                return FakeResult([{"status": "cancelling"}])
+            if normalized.startswith("UPDATE cluster_sets SET status = 'cancelled'"):
+                assert params is not None
+                self.update_params = params
+                return FakeResult()
+            raise AssertionError(f"unexpected query: {normalized}")
+
+    fake_connection = CancelledClusterExecutionConnection()
+    monkeypatch.setattr(
+        cluster_service_module,
+        "open_database_connection",
+        lambda _: fake_connection,
+    )
+
+    ClusterService().execute_queued_cluster_set(PARENT_CLUSTER_SET_ID)
+
+    assert fake_connection.update_params is not None
+    assert unwrap_json(fake_connection.update_params[0]) == {"cancelled": True}
+    assert fake_connection.update_params[1] == PARENT_CLUSTER_SET_ID
+
+
+def test_running_summary_regeneration_cancel_keeps_cluster_set_completed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class RunningSummaryCancelConnection:
+        def __init__(self) -> None:
+            self.update_params: tuple[object, ...] | None = None
+            self.update_query: str | None = None
+
+        def __enter__(self) -> RunningSummaryCancelConnection:
+            return self
+
+        def __exit__(self, *_: object) -> None:
+            return None
+
+        def transaction(self) -> FakeTransaction:
+            return FakeTransaction()
+
+        def execute(
+            self, query: str, params: tuple[object, ...] | None = None
+        ) -> FakeResult:
+            normalized = " ".join(query.split())
+            if normalized.startswith("UPDATE cluster_sets SET status = 'running'"):
+                return FakeResult(
+                    [
+                        {
+                            "id": PARENT_CLUSTER_SET_ID,
+                            "project_id": PROJECT_ID,
+                            "llm_provider": "ollama",
+                            "llm_provider_configuration_id": PARENT_CLUSTER_SET_ID,
+                            "llm_provider_display_name": "Ollama",
+                            "llm_model": "llama3.1",
+                            "llm_sample_strategy": {"requested": 10},
+                        }
+                    ]
+                )
+            if normalized.startswith("SELECT status FROM cluster_sets"):
+                return FakeResult([{"status": "cancelling"}])
+            if normalized.startswith("UPDATE cluster_sets SET status = 'completed'"):
+                assert params is not None
+                self.update_query = normalized
+                self.update_params = params
+                return FakeResult()
+            raise AssertionError(f"unexpected query: {normalized}")
+
+    fake_connection = RunningSummaryCancelConnection()
+    monkeypatch.setattr(
+        cluster_service_module,
+        "open_database_connection",
+        lambda _: fake_connection,
+    )
+    service = ClusterService()
+    monkeypatch.setattr(
+        service,
+        "_generate_cluster_summaries",
+        lambda **_kwargs: None,
+    )
+
+    service.execute_queued_cluster_set_summary_regeneration(PARENT_CLUSTER_SET_ID)
+
+    assert fake_connection.update_query is not None
+    assert "completed_at" not in fake_connection.update_query
+    assert fake_connection.update_params is not None
+    assert unwrap_json(fake_connection.update_params[0]) == {
+        "summary_regeneration_cancelled": True
+    }
+    assert fake_connection.update_params[1] == PARENT_CLUSTER_SET_ID
+
+
+def test_summary_regeneration_success_preserves_cluster_completed_at(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class SummarySuccessConnection:
+        def __init__(self) -> None:
+            self.completed_query: str | None = None
+            self.completed_params: tuple[object, ...] | None = None
+
+        def __enter__(self) -> SummarySuccessConnection:
+            return self
+
+        def __exit__(self, *_: object) -> None:
+            return None
+
+        def transaction(self) -> FakeTransaction:
+            return FakeTransaction()
+
+        def execute(
+            self, query: str, params: tuple[object, ...] | None = None
+        ) -> FakeResult:
+            normalized = " ".join(query.split())
+            if normalized.startswith("UPDATE cluster_sets SET status = 'running'"):
+                return FakeResult(
+                    [
+                        {
+                            "id": PARENT_CLUSTER_SET_ID,
+                            "project_id": PROJECT_ID,
+                            "llm_provider": "ollama",
+                            "llm_provider_configuration_id": PARENT_CLUSTER_SET_ID,
+                            "llm_provider_display_name": "Ollama",
+                            "llm_model": "llama3.1",
+                            "llm_sample_strategy": {"requested": 10},
+                        }
+                    ]
+                )
+            if normalized.startswith("SELECT status FROM cluster_sets"):
+                return FakeResult([{"status": "running"}])
+            if normalized.startswith("UPDATE cluster_sets SET status = 'completed'"):
+                assert params is not None
+                self.completed_query = normalized
+                self.completed_params = params
+                return FakeResult()
+            raise AssertionError(f"unexpected query: {normalized}")
+
+    fake_connection = SummarySuccessConnection()
+    monkeypatch.setattr(
+        cluster_service_module,
+        "open_database_connection",
+        lambda _: fake_connection,
+    )
+    service = ClusterService()
+    monkeypatch.setattr(service, "_generate_cluster_summaries", lambda **_: None)
+
+    service.execute_queued_cluster_set_summary_regeneration(PARENT_CLUSTER_SET_ID)
+
+    assert fake_connection.completed_query is not None
+    assert "completed_at" not in fake_connection.completed_query
+    assert fake_connection.completed_params is not None
+    assert unwrap_json(fake_connection.completed_params[0]) == {
+        "summary_regenerated": True
+    }
+
+
+def test_summary_regeneration_start_requires_successful_status_update(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeProviderService:
+        def ensure_text_generation_model(
+            self,
+            _provider_ref: UUID | str,
+            _model: str,
+        ) -> ProviderConfiguration:
+            return ProviderConfiguration(
+                id=PARENT_CLUSTER_SET_ID,
+                provider="ollama",
+                display_name="Ollama",
+                endpoint_url="http://127.0.0.1:11434",
+                available_models=["llama3.1"],
+                manual_models=[],
+                llm_models=["llama3.1"],
+                api_key_set=False,
+                updated_at=NOW,
+            )
+
+    class SummaryStartRaceConnection:
+        def __init__(self) -> None:
+            self.event_written = False
+
+        def __enter__(self) -> SummaryStartRaceConnection:
+            return self
+
+        def __exit__(self, *_: object) -> None:
+            return None
+
+        def transaction(self) -> FakeTransaction:
+            return FakeTransaction()
+
+        def execute(
+            self, query: str, params: tuple[object, ...] | None = None
+        ) -> FakeResult:
+            normalized = " ".join(query.split())
+            if normalized.startswith("SELECT cs.id, cs.status, COUNT(c.id)"):
+                return FakeResult(
+                    [
+                        {
+                            "id": PARENT_CLUSTER_SET_ID,
+                            "status": "completed",
+                            "cluster_count": 2,
+                        }
+                    ]
+                )
+            if normalized.startswith("UPDATE cluster_sets SET status = 'queued'"):
+                return FakeResult()
+            if normalized.startswith("INSERT INTO cluster_set_events"):
+                self.event_written = True
+                return FakeResult()
+            raise AssertionError(f"unexpected query: {normalized}")
+
+    fake_connection = SummaryStartRaceConnection()
+    monkeypatch.setattr(
+        cluster_service_module,
+        "open_database_connection",
+        lambda _: fake_connection,
+    )
+    service = ClusterService(provider_service=FakeProviderService())  # type: ignore[arg-type]
+
+    with pytest.raises(ClusterError) as error:
+        service.start_cluster_set_summary_regeneration(
+            PROJECT_ID,
+            PARENT_CLUSTER_SET_ID,
+            ClusterSetSummaryInput(
+                llm_provider_id=PARENT_CLUSTER_SET_ID,
+                llm_model="llama3.1",
+            ),
+            actor_user_id=ACTOR_ID,
+        )
+
+    assert error.value.code == "CLUSTER_SET_NOT_COMPLETE"
+    assert fake_connection.event_written is False
 
 
 def test_cluster_set_refinement_requires_completed_parent(
@@ -792,6 +1358,337 @@ def test_outlier_threshold_rejects_empty_result() -> None:
         _apply_outlier_threshold([0, 1], [0.2, 0.3], 0.5)
 
 
+def test_cluster_set_hdbscan_uses_all_local_jobs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    estimator_kwargs: dict[str, object] = {}
+
+    class FakeHDBSCAN:
+        probabilities_ = np.ones(2, dtype=np.float32)
+
+        def __init__(self, **kwargs: object) -> None:
+            estimator_kwargs.update(kwargs)
+            return None
+
+        def fit_predict(self, vectors: np.ndarray) -> np.ndarray:
+            assert vectors.shape == (2, 2)
+            return np.array([0, 0], dtype=np.int32)
+
+    monkeypatch.setattr(cluster_service_module, "HDBSCAN", FakeHDBSCAN)
+    config = validate_algorithm_settings(
+        {"algorithm": "hdbscan", "min_cluster_size": 2}
+    )
+
+    labels, probabilities = ClusterService()._cluster_vectors(
+        config, np.ones((2, 2), dtype=np.float32)
+    )
+
+    assert labels == [0, 0]
+    assert probabilities == [1.0, 1.0]
+    assert estimator_kwargs["n_jobs"] == -1
+
+
+def test_hdbscan_pca_reduces_vectors_before_estimator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    estimator_shape: tuple[int, int] | None = None
+
+    class FakeHDBSCAN:
+        probabilities_ = np.ones(6, dtype=np.float32)
+
+        def __init__(self, **_: object) -> None:
+            return None
+
+        def fit_predict(self, vectors: np.ndarray) -> np.ndarray:
+            nonlocal estimator_shape
+            estimator_shape = tuple(vectors.shape)
+            return np.zeros(len(vectors), dtype=np.int32)
+
+    monkeypatch.setattr(cluster_service_module, "HDBSCAN", FakeHDBSCAN)
+    config = validate_algorithm_settings(
+        {
+            "algorithm": "hdbscan",
+            "min_cluster_size": 2,
+            "reduction_method": "pca",
+            "reduction_dimensions": 2,
+            "execution_backend": "cpu",
+        }
+    )
+    vectors = np.arange(30, dtype=np.float32).reshape((6, 5))
+
+    labels, probabilities = ClusterService()._cluster_vectors(config, vectors)
+
+    assert labels == [0, 0, 0, 0, 0, 0]
+    assert probabilities == [1.0] * 6
+    assert estimator_shape == (6, 2)
+
+
+def test_hdbscan_cuml_backend_reports_missing_accelerator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_import_module = cluster_service_module.importlib.import_module
+
+    def fake_import_module(name: str) -> object:
+        if name == "cuml.cluster":
+            raise ImportError("missing cuml")
+        return original_import_module(name)
+
+    monkeypatch.setattr(
+        cluster_service_module.importlib,
+        "import_module",
+        fake_import_module,
+    )
+    config = validate_algorithm_settings(
+        {
+            "algorithm": "hdbscan",
+            "min_cluster_size": 2,
+            "execution_backend": "cuml",
+        }
+    )
+
+    with pytest.raises(ClusterError) as error:
+        ClusterService()._cluster_vectors(config, np.ones((2, 2), dtype=np.float32))
+
+    assert error.value.code == "CLUSTER_ACCELERATOR_UNAVAILABLE"
+    assert error.value.retryable is True
+
+
+def test_hdbscan_umap_reports_missing_reduction_as_retryable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_import_module = cluster_service_module.importlib.import_module
+
+    def fake_import_module(name: str) -> object:
+        if name in {"cuml.manifold", "umap"}:
+            raise ImportError("missing reduction dependency")
+        return original_import_module(name)
+
+    monkeypatch.setattr(
+        cluster_service_module.importlib,
+        "import_module",
+        fake_import_module,
+    )
+    config = validate_algorithm_settings(
+        {
+            "algorithm": "hdbscan",
+            "min_cluster_size": 2,
+            "reduction_method": "umap",
+            "reduction_dimensions": 2,
+            "execution_backend": "auto",
+        }
+    )
+
+    with pytest.raises(ClusterError) as error:
+        ClusterService()._cluster_vectors(config, np.ones((4, 3), dtype=np.float32))
+
+    assert error.value.code == "CLUSTER_REDUCTION_UNAVAILABLE"
+    assert error.value.retryable is True
+
+
+def test_hdbscan_auto_backend_falls_back_to_cpu(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_import_module = cluster_service_module.importlib.import_module
+    cpu_called = False
+
+    def fake_import_module(name: str) -> object:
+        if name == "cuml.cluster":
+            raise ImportError("missing cuml")
+        return original_import_module(name)
+
+    class FakeHDBSCAN:
+        probabilities_ = np.ones(3, dtype=np.float32)
+
+        def __init__(self, **_: object) -> None:
+            return None
+
+        def fit_predict(self, vectors: np.ndarray) -> np.ndarray:
+            nonlocal cpu_called
+            cpu_called = True
+            assert vectors.shape == (3, 2)
+            return np.array([0, 0, 1], dtype=np.int32)
+
+    monkeypatch.setattr(
+        cluster_service_module.importlib,
+        "import_module",
+        fake_import_module,
+    )
+    monkeypatch.setattr(cluster_service_module, "HDBSCAN", FakeHDBSCAN)
+    config = validate_algorithm_settings(
+        {
+            "algorithm": "hdbscan",
+            "min_cluster_size": 2,
+            "execution_backend": "auto",
+        }
+    )
+
+    labels, probabilities, diagnostics = ClusterService()._fit_hdbscan_vectors(
+        config, np.ones((3, 2), dtype=np.float32)
+    )
+
+    assert cpu_called is True
+    assert labels == [0, 0, 1]
+    assert probabilities == [1.0, 1.0, 1.0]
+    assert diagnostics["execution_backend_requested"] == "auto"
+    assert diagnostics["execution_backend_effective"] == "cpu"
+    assert diagnostics["execution_backend_fallback"] is True
+
+
+def test_execute_hdbscan_with_reduction_publishes_clustering_after_reducing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class ReductionProgressConnection:
+        def __init__(self) -> None:
+            self.completed_params: tuple[object, ...] | None = None
+
+        def __enter__(self) -> ReductionProgressConnection:
+            return self
+
+        def __exit__(self, *_: object) -> None:
+            return None
+
+        def transaction(self) -> FakeTransaction:
+            return FakeTransaction()
+
+        def execute(
+            self, query: str, params: tuple[object, ...] | None = None
+        ) -> FakeResult:
+            normalized = " ".join(query.split())
+            if normalized.startswith("UPDATE cluster_sets cs SET status = 'running'"):
+                return FakeResult(
+                    [
+                        {
+                            "id": PARENT_CLUSTER_SET_ID,
+                            "project_id": PROJECT_ID,
+                            "indexing_run_id": RUN_ID,
+                            "dataset_version_id": DATASET_ID,
+                            "vector_basis": "message",
+                            "message_weight": 1.0,
+                            "answer_weight": 0.0,
+                            "algorithm": "hdbscan",
+                            "parameters": {
+                                "min_cluster_size": 2,
+                                "reduction_method": "pca",
+                                "reduction_dimensions": 2,
+                                "execution_backend": "cpu",
+                            },
+                            "source_snapshot": {},
+                            "llm_provider": None,
+                            "llm_provider_configuration_id": None,
+                            "llm_provider_display_name": None,
+                            "llm_model": None,
+                            "llm_sample_strategy": {},
+                            "provider": "ollama",
+                            "model": "bge-m3:latest",
+                        }
+                    ]
+                )
+            if normalized.startswith("UPDATE cluster_sets SET status = 'completed'"):
+                assert params is not None
+                self.completed_params = params
+                return FakeResult()
+            return FakeResult()
+
+    fake_connection = ReductionProgressConnection()
+    monkeypatch.setattr(
+        cluster_service_module,
+        "open_database_connection",
+        lambda _: fake_connection,
+    )
+    service = ClusterService()
+    progress_phases: list[str] = []
+    pair_ids = [UUID(int=index + 1) for index in range(4)]
+
+    monkeypatch.setattr(service, "_raise_if_cluster_set_cancelled", lambda *_: None)
+    monkeypatch.setattr(
+        service,
+        "_cluster_set_input_summary",
+        lambda *_args, **_kwargs: {"record_count": 4},
+    )
+    monkeypatch.setattr(
+        service,
+        "_validate_cluster_set_basis_budget",
+        lambda *_args, **_kwargs: ClusterSetBasisBudget(
+            output_dimensions=4,
+            message_dimensions=4,
+            answer_dimensions=None,
+        ),
+    )
+    monkeypatch.setattr(
+        service,
+        "_load_cluster_set_embedding_matrix",
+        lambda *_args, **_kwargs: (
+            pair_ids,
+            np.arange(16, dtype=np.float32).reshape((4, 4)),
+            [0.0] * 4,
+        ),
+    )
+    monkeypatch.setattr(
+        service,
+        "_reduce_hdbscan_vectors",
+        lambda _config, vectors: np.asarray(vectors[:, :2], dtype=np.float32),
+    )
+
+    def fake_fit_hdbscan_vectors(
+        _config: object,
+        vectors: np.ndarray,
+    ) -> tuple[list[int], list[float], dict[str, object]]:
+        assert progress_phases[-1] == "clustering"
+        assert vectors.shape == (4, 2)
+        return (
+            [0, 0, 1, 1],
+            [1.0] * 4,
+            {
+                "execution_backend_requested": "cpu",
+                "execution_backend_effective": "cpu",
+                "execution_backend_fallback": False,
+                "effective_dimensions": 2,
+            },
+        )
+
+    monkeypatch.setattr(service, "_fit_hdbscan_vectors", fake_fit_hdbscan_vectors)
+    monkeypatch.setattr(service, "_insert_cluster_set_clusters", lambda *_, **__: None)
+    monkeypatch.setattr(service, "_record_cluster_set_event", lambda *_, **__: None)
+    monkeypatch.setattr(
+        service,
+        "_publish_cluster_set_progress",
+        lambda _cluster_set_id, _progress, phase: progress_phases.append(phase),
+    )
+
+    service.execute_queued_cluster_set(PARENT_CLUSTER_SET_ID)
+
+    assert progress_phases == ["loading", "reducing", "clustering", "persisting"]
+    assert fake_connection.completed_params is not None
+    diagnostics = unwrap_json(fake_connection.completed_params[0])
+    assert isinstance(diagnostics, dict)
+    assert diagnostics["clustering"] == {
+        "execution_backend_requested": "cpu",
+        "execution_backend_effective": "cpu",
+        "execution_backend_fallback": False,
+        "effective_dimensions": 2,
+    }
+
+
+def test_algorithm_settings_accepts_hdbscan_reduction_and_backend_parameters() -> None:
+    config = validate_algorithm_settings(
+        {
+            "algorithm": "hdbscan",
+            "min_cluster_size": 5,
+            "reduction_method": "umap",
+            "reduction_dimensions": 12,
+            "umap_n_neighbors": 20,
+            "umap_min_dist": 0.2,
+            "execution_backend": "auto",
+        }
+    )
+
+    assert config.parameters["reduction_method"] == "umap"
+    assert config.parameters["reduction_dimensions"] == 12
+    assert config.parameters["umap_n_neighbors"] == 20
+    assert config.parameters["umap_min_dist"] == 0.2
+    assert config.parameters["execution_backend"] == "auto"
+
+
 def test_cluster_summary_response_requires_schema_json() -> None:
     service = ClusterService()
 
@@ -801,8 +1698,169 @@ def test_cluster_summary_response_requires_schema_json() -> None:
     assert parsed["title"] == "Reset"
     assert parsed["question"] == "How?"
 
-    with pytest.raises(ClusterError, match="Cluster summary response is invalid"):
+    with pytest.raises(ClusterError, match="Cluster summary response"):
         service._parse_cluster_summary_response("not json")
+
+
+def test_cluster_summary_response_accepts_json_inside_model_wrapping() -> None:
+    service = ClusterService()
+
+    prefaced = service._parse_cluster_summary_response(
+        'Hier ist das JSON:\n{"title":"Versand","category":null,'
+        '"question":"Wann kommt es?","answer":"In zwei Tagen.",'
+        '"rationale":"Mehrere Beispiele fragen nach Versand."}\nDanke.'
+    )
+    fenced = service._parse_cluster_summary_response(
+        '```json\n[{"title":"Login","category":"Konto",'
+        '"question":"Wie melde ich mich an?","answer":"Mit E-Mail.",'
+        '"rationale":null}]\n```'
+    )
+
+    assert prefaced["title"] == "Versand"
+    assert prefaced["category"] is None
+    assert fenced["title"] == "Login"
+    assert fenced["question"] == "Wie melde ich mich an?"
+
+
+def test_cluster_summary_response_accepts_common_model_variants() -> None:
+    service = ClusterService()
+
+    nested_german = service._parse_cluster_summary_response(
+        '{"summary":{"titel":"Retouren","kategorie":"Logistik",'
+        '"frage":"Wie sende ich Ware zurück?","antwort":"Nutze das Retourenportal.",'
+        '"begruendung":"Mehrere Beispiele fragen nach Rücksendung."}}'
+    )
+    multi_candidate = service._parse_cluster_summary_response(
+        'Schema: {"title":"string","category":"string|null",'
+        '"question":"string","answer":"string","rationale":"string|null"}\n'
+        'Antwort: {"title":"Zahlung","category":"Checkout",'
+        '"question":"Warum wird die Zahlung abgelehnt?",'
+        '"answer":"Bitte Zahlungsmethode prüfen.","rationale":null}'
+    )
+    array_candidate = service._parse_cluster_summary_response(
+        '[{"message":"Rohbeispiel","answer":"Nicht die Summary"},'
+        '{"title":"Login","question":"Wie melde ich mich an?",'
+        '"answer":"Mit E-Mail und Passwort.","rationale":null}]'
+    )
+    multiline = service._parse_cluster_summary_response(
+        '{"title":"Status","category":null,"question":"Wo ist die Bestellung?",'
+        '"answer":"Prüfe den Versandstatus.\nFalls nötig, kontaktiere Support.",'
+        '"rationale":null}'
+    )
+    labeled_text = service._parse_cluster_summary_response(
+        "Titel: Widerruf\n"
+        "Kategorie: Retoure\n"
+        "Zusammengefasste Frage: Wie kann ein Kunde widerrufen?\n"
+        "Zusammengefasste Antwort: Nutze das Widerrufsformular.\n"
+        "Begründung: Die Beispiele behandeln Widerrufsfristen."
+    )
+    smart_quotes = service._parse_cluster_summary_response(
+        "Antwort:\n"
+        "{“title”: “Lieferadresse”, “category”: “Versand”, "
+        "“question”: “Wie ändere ich die Lieferadresse?”, "
+        "“answer”: “Ändere sie vor Versand im Konto.”, “rationale”: null}"
+    )
+    encoded_json = service._parse_cluster_summary_response(
+        '"{\\"title\\":\\"Adresse\\",\\"category\\":\\"Versand\\",'
+        '\\"question\\":\\"Wie ändere ich die Adresse?\\",'
+        '\\"answer\\":\\"Passe sie vor Versand im Konto an.\\",'
+        '\\"rationale\\":null}"'
+    )
+
+    assert nested_german["title"] == "Retouren"
+    assert nested_german["question"] == "Wie sende ich Ware zurück?"
+    assert multi_candidate["title"] == "Zahlung"
+    assert array_candidate["answer"] == "Mit E-Mail und Passwort."
+    assert multiline["answer"] == (
+        "Prüfe den Versandstatus.\nFalls nötig, kontaktiere Support."
+    )
+    assert labeled_text["title"] == "Widerruf"
+    assert labeled_text["question"] == "Wie kann ein Kunde widerrufen?"
+    assert smart_quotes["title"] == "Lieferadresse"
+    assert smart_quotes["answer"] == "Ändere sie vor Versand im Konto."
+    assert encoded_json["title"] == "Adresse"
+
+
+def test_cluster_summary_prompt_is_strict_and_truncates_long_examples() -> None:
+    service = ClusterService()
+
+    prompt = service._cluster_summary_prompt(
+        [{"message": "M" * 2_000, "answer": "A" * 2_000}]
+    )
+
+    assert "Antworte ausschließlich mit einem einzelnen JSON-Objekt" in prompt
+    assert "Keine Markdown-Fences" in prompt
+    assert "M" * 1_200 in prompt
+    assert "M" * 1_201 not in prompt
+
+
+def test_cluster_summary_parse_failure_uses_extractive_fallback() -> None:
+    class BrokenProviderService:
+        def generate_text(
+            self,
+            _provider_ref: UUID | str,
+            _model: str,
+            _prompt: str,
+        ) -> str:
+            return "not json"
+
+    service = ClusterService(provider_service=BrokenProviderService())  # type: ignore[arg-type]
+
+    summary, mode, reason = service._cluster_summary_from_provider_or_examples(
+        llm_provider="ollama",
+        llm_model="qwen2.5:7b",
+        prompt="Prompt",
+        examples=[
+            {
+                "message": "Wie kann ich mein Passwort zurücksetzen?",
+                "answer": "Nutze den Passwort-zurücksetzen-Link im Login.",
+            }
+        ],
+    )
+
+    assert mode == "fallback"
+    assert reason is not None
+    assert reason.startswith("parse_error:")
+    assert summary["title"] == "kann ich mein Passwort zurücksetzen"
+    assert summary["question"] == "Wie kann ich mein Passwort zurücksetzen?"
+    assert summary["answer"] == "Nutze den Passwort-zurücksetzen-Link im Login."
+    assert summary["rationale"] is not None
+    assert "Fallback-Summary" in summary["rationale"]
+
+
+def test_cluster_summary_provider_error_uses_extractive_fallback() -> None:
+    class TimeoutProviderService:
+        def generate_text(
+            self,
+            _provider_ref: UUID | str,
+            _model: str,
+            _prompt: str,
+        ) -> str:
+            raise ProviderError("LLM provider request failed: TimeoutError")
+
+    service = ClusterService(provider_service=TimeoutProviderService())  # type: ignore[arg-type]
+
+    summary, mode, reason = service._cluster_summary_from_provider_or_examples(
+        llm_provider="ollama",
+        llm_model="qwen2.5:7b",
+        prompt="Prompt",
+        examples=[
+            {
+                "message": "Paket ist beschädigt angekommen",
+                "answer": "Bitte sende Fotos und die Bestellnummer an den Support.",
+            }
+        ],
+    )
+
+    assert mode == "fallback"
+    assert reason == "provider_error:ProviderError"
+    assert summary["title"] == "Paket ist beschädigt angekommen"
+    assert summary["question"] == (
+        "Wie ist diese Anfrage zu bearbeiten: Paket ist beschädigt angekommen"
+    )
+    assert summary["answer"] == (
+        "Bitte sende Fotos und die Bestellnummer an den Support."
+    )
 
 
 @pytest.mark.parametrize(
@@ -1066,11 +2124,13 @@ def test_native_pgvector_fixture_that_exceeded_old_text_peak_reaches_estimator(
         lambda _: fake_connection,
     )
     estimator_reached = False
+    estimator_kwargs: dict[str, object] = {}
 
     class FakeHDBSCAN:
         probabilities_ = np.ones(record_count, dtype=np.float32)
 
-        def __init__(self, **_: object) -> None:
+        def __init__(self, **kwargs: object) -> None:
+            estimator_kwargs.update(kwargs)
             return None
 
         def fit_predict(self, vectors: np.ndarray) -> np.ndarray:
@@ -1086,6 +2146,7 @@ def test_native_pgvector_fixture_that_exceeded_old_text_peak_reaches_estimator(
     ClusterService().generate_for_run(PROJECT_ID, RUN_ID, actor_user_id=ACTOR_ID)
 
     assert estimator_reached is True
+    assert estimator_kwargs["n_jobs"] == -1
     assert fake_connection.message_pair_selects == 1
     assert len(fake_connection.memberships) == record_count
 
