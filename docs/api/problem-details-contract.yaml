@@ -100,6 +100,18 @@ x-skm-problem-codes:
     status: 422
     detail: Die Cluster wurden berechnet, aber die LLM-Zusammenfassung ist nicht sicher verwendbar.
     suggestedAction: retry-summary
+  CLUSTER_REDUCTION_UNAVAILABLE:
+    type: urn:skm:error:CLUSTER_REDUCTION_UNAVAILABLE
+    title: Dimensionsreduzierung ist nicht verfügbar.
+    status: 422
+    detail: Die gewählte Dimensionsreduzierung ist lokal nicht verfügbar.
+    suggestedAction: adjust-clustering-parameters
+  CLUSTER_ACCELERATOR_UNAVAILABLE:
+    type: urn:skm:error:CLUSTER_ACCELERATOR_UNAVAILABLE
+    title: GPU-Beschleunigung ist nicht verfügbar.
+    status: 422
+    detail: cuML/RAPIDS ist in dieser lokalen Laufzeit nicht verfügbar.
+    suggestedAction: choose-cpu-backend
   CLUSTER_SET_CANCEL_NOT_AVAILABLE:
     type: urn:skm:error:CLUSTER_SET_CANCEL_NOT_AVAILABLE
     title: Das Cluster-Set kann nicht abgebrochen werden.

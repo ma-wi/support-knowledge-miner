@@ -56,6 +56,13 @@ const SYNTHETIC_PROJECT = {
   created_at: "2026-07-22T00:00:00Z",
   updated_at: "2026-07-22T00:00:00Z",
 };
+const SYNTHETIC_EMPTY_PROJECT = {
+  id: "project-empty",
+  name: "Leeres Projekt",
+  lifecycle_state: "active",
+  created_at: "2026-07-22T00:00:00Z",
+  updated_at: "2026-07-22T00:00:00Z",
+};
 const SYNTHETIC_IMPORT_LOG = {
   id: "import-log-1",
   source_type: "csv",
@@ -70,10 +77,13 @@ const SYNTHETIC_IMPORT_LOG = {
   dataset_deleted_at: null,
 };
 const SYNTHETIC_PROVIDER = {
-  provider: "vllm",
-  endpoint_url: "http://localhost:8000",
+  id: "provider-ollama",
+  provider: "ollama",
+  display_name: "Lokales Ollama",
+  endpoint_url: "http://localhost:11434",
+  available_models: ["local-embed", "llama3.1"],
   manual_models: ["local-embed"],
-  llm_models: [],
+  llm_models: ["llama3.1"],
   api_key_set: false,
   updated_at: "2026-07-22T00:00:00Z",
 };
@@ -725,7 +735,7 @@ async function fulfillSyntheticApi(route, requestUrl, method, apiMode) {
     return true;
   }
   if (path === "/api/projects" && method === "GET") {
-    await apiJson(route, [SYNTHETIC_PROJECT]);
+    await apiJson(route, [SYNTHETIC_PROJECT, SYNTHETIC_EMPTY_PROJECT]);
     return true;
   }
   if (path === "/api/providers" && method === "GET") {
@@ -736,16 +746,35 @@ async function fulfillSyntheticApi(route, requestUrl, method, apiMode) {
     await apiJson(route, SYNTHETIC_PROJECT);
     return true;
   }
+  if (path === "/api/projects/project-empty" && method === "GET") {
+    await apiJson(route, SYNTHETIC_EMPTY_PROJECT);
+    return true;
+  }
   if (path === "/api/projects/project-alpha/imports" && method === "GET") {
     await apiJson(route, [SYNTHETIC_IMPORT_LOG]);
+    return true;
+  }
+  if (path === "/api/projects/project-empty/imports" && method === "GET") {
+    await apiJson(route, []);
     return true;
   }
   if (path === "/api/projects/project-alpha/indexing-runs" && method === "GET") {
     await apiJson(route, [SYNTHETIC_INDEXING_RUN]);
     return true;
   }
+  if (
+    path === "/api/projects/project-empty/indexing-runs" &&
+    method === "GET"
+  ) {
+    await apiJson(route, []);
+    return true;
+  }
   if (path === "/api/projects/project-alpha/cluster-sets" && method === "GET") {
     await apiJson(route, [SYNTHETIC_CLUSTER_SET, SYNTHETIC_CHILD_CLUSTER_SET]);
+    return true;
+  }
+  if (path === "/api/projects/project-empty/cluster-sets" && method === "GET") {
+    await apiJson(route, []);
     return true;
   }
   if (
@@ -770,6 +799,10 @@ async function fulfillSyntheticApi(route, requestUrl, method, apiMode) {
     return true;
   }
   if (path === "/api/projects/project-alpha/exports" && method === "GET") {
+    await apiJson(route, []);
+    return true;
+  }
+  if (path === "/api/projects/project-empty/exports" && method === "GET") {
     await apiJson(route, []);
     return true;
   }
@@ -883,11 +916,24 @@ async function signInToSyntheticApp(page) {
     .waitFor({ state: "visible", timeout: 10_000 });
 }
 
-async function openSyntheticProject(page) {
-  await page.getByRole("button", { name: "Projekte", exact: true }).click();
+async function openProjectList(page) {
+  await page.getByRole("button", { name: "Hauptmenü öffnen" }).click();
+  await page.getByRole("menuitem", { name: "Projekte" }).click();
   await page
     .getByRole("region", { name: "Bestehende Projekte" })
-    .getByRole("button", { name: /Alpha, zuletzt aktualisiert/ })
+    .waitFor({ state: "visible", timeout: 10_000 });
+}
+
+async function openSyntheticProject(page, projectName = "Alpha") {
+  await page
+    .getByRole("region", { name: "Bestehende Projekte" })
+    .waitFor({ state: "visible", timeout: 10_000 });
+  const escaped = projectName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  await page
+    .getByRole("region", { name: "Bestehende Projekte" })
+    .getByRole("button", {
+      name: new RegExp(`${escaped}, zuletzt aktualisiert`),
+    })
     .click();
   await page
     .getByRole("tab", { name: "Cluster-Sets", exact: true })
@@ -1084,6 +1130,24 @@ async function captureProjectScenarios(
     try {
       const { page } = configured;
       await signInToSyntheticApp(page);
+      await openSyntheticProject(page, "Leeres Projekt");
+      await page
+        .getByRole("tab", { name: "Explorer", exact: true })
+        .click();
+      await page
+        .getByText(/Noch kein abgeschlossenes Cluster-Set geladen/)
+        .waitFor({ state: "visible", timeout: 10_000 });
+      await captureState(
+        captures,
+        page,
+        viewport,
+        outputRoot,
+        "explorer-empty",
+        "project",
+        onState,
+      );
+
+      await openProjectList(page);
       await openSyntheticProject(page);
 
       await page
@@ -1127,19 +1191,6 @@ async function captureProjectScenarios(
       await page
         .getByRole("tab", { name: "Explorer", exact: true })
         .click();
-      await page
-        .getByText(/Noch kein abgeschlossenes Cluster-Set geladen/)
-        .waitFor({ state: "visible", timeout: 10_000 });
-      await captureState(
-        captures,
-        page,
-        viewport,
-        outputRoot,
-        "explorer-empty",
-        "project",
-        onState,
-      );
-
       await page.getByRole("button", { name: "Cluster-Set auswählen" }).click();
       await page
         .getByRole("button", { name: "Im Explorer laden" })
