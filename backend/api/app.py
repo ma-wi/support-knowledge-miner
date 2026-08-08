@@ -161,6 +161,7 @@ class ProjectResponse(BaseModel):
     lifecycle_state: str
     created_at: datetime
     updated_at: datetime
+    ticket_url_template: str | None = None
 
 
 class CreateProjectRequest(BaseModel):
@@ -169,6 +170,7 @@ class CreateProjectRequest(BaseModel):
 
 class RenameProjectRequest(BaseModel):
     name: str = Field(min_length=1)
+    ticket_url_template: str | None = None
 
 
 class DeleteProjectRequest(BaseModel):
@@ -526,6 +528,43 @@ def _user_response(user: PublicUser) -> UserResponse:
 
 def _project_response(project: PublicProject) -> ProjectResponse:
     return ProjectResponse.model_validate(project)
+
+
+def _project_problem_response(error: ProjectError) -> JSONResponse:
+    contracts = {
+        "PROJECT_NOT_FOUND": {
+            "title": "Projekt wurde nicht gefunden.",
+            "detail": "Das Projekt wurde nicht gefunden.",
+        },
+        "VALIDATION_FAILED": {
+            "title": "Projekteinstellungen sind ungültig.",
+            "detail": "Die Projekteinstellungen konnten mit diesen Eingaben nicht gespeichert werden.",
+        },
+    }
+    contract = contracts.get(
+        error.code,
+        {
+            "title": "Projektaktion konnte nicht abgeschlossen werden.",
+            "detail": "Die Projektaktion ist unerwartet fehlgeschlagen.",
+        },
+    )
+    return JSONResponse(
+        status_code=error.status_code,
+        content={
+            "type": f"urn:skm:error:{error.code}",
+            "title": contract["title"],
+            "status": error.status_code,
+            "detail": contract["detail"],
+            "code": error.code,
+            "correlationId": None,
+            "retryable": error.retryable,
+            "suggestedAction": error.suggested_action,
+            "fieldErrors": [
+                {"field": field, "message": message}
+                for field, message in error.field_errors.items()
+            ],
+        },
+    )
 
 
 def _import_log_response(log: ImportLog) -> ImportLogResponse:
@@ -1312,15 +1351,13 @@ def create_app(
     def create_project(
         payload: CreateProjectRequest,
         actor: CurrentUser = Depends(current_user),
-    ) -> ProjectResponse:
+    ) -> ProjectResponse | JSONResponse:
         try:
             project = project_service.create_project(
                 payload.name, actor_user_id=actor.id
             )
         except ProjectError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
-            ) from exc
+            return _project_problem_response(exc)
         return _project_response(project)
 
     @app.get("/api/projects/{project_id}", response_model=ProjectResponse)
@@ -1340,28 +1377,34 @@ def create_app(
         project_id: UUID,
         payload: RenameProjectRequest,
         actor: CurrentUser = Depends(current_user),
-    ) -> ProjectResponse:
+    ) -> ProjectResponse | JSONResponse:
         try:
-            project = project_service.rename_project(
-                project_id, payload.name, actor_user_id=actor.id
-            )
+            if "ticket_url_template" in payload.model_fields_set:
+                project = project_service.update_project_settings(
+                    project_id,
+                    name=payload.name,
+                    ticket_url_template=payload.ticket_url_template,
+                    actor_user_id=actor.id,
+                )
+            else:
+                project = project_service.rename_project(
+                    project_id, payload.name, actor_user_id=actor.id
+                )
         except ProjectError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
-            ) from exc
+            return _project_problem_response(exc)
         return _project_response(project)
 
     @app.api_route(
         "/api/projects/{project_id}",
         methods=["DELETE"],
-        status_code=status.HTTP_204_NO_CONTENT,
+        response_model=None,
     )
     def delete_project(
         project_id: UUID,
         payload: DeleteProjectRequest,
         response: Response,
         actor: CurrentUser = Depends(current_user),
-    ) -> Response:
+    ) -> Response | JSONResponse:
         try:
             project_service.delete_project(
                 project_id,
@@ -1369,9 +1412,7 @@ def create_app(
                 confirmation_name=payload.confirmation_name,
             )
         except ProjectError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
-            ) from exc
+            return _project_problem_response(exc)
         response.status_code = status.HTTP_204_NO_CONTENT
         return response
 

@@ -108,6 +108,12 @@ textarea:focus {
   box-shadow: 0 0 0 4px rgba(8, 145, 178, 0.14);
 }
 
+input[aria-invalid="true"],
+select[aria-invalid="true"],
+textarea[aria-invalid="true"] {
+  border-color: var(--danger);
+}
+
 label {
   display: grid;
   gap: 0.4rem;
@@ -563,7 +569,6 @@ h2 {
   justify-content: space-between;
 }
 
-.project-rename-form,
 .project-create-form {
   display: grid;
   grid-template-columns: minmax(220px, 1fr) auto;
@@ -571,12 +576,22 @@ h2 {
   align-items: end;
 }
 
-.project-rename-form {
-  min-width: min(100%, 420px);
-}
-
 .project-create-form h2 {
   grid-column: 1 / -1;
+}
+
+.project-settings-form {
+  align-content: start;
+}
+
+.field-error {
+  color: var(--danger);
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+.danger-panel {
+  border-color: rgba(220, 38, 38, 0.28);
 }
 
 .project-home {
@@ -740,9 +755,14 @@ h2 {
 
 .explorer-workspace-grid {
   display: grid;
-  grid-template-columns: minmax(280px, 0.34fr) minmax(0, 1fr);
+  position: relative;
+  grid-template-columns: minmax(240px, 0.26fr) minmax(0, 1fr);
   gap: 1.25rem;
   align-items: start;
+}
+
+.explorer-workspace-grid-collapsed {
+  grid-template-columns: minmax(4.5rem, 0.08fr) minmax(0, 1fr);
 }
 
 .explorer-rail,
@@ -752,9 +772,52 @@ h2 {
   min-width: 0;
 }
 
+.explorer-table-workspace {
+  max-height: calc(100svh - 9rem);
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
 .explorer-rail {
   position: sticky;
   top: 112px;
+}
+
+.explorer-rail-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 0.75rem;
+  background: var(--panel-strong);
+}
+
+.icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.45rem;
+  min-width: 2.45rem;
+  height: 2.45rem;
+  padding: 0;
+  font-size: 1.2rem;
+  line-height: 1;
+}
+
+.explorer-rail-collapsed {
+  overflow: visible;
+}
+
+.explorer-rail-collapsed .explorer-rail-header {
+  justify-content: center;
+}
+
+.explorer-rail-content {
+  display: grid;
+  gap: 1rem;
 }
 
 .rail-group {
@@ -907,6 +970,30 @@ h2 {
   white-space: nowrap;
 }
 
+.sort-header-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  border: 0;
+  padding: 0;
+  color: inherit;
+  background: transparent;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+}
+
+.sort-header-button:hover,
+.sort-header-button:focus-visible {
+  color: var(--text);
+}
+
+.sort-indicator {
+  min-width: 1em;
+  color: #0e7490;
+  font-size: 0.85em;
+}
+
 .cluster-status-cell {
   min-width: 130px;
 }
@@ -984,6 +1071,27 @@ h2 {
   gap: 0.75rem;
 }
 
+.scroll-to-top {
+  position: fixed;
+  right: clamp(1rem, 3vw, 2rem);
+  bottom: clamp(1rem, 3vw, 2rem);
+  z-index: 10;
+  border-radius: 999px;
+  box-shadow: var(--shadow);
+}
+
+.source-ticket-link {
+  color: #075985;
+  text-decoration: underline;
+  text-decoration-thickness: 0.08em;
+  text-underline-offset: 0.18em;
+}
+
+.source-ticket-link:hover,
+.source-ticket-link:focus-visible {
+  color: #0e7490;
+}
+
 .status-chip {
   display: inline-flex;
   margin: 0 0.35rem 0.35rem 0;
@@ -1031,14 +1139,25 @@ h2 {
 }
 
 .source-dialog {
-  width: min(100%, 960px);
-  max-height: min(88svh, 900px);
+  width: min(100%, 1180px);
+  max-height: min(94svh, 980px);
   overflow: auto;
   border: 1px solid var(--line);
   border-radius: var(--radius);
-  padding: clamp(1rem, 3vw, 1.5rem);
+  padding: 0 clamp(1rem, 3vw, 1.5rem) clamp(1rem, 3vw, 1.5rem);
   background: var(--panel);
   box-shadow: var(--shadow);
+}
+
+.source-dialog-header {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  margin-inline: calc(clamp(1rem, 3vw, 1.5rem) * -1);
+  border-bottom: 1px solid var(--line);
+  padding: clamp(1rem, 3vw, 1.5rem);
+  background: color-mix(in srgb, var(--panel) 94%, transparent);
+  backdrop-filter: blur(8px);
 }
 
 .source-list {
@@ -1059,6 +1178,15 @@ h2 {
 
   .explorer-rail {
     position: static;
+  }
+
+  .explorer-table-workspace {
+    max-height: none;
+    overflow: visible;
+  }
+
+  .explorer-workspace-grid-collapsed {
+    grid-template-columns: 1fr;
   }
 
   .metric-grid {
@@ -1094,8 +1222,7 @@ h2 {
 }
 
 @media (max-width: 560px) {
-  .project-create-form,
-  .project-rename-form {
+  .project-create-form {
     grid-template-columns: 1fr;
   }
 

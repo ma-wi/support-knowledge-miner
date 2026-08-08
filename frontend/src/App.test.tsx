@@ -15,6 +15,14 @@ type ApiActiveJobs = {
   indexing_active: boolean;
   cluster_set_active: boolean;
 };
+type ApiProjectFixture = {
+  id: string;
+  name: string;
+  lifecycle_state: string;
+  created_at: string;
+  updated_at: string;
+  ticket_url_template: string | null;
+};
 
 const owner = {
   id: "local-owner",
@@ -29,19 +37,21 @@ const curator = {
   last_name: "Curator",
   email: "curator@example.test",
 };
-const alphaProject = {
+const alphaProject: ApiProjectFixture = {
   id: "project-alpha",
   name: "Alpha",
   lifecycle_state: "active",
   created_at: "2026-07-22T00:00:00Z",
   updated_at: "2026-07-22T00:00:00Z",
+  ticket_url_template: null,
 };
-const betaProject = {
+const betaProject: ApiProjectFixture = {
   id: "project-beta",
   name: "Beta",
   lifecycle_state: "active",
   created_at: "2026-07-22T00:00:00Z",
   updated_at: "2026-07-22T00:00:00Z",
+  ticket_url_template: null,
 };
 const importLog = {
   id: "import-log-1",
@@ -370,7 +380,7 @@ async function openSettingsTab(
 async function openProjectTab(
   user: ReturnType<typeof userEvent.setup>,
   tabName:
-    "Import" | "Indizieren" | "Cluster-Sets" | "Explorer" | "Projekt löschen",
+    "Import" | "Indizieren" | "Cluster-Sets" | "Explorer" | "Einstellungen",
 ) {
   await user.click(await screen.findByRole("tab", { name: tabName }));
 }
@@ -1343,7 +1353,14 @@ test("allows signed-in users to create open rename and delete projects with conf
     }
     if (path === "/api/projects/project-beta" && method === "PATCH") {
       expect(String(init?.body)).toContain("Beta renamed");
-      currentBetaProject = { ...betaProject, name: "Beta renamed" };
+      expect(String(init?.body)).toContain(
+        "https://tickets.example.test/T-<ticket_id>",
+      );
+      currentBetaProject = {
+        ...betaProject,
+        name: "Beta renamed",
+        ticket_url_template: "https://tickets.example.test/T-<ticket_id>",
+      };
       return jsonResponse(currentBetaProject);
     }
     if (path === "/api/projects/project-beta" && method === "DELETE") {
@@ -1400,7 +1417,7 @@ test("allows signed-in users to create open rename and delete projects with conf
     "Indizieren",
     "Cluster-Sets",
     "Explorer",
-    "Projekt löschen",
+    "Einstellungen",
   ]);
 
   await openProjectsPage(user);
@@ -1412,10 +1429,8 @@ test("allows signed-in users to create open rename and delete projects with conf
     await screen.findByRole("heading", { name: "Alpha" }),
   ).toBeInTheDocument();
   expect(
-    within(
-      screen.getByRole("form", { name: "Projekt umbenennen" }),
-    ).getByLabelText("Projektname"),
-  ).toHaveValue("Alpha");
+    screen.queryByRole("form", { name: "Projekt umbenennen" }),
+  ).not.toBeInTheDocument();
 
   await openProjectsPage(user);
   const updatedProjectList = await screen.findByRole("region", {
@@ -1425,15 +1440,22 @@ test("allows signed-in users to create open rename and delete projects with conf
   expect(
     await screen.findByRole("heading", { name: "Beta" }),
   ).toBeInTheDocument();
-  const renameForm = screen.getByRole("form", {
-    name: "Projekt umbenennen",
+  await openProjectTab(user, "Einstellungen");
+  const settingsForm = screen.getByRole("form", {
+    name: "Projekteinstellungen speichern",
   });
-  const nameInput = within(renameForm).getByLabelText("Projektname");
+  const nameInput = within(settingsForm).getByLabelText("Projektname");
   expect(nameInput).toHaveValue("Beta");
   await user.clear(nameInput);
   await user.type(nameInput, "Beta renamed");
+  await user.type(
+    within(settingsForm).getByLabelText("Ticket-Link-Vorlage"),
+    "https://tickets.example.test/T-<ticket_id>",
+  );
   await user.click(
-    within(renameForm).getByRole("button", { name: "Umbenennen" }),
+    within(settingsForm).getByRole("button", {
+      name: "Einstellungen speichern",
+    }),
   );
   expect(
     await screen.findByRole("heading", { name: "Beta renamed" }),
@@ -1457,7 +1479,7 @@ test("allows signed-in users to create open rename and delete projects with conf
   expect(
     await screen.findByRole("heading", { name: "Beta renamed" }),
   ).toBeInTheDocument();
-  await openProjectTab(user, "Projekt löschen");
+  await openProjectTab(user, "Einstellungen");
   const deleteForm = screen.getByRole("form", { name: "Projekt löschen" });
   await user.type(
     within(deleteForm).getByLabelText("Projektname bestätigen"),
@@ -1469,6 +1491,314 @@ test("allows signed-in users to create open rename and delete projects with conf
   await waitFor(() =>
     expect(screen.queryByText("Beta renamed")).not.toBeInTheDocument(),
   );
+});
+
+test("shows ticket template validation in project settings and preserves input", async () => {
+  const user = userEvent.setup();
+  mockProjectFetch((path, method) => {
+    if (path === "/api/projects/project-alpha" && method === "PATCH") {
+      return jsonResponse(
+        {
+          type: "urn:skm:error:VALIDATION_FAILED",
+          title: "Projekteinstellungen sind ungültig.",
+          status: 422,
+          detail:
+            "Die Projekteinstellungen konnten mit diesen Eingaben nicht gespeichert werden.",
+          code: "VALIDATION_FAILED",
+          correlationId: null,
+          retryable: true,
+          suggestedAction: "correct-input",
+          fieldErrors: [
+            {
+              field: "ticket_url_template",
+              message:
+                "Die Ticket-Link-Vorlage muss eine http(s)-URL mit <ticket_id> sein.",
+            },
+          ],
+        },
+        { status: 422 },
+      );
+    }
+    return undefined;
+  });
+  render(<App />);
+
+  await signIn(user);
+  const projectList = await screen.findByRole("region", {
+    name: "Bestehende Projekte",
+  });
+  await user.click(getProjectRow(projectList, "Alpha"));
+  await screen.findByRole("heading", { name: "Alpha" });
+  await openProjectTab(user, "Einstellungen");
+
+  const settingsForm = screen.getByRole("form", {
+    name: "Projekteinstellungen speichern",
+  });
+  const templateInput = within(settingsForm).getByLabelText(
+    "Ticket-Link-Vorlage",
+  );
+  await user.type(templateInput, "ftp://tickets.example.test/<ticket_id>");
+  await user.click(
+    within(settingsForm).getByRole("button", {
+      name: "Einstellungen speichern",
+    }),
+  );
+
+  expect(
+    await within(settingsForm).findByText(
+      "Die Ticket-Link-Vorlage muss eine http(s)-URL mit <ticket_id> sein.",
+    ),
+  ).toBeInTheDocument();
+  expect(templateInput).toHaveValue("ftp://tickets.example.test/<ticket_id>");
+  expect(
+    screen.queryByText("Projekteinstellungen gespeichert."),
+  ).not.toBeInTheDocument();
+});
+
+test("clears stale project settings success feedback before a failed save", async () => {
+  const user = userEvent.setup();
+  let settingsSaveAttempt = 0;
+  mockProjectFetch((path, method) => {
+    if (path === "/api/projects/project-alpha" && method === "PATCH") {
+      settingsSaveAttempt += 1;
+      if (settingsSaveAttempt === 1) {
+        return jsonResponse({
+          ...alphaProject,
+          ticket_url_template: "https://tickets.example.test/<ticket_id>",
+        });
+      }
+      return jsonResponse(
+        {
+          type: "urn:skm:error:VALIDATION_FAILED",
+          title: "Projekteinstellungen sind ungültig.",
+          status: 422,
+          detail:
+            "Die Projekteinstellungen konnten mit diesen Eingaben nicht gespeichert werden.",
+          code: "VALIDATION_FAILED",
+          correlationId: null,
+          retryable: true,
+          suggestedAction: "correct-input",
+          fieldErrors: [
+            {
+              field: "ticket_url_template",
+              message:
+                "Die Ticket-Link-Vorlage muss eine http(s)-URL mit <ticket_id> sein.",
+            },
+          ],
+        },
+        { status: 422 },
+      );
+    }
+    return undefined;
+  });
+  render(<App />);
+
+  await signIn(user);
+  const projectList = await screen.findByRole("region", {
+    name: "Bestehende Projekte",
+  });
+  await user.click(getProjectRow(projectList, "Alpha"));
+  await screen.findByRole("heading", { name: "Alpha" });
+  await openProjectTab(user, "Einstellungen");
+
+  const settingsForm = screen.getByRole("form", {
+    name: "Projekteinstellungen speichern",
+  });
+  const templateInput = within(settingsForm).getByLabelText(
+    "Ticket-Link-Vorlage",
+  );
+  await user.type(templateInput, "https://tickets.example.test/<ticket_id>");
+  await user.click(
+    within(settingsForm).getByRole("button", {
+      name: "Einstellungen speichern",
+    }),
+  );
+  expect(
+    await screen.findByText("Projekteinstellungen gespeichert."),
+  ).toBeInTheDocument();
+
+  const remountedSettingsForm = screen.getByRole("form", {
+    name: "Projekteinstellungen speichern",
+  });
+  const remountedTemplateInput = within(remountedSettingsForm).getByLabelText(
+    "Ticket-Link-Vorlage",
+  );
+  await user.clear(remountedTemplateInput);
+  await user.type(
+    remountedTemplateInput,
+    "ftp://tickets.example.test/<ticket_id>",
+  );
+  await user.click(
+    within(remountedSettingsForm).getByRole("button", {
+      name: "Einstellungen speichern",
+    }),
+  );
+
+  expect(
+    await within(remountedSettingsForm).findByText(
+      "Die Ticket-Link-Vorlage muss eine http(s)-URL mit <ticket_id> sein.",
+    ),
+  ).toBeInTheDocument();
+  expect(
+    screen.queryByText("Projekteinstellungen gespeichert."),
+  ).not.toBeInTheDocument();
+  expect(remountedTemplateInput).toHaveValue(
+    "ftp://tickets.example.test/<ticket_id>",
+  );
+});
+
+test("shows safe not-found feedback for project settings save", async () => {
+  const user = userEvent.setup();
+  mockProjectFetch((path, method) => {
+    if (path === "/api/projects/project-alpha" && method === "PATCH") {
+      return jsonResponse(
+        {
+          type: "urn:skm:error:PROJECT_NOT_FOUND",
+          title: "Projekt wurde nicht gefunden.",
+          status: 404,
+          detail: "internal project id project-alpha missing in database",
+          code: "PROJECT_NOT_FOUND",
+          correlationId: null,
+          retryable: true,
+          suggestedAction: "reload",
+          fieldErrors: [],
+        },
+        { status: 404 },
+      );
+    }
+    return undefined;
+  });
+  render(<App />);
+
+  await signIn(user);
+  const projectList = await screen.findByRole("region", {
+    name: "Bestehende Projekte",
+  });
+  await user.click(getProjectRow(projectList, "Alpha"));
+  await screen.findByRole("heading", { name: "Alpha" });
+  await openProjectTab(user, "Einstellungen");
+
+  const settingsForm = screen.getByRole("form", {
+    name: "Projekteinstellungen speichern",
+  });
+  const templateInput = within(settingsForm).getByLabelText(
+    "Ticket-Link-Vorlage",
+  );
+  await user.type(templateInput, "https://tickets.example.test/<ticket_id>");
+  await user.click(
+    within(settingsForm).getByRole("button", {
+      name: "Einstellungen speichern",
+    }),
+  );
+
+  expect(
+    await within(settingsForm).findByText("Das Projekt wurde nicht gefunden."),
+  ).toBeInTheDocument();
+  expect(settingsForm).not.toHaveTextContent("project-alpha");
+  expect(settingsForm).not.toHaveTextContent("database");
+  expect(templateInput).toHaveValue("https://tickets.example.test/<ticket_id>");
+  expect(
+    screen.queryByText("Projekteinstellungen gespeichert."),
+  ).not.toBeInTheDocument();
+});
+
+test("shows safe fallback for unknown project settings failures", async () => {
+  const user = userEvent.setup();
+  mockProjectFetch((path, method) => {
+    if (path === "/api/projects/project-alpha" && method === "PATCH") {
+      return jsonResponse(
+        {
+          type: "urn:skm:error:VENDOR_STACK_TRACE",
+          title: "internal host failure",
+          status: 500,
+          detail: "/srv/internal traceback",
+          code: "VENDOR_STACK_TRACE",
+          correlationId: null,
+          retryable: true,
+          suggestedAction: "retry",
+          fieldErrors: [],
+        },
+        { status: 500 },
+      );
+    }
+    return undefined;
+  });
+  render(<App />);
+
+  await signIn(user);
+  const projectList = await screen.findByRole("region", {
+    name: "Bestehende Projekte",
+  });
+  await user.click(getProjectRow(projectList, "Alpha"));
+  await screen.findByRole("heading", { name: "Alpha" });
+  await openProjectTab(user, "Einstellungen");
+
+  const settingsForm = screen.getByRole("form", {
+    name: "Projekteinstellungen speichern",
+  });
+  const templateInput = within(settingsForm).getByLabelText(
+    "Ticket-Link-Vorlage",
+  );
+  await user.type(templateInput, "https://tickets.example.test/<ticket_id>");
+  await user.click(
+    within(settingsForm).getByRole("button", {
+      name: "Einstellungen speichern",
+    }),
+  );
+
+  expect(
+    await within(settingsForm).findByText(
+      "Die Projekteinstellungen konnten nicht gespeichert werden.",
+    ),
+  ).toBeInTheDocument();
+  expect(settingsForm).not.toHaveTextContent("/srv/internal traceback");
+  expect(templateInput).toHaveValue("https://tickets.example.test/<ticket_id>");
+  expect(
+    screen.queryByText("Projekteinstellungen gespeichert."),
+  ).not.toBeInTheDocument();
+});
+
+test("shows safe fallback for project settings network failures", async () => {
+  const user = userEvent.setup();
+  mockProjectFetch((path, method) => {
+    if (path === "/api/projects/project-alpha" && method === "PATCH") {
+      return Promise.reject(new Error("backend unavailable"));
+    }
+    return undefined;
+  });
+  render(<App />);
+
+  await signIn(user);
+  const projectList = await screen.findByRole("region", {
+    name: "Bestehende Projekte",
+  });
+  await user.click(getProjectRow(projectList, "Alpha"));
+  await screen.findByRole("heading", { name: "Alpha" });
+  await openProjectTab(user, "Einstellungen");
+
+  const settingsForm = screen.getByRole("form", {
+    name: "Projekteinstellungen speichern",
+  });
+  const templateInput = within(settingsForm).getByLabelText(
+    "Ticket-Link-Vorlage",
+  );
+  await user.type(templateInput, "https://tickets.example.test/<ticket_id>");
+  await user.click(
+    within(settingsForm).getByRole("button", {
+      name: "Einstellungen speichern",
+    }),
+  );
+
+  expect(
+    await within(settingsForm).findByText(
+      "Die Projekteinstellungen konnten nicht gespeichert werden.",
+    ),
+  ).toBeInTheDocument();
+  expect(settingsForm).not.toHaveTextContent("backend unavailable");
+  expect(templateInput).toHaveValue("https://tickets.example.test/<ticket_id>");
+  expect(
+    screen.queryByText("Projekteinstellungen gespeichert."),
+  ).not.toBeInTheDocument();
 });
 
 test("imports a selected CSV file and shows persisted log details", async () => {
@@ -2021,9 +2351,10 @@ test("configures providers and starts a project indexing run", async () => {
   expect(closeSources).toHaveFocus();
   fireEvent.keyDown(window, { key: "Tab" });
   expect(closeSources).toHaveFocus();
+  expect(sources).toHaveTextContent("Ticket T-1 · Gruppe G-1");
   expect(
-    within(sources).getByText("Ticket T-1 · Gruppe G-1"),
-  ).toBeInTheDocument();
+    within(sources).queryByRole("link", { name: "Ticket T-1" }),
+  ).not.toBeInTheDocument();
   expect(
     within(sources).getByText("Kundenfrage: How do I reset it?"),
   ).toBeInTheDocument();
@@ -2033,9 +2364,9 @@ test("configures providers and starts a project indexing run", async () => {
   await user.click(
     within(sources).getByRole("button", { name: "Weitere Quellen laden" }),
   );
-  expect(
-    await within(sources).findByText("Ticket T-2 · Gruppe G-2"),
-  ).toBeInTheDocument();
+  await waitFor(() => {
+    expect(sources).toHaveTextContent("Ticket T-2 · Gruppe G-2");
+  });
   expect(
     within(sources).getByText("Angezeigt: 2 Quellen."),
   ).toBeInTheDocument();
@@ -2091,6 +2422,466 @@ test("configures providers and starts a project indexing run", async () => {
   expect(
     within(refinementForm).getByText(/1 sichtbare eingeschlossene Cluster/),
   ).toBeInTheDocument();
+});
+
+test("renders source dialog ticket labels as safe encoded external links when configured", async () => {
+  const user = userEvent.setup();
+  const ticketProject = {
+    ...alphaProject,
+    ticket_url_template:
+      "https://tickets.example.test/browse/<ticket_id>?from=skm",
+  };
+  mockProjectFetch((path, method) => {
+    if (path === "/api/projects" && method === "GET") {
+      return jsonResponse([ticketProject]);
+    }
+    if (path === "/api/projects/project-alpha" && method === "GET") {
+      return jsonResponse(ticketProject);
+    }
+    if (
+      path === "/api/projects/project-alpha/cluster-sets" &&
+      method === "GET"
+    ) {
+      return jsonResponse([
+        {
+          ...clusterSet,
+          status: "completed",
+          progress: 100,
+          phase: "completed",
+        },
+      ]);
+    }
+    if (
+      path ===
+        "/api/projects/project-alpha/cluster-sets/cluster-set-1/clusters" &&
+      method === "GET"
+    ) {
+      return jsonResponse([cluster]);
+    }
+    if (
+      path ===
+        "/api/projects/project-alpha/clusters/cluster-1/sources?limit=50&offset=0" &&
+      method === "GET"
+    ) {
+      return jsonResponse({
+        sources: [
+          {
+            cluster_id: "cluster-1",
+            message_pair_id: "pair-encoded-ticket",
+            ticket_id: "T/1 2",
+            message_group_id: "G-1",
+            message: "Can I reset it?",
+            answer: "Use the reset link.",
+            membership_score: 0.91,
+            is_outlier: false,
+            assignment_type: "automatic",
+          },
+        ],
+        limit: 50,
+        offset: 0,
+        next_offset: null,
+        has_more: false,
+      });
+    }
+    return undefined;
+  });
+  render(<App />);
+
+  await signIn(user);
+  const projectList = await screen.findByRole("region", {
+    name: "Bestehende Projekte",
+  });
+  await user.click(getProjectRow(projectList, "Alpha"));
+  await screen.findByRole("heading", { name: "Alpha" });
+  await openProjectTab(user, "Cluster-Sets");
+  const clusterSets = await screen.findByRole("region", {
+    name: "Cluster-Sets",
+  });
+  await user.click(
+    within(clusterSets).getByRole("button", { name: "Im Explorer laden" }),
+  );
+
+  const clusterExplorer = await screen.findByRole("region", {
+    name: "Cluster Explorer",
+  });
+  await within(clusterExplorer).findByText("Cluster H");
+  const clusterRow = within(clusterExplorer)
+    .getByText("Cluster H")
+    .closest("tr");
+  if (clusterRow === null) {
+    throw new Error("cluster row missing");
+  }
+  await user.click(
+    within(clusterRow).getByRole("button", { name: "Quellen anzeigen" }),
+  );
+
+  const sources = await screen.findByRole("dialog", { name: "Cluster H" });
+  const ticketLink = await within(sources).findByRole("link", {
+    name: "Ticket T/1 2",
+  });
+  expect(ticketLink).toHaveAttribute(
+    "href",
+    "https://tickets.example.test/browse/T%2F1%202?from=skm",
+  );
+  expect(ticketLink).toHaveAttribute("target", "_blank");
+  expect(ticketLink).toHaveAttribute("rel", "noopener noreferrer");
+  expect(sources).toHaveTextContent("Ticket T/1 2 · Gruppe G-1");
+});
+
+test("supports Explorer rail collapse and scroll-to-top controls", async () => {
+  const user = userEvent.setup();
+  const originalElementScrollTo = HTMLElement.prototype.scrollTo;
+  const originalWindowScrollTo = window.scrollTo;
+  const elementScrollTo = vi.fn();
+  const windowScrollTo = vi.fn();
+  Object.defineProperty(HTMLElement.prototype, "scrollTo", {
+    configurable: true,
+    value: elementScrollTo,
+  });
+  Object.defineProperty(window, "scrollTo", {
+    configurable: true,
+    value: windowScrollTo,
+  });
+  mockProjectFetch((path, method) => {
+    if (
+      path === "/api/projects/project-alpha/cluster-sets" &&
+      method === "GET"
+    ) {
+      return jsonResponse([
+        {
+          ...clusterSet,
+          status: "completed",
+          progress: 100,
+          phase: "completed",
+        },
+      ]);
+    }
+    if (
+      path ===
+        "/api/projects/project-alpha/cluster-sets/cluster-set-1/clusters" &&
+      method === "GET"
+    ) {
+      return jsonResponse([cluster]);
+    }
+    return undefined;
+  });
+
+  try {
+    render(<App />);
+
+    await signIn(user);
+    const projectList = await screen.findByRole("region", {
+      name: "Bestehende Projekte",
+    });
+    await user.click(getProjectRow(projectList, "Alpha"));
+    await screen.findByRole("heading", { name: "Alpha" });
+    await openProjectTab(user, "Cluster-Sets");
+    const clusterSets = await screen.findByRole("region", {
+      name: "Cluster-Sets",
+    });
+    await user.click(
+      within(clusterSets).getByRole("button", { name: "Im Explorer laden" }),
+    );
+
+    const clusterExplorer = await screen.findByRole("region", {
+      name: "Cluster Explorer",
+    });
+    await within(clusterExplorer).findByText("Cluster H");
+    const rail = within(clusterExplorer).getByRole("complementary", {
+      name: "Explorer Kontrollleiste",
+    });
+    const collapseButton = within(rail).getByRole("button", {
+      name: "Kontrollleiste einklappen",
+    });
+    expect(collapseButton).toHaveAttribute("aria-expanded", "true");
+
+    await user.click(collapseButton);
+    const expandButton = within(rail).getByRole("button", {
+      name: "Kontrollleiste ausklappen",
+    });
+    expect(expandButton).toHaveAttribute("aria-expanded", "false");
+    expect(
+      within(rail).queryByRole("region", { name: "Explorer Filter" }),
+    ).not.toBeInTheDocument();
+
+    await user.click(expandButton);
+    expect(
+      within(rail).getByRole("button", {
+        name: "Kontrollleiste einklappen",
+      }),
+    ).toHaveAttribute("aria-expanded", "true");
+
+    await user.click(
+      within(clusterExplorer).getByRole("button", {
+        name: "Nach oben scrollen",
+      }),
+    );
+    expect(elementScrollTo).toHaveBeenCalledTimes(1);
+    expect(elementScrollTo).toHaveBeenNthCalledWith(1, {
+      top: 0,
+      behavior: "smooth",
+    });
+    expect(windowScrollTo).toHaveBeenCalledWith({
+      top: 0,
+      behavior: "smooth",
+    });
+  } finally {
+    Object.defineProperty(HTMLElement.prototype, "scrollTo", {
+      configurable: true,
+      value: originalElementScrollTo,
+    });
+    Object.defineProperty(window, "scrollTo", {
+      configurable: true,
+      value: originalWindowScrollTo,
+    });
+  }
+});
+
+test("sorts Explorer cluster table with tri-state accessible headers", async () => {
+  const user = userEvent.setup();
+  const betaCluster = {
+    ...cluster,
+    id: "cluster-beta",
+    effective_title: "Beta",
+    auto_title: "Beta",
+    effective_category: "B",
+    auto_category: "B",
+    effective_status: "reviewed",
+    auto_status: "reviewed",
+    member_count: 3,
+    score: 0.4,
+    metadata: { qa_mismatch: { maximum: 0.1 } },
+  };
+  const alphaCluster = {
+    ...cluster,
+    id: "cluster-alpha",
+    effective_title: "Alpha",
+    auto_title: "Alpha",
+    effective_category: "A",
+    auto_category: "A",
+    effective_status: "unreviewed",
+    auto_status: "unreviewed",
+    member_count: 1,
+    score: 0.9,
+    metadata: {},
+  };
+  const gammaCluster = {
+    ...cluster,
+    id: "cluster-gamma",
+    effective_title: "Gamma",
+    auto_title: "Gamma",
+    effective_category: "A",
+    auto_category: "A",
+    effective_status: "in_progress",
+    auto_status: "in_progress",
+    member_count: 2,
+    score: 0.2,
+    metadata: { qa_mismatch: { maximum: 0.5 } },
+  };
+  mockProjectFetch((path, method) => {
+    if (
+      path === "/api/projects/project-alpha/cluster-sets" &&
+      method === "GET"
+    ) {
+      return jsonResponse([
+        {
+          ...clusterSet,
+          status: "completed",
+          progress: 100,
+          phase: "completed",
+        },
+      ]);
+    }
+    if (
+      path ===
+        "/api/projects/project-alpha/cluster-sets/cluster-set-1/clusters" &&
+      method === "GET"
+    ) {
+      return jsonResponse([betaCluster, alphaCluster, gammaCluster]);
+    }
+    return undefined;
+  });
+  render(<App />);
+
+  await signIn(user);
+  const projectList = await screen.findByRole("region", {
+    name: "Bestehende Projekte",
+  });
+  await user.click(getProjectRow(projectList, "Alpha"));
+  await screen.findByRole("heading", { name: "Alpha" });
+  await openProjectTab(user, "Cluster-Sets");
+  const clusterSets = await screen.findByRole("region", {
+    name: "Cluster-Sets",
+  });
+  await user.click(
+    within(clusterSets).getByRole("button", { name: "Im Explorer laden" }),
+  );
+
+  const clusterExplorer = await screen.findByRole("region", {
+    name: "Cluster Explorer",
+  });
+  await within(clusterExplorer).findByText("Beta");
+  const clusterTitles = () =>
+    within(clusterExplorer)
+      .getAllByRole("row")
+      .filter(
+        (row) =>
+          within(row).queryByRole("button", { name: "Quellen anzeigen" }) !==
+          null,
+      )
+      .map((row) => {
+        for (const title of ["Alpha", "Beta", "Gamma"]) {
+          if (within(row).queryByText(title) !== null) {
+            return title;
+          }
+        }
+        throw new Error("cluster title missing");
+      });
+  const sortButton = (name: string) =>
+    within(clusterExplorer).getByRole("button", {
+      name: new RegExp(`^${name} sortieren`),
+    });
+
+  expect(clusterTitles()).toEqual(["Beta", "Alpha", "Gamma"]);
+
+  await user.click(sortButton("Titel"));
+  expect(clusterTitles()).toEqual(["Alpha", "Beta", "Gamma"]);
+  expect(sortButton("Titel").closest("th")).toHaveAttribute(
+    "aria-sort",
+    "ascending",
+  );
+
+  await user.click(sortButton("Titel"));
+  expect(clusterTitles()).toEqual(["Gamma", "Beta", "Alpha"]);
+  expect(sortButton("Titel").closest("th")).toHaveAttribute(
+    "aria-sort",
+    "descending",
+  );
+
+  await user.click(sortButton("Titel"));
+  expect(clusterTitles()).toEqual(["Beta", "Alpha", "Gamma"]);
+  expect(sortButton("Titel").closest("th")).toHaveAttribute(
+    "aria-sort",
+    "none",
+  );
+
+  for (const header of [
+    "Status",
+    "Kategorie",
+    "Kundenanfragen",
+    "Supportantworten",
+  ]) {
+    await user.click(sortButton(header));
+    expect(sortButton(header).closest("th")).toHaveAttribute(
+      "aria-sort",
+      "ascending",
+    );
+  }
+
+  await user.click(sortButton("Hinweise / Score"));
+  expect(sortButton("Hinweise / Score").closest("th")).toHaveAttribute(
+    "aria-sort",
+    "ascending",
+  );
+  expect(clusterTitles()).toEqual(["Gamma", "Beta", "Alpha"]);
+});
+
+test("closes source dialog from backdrop without closing on content clicks", async () => {
+  const user = userEvent.setup();
+  mockProjectFetch((path, method) => {
+    if (
+      path === "/api/projects/project-alpha/cluster-sets" &&
+      method === "GET"
+    ) {
+      return jsonResponse([
+        {
+          ...clusterSet,
+          status: "completed",
+          progress: 100,
+          phase: "completed",
+        },
+      ]);
+    }
+    if (
+      path ===
+        "/api/projects/project-alpha/cluster-sets/cluster-set-1/clusters" &&
+      method === "GET"
+    ) {
+      return jsonResponse([cluster]);
+    }
+    if (
+      path ===
+        "/api/projects/project-alpha/clusters/cluster-1/sources?limit=50&offset=0" &&
+      method === "GET"
+    ) {
+      return jsonResponse({
+        sources: [
+          {
+            cluster_id: "cluster-1",
+            message_pair_id: "pair-1",
+            ticket_id: "T-1",
+            message_group_id: "G-1",
+            message: "How do I reset it?",
+            answer: "Use the reset link.",
+            membership_score: 0.91,
+            is_outlier: false,
+            assignment_type: "automatic",
+          },
+        ],
+        limit: 50,
+        offset: 0,
+        next_offset: null,
+        has_more: false,
+      });
+    }
+    return undefined;
+  });
+  render(<App />);
+
+  await signIn(user);
+  const projectList = await screen.findByRole("region", {
+    name: "Bestehende Projekte",
+  });
+  await user.click(getProjectRow(projectList, "Alpha"));
+  await screen.findByRole("heading", { name: "Alpha" });
+  await openProjectTab(user, "Cluster-Sets");
+  const clusterSets = await screen.findByRole("region", {
+    name: "Cluster-Sets",
+  });
+  await user.click(
+    within(clusterSets).getByRole("button", { name: "Im Explorer laden" }),
+  );
+
+  const clusterExplorer = await screen.findByRole("region", {
+    name: "Cluster Explorer",
+  });
+  await within(clusterExplorer).findByText("Cluster H");
+  const clusterRow = within(clusterExplorer)
+    .getByText("Cluster H")
+    .closest("tr");
+  if (clusterRow === null) {
+    throw new Error("cluster row missing");
+  }
+  const sourceTrigger = within(clusterRow).getByRole("button", {
+    name: "Quellen anzeigen",
+  });
+  await user.click(sourceTrigger);
+
+  const sources = await screen.findByRole("dialog", { name: "Cluster H" });
+  fireEvent.click(sources);
+  expect(screen.getByRole("dialog", { name: "Cluster H" })).toBeInTheDocument();
+
+  const backdrop = sources.parentElement;
+  if (backdrop === null) {
+    throw new Error("source dialog backdrop missing");
+  }
+  fireEvent.click(backdrop);
+  await waitFor(() => {
+    expect(
+      screen.queryByRole("dialog", { name: "Cluster H" }),
+    ).not.toBeInTheDocument();
+  });
+  expect(sourceTrigger).toHaveFocus();
 });
 
 test("hides run-bound clustering and gates Cluster-Set loading until completion", async () => {
@@ -2789,7 +3580,7 @@ test("ignores delayed Cluster-Set creation after switching projects", async () =
   });
   await user.click(getProjectRow(switchProjectList, "Beta"));
   await waitFor(() =>
-    expect(screen.getByLabelText("Projektname")).toHaveValue("Beta"),
+    expect(screen.getByRole("heading", { name: "Beta" })).toBeInTheDocument(),
   );
   expect(screen.getByText("Projekt geöffnet.")).toBeInTheDocument();
 
@@ -3300,7 +4091,7 @@ test("keeps indexing requests project-local and sends only selected provider and
 
   resolveBetaProject(jsonResponse(betaProject));
   await waitFor(() =>
-    expect(screen.getByLabelText("Projektname")).toHaveValue("Beta"),
+    expect(screen.getByRole("heading", { name: "Beta" })).toBeInTheDocument(),
   );
   await openProjectTab(user, "Indizieren");
   const betaIndexingForm = await screen.findByRole("form", {
@@ -3321,7 +4112,7 @@ test("keeps indexing requests project-local and sends only selected provider and
   });
   await user.click(getProjectRow(alphaProjectList, "Alpha"));
   await waitFor(() =>
-    expect(screen.getByLabelText("Projektname")).toHaveValue("Alpha"),
+    expect(screen.getByRole("heading", { name: "Alpha" })).toBeInTheDocument(),
   );
   await openProjectTab(user, "Indizieren");
   const runForm = await screen.findByRole("form", {
@@ -3653,7 +4444,7 @@ test("opens a project without an eager indexing request and gives the Indizieren
   });
   await user.click(getProjectRow(projectList, "Alpha"));
   await waitFor(() =>
-    expect(screen.getByLabelText("Projektname")).toHaveValue("Alpha"),
+    expect(screen.getByRole("heading", { name: "Alpha" })).toBeInTheDocument(),
   );
   expect(runRequests).toBe(0);
 
@@ -3931,7 +4722,7 @@ test("ignores a delayed poll from a previously opened project", async () => {
   });
   await user.click(getProjectRow(switchProjectList, "Beta"));
   await waitFor(() =>
-    expect(screen.getByLabelText("Projektname")).toHaveValue("Beta"),
+    expect(screen.getByRole("heading", { name: "Beta" })).toBeInTheDocument(),
   );
   resolveAlphaPoll(
     jsonResponse([

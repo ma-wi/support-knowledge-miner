@@ -55,6 +55,12 @@ const SYNTHETIC_PROJECT = {
   lifecycle_state: "active",
   created_at: "2026-07-22T00:00:00Z",
   updated_at: "2026-07-22T00:00:00Z",
+  ticket_url_template: null,
+};
+const SYNTHETIC_PROJECT_WITH_TICKET_TEMPLATE = {
+  ...SYNTHETIC_PROJECT,
+  ticket_url_template: "https://tickets.example.test/T-<ticket_id>",
+  updated_at: "2026-07-22T00:01:00Z",
 };
 const SYNTHETIC_EMPTY_PROJECT = {
   id: "project-empty",
@@ -62,6 +68,7 @@ const SYNTHETIC_EMPTY_PROJECT = {
   lifecycle_state: "active",
   created_at: "2026-07-22T00:00:00Z",
   updated_at: "2026-07-22T00:00:00Z",
+  ticket_url_template: null,
 };
 const SYNTHETIC_IMPORT_LOG = {
   id: "import-log-1",
@@ -706,6 +713,14 @@ function apiJson(route, body, status = 200) {
   });
 }
 
+function requestJson(route) {
+  try {
+    return JSON.parse(route.request().postData() ?? "{}");
+  } catch {
+    return {};
+  }
+}
+
 async function fulfillSyntheticApi(route, requestUrl, method, apiMode) {
   const path = requestUrl.pathname;
   const pathWithQuery = `${requestUrl.pathname}${requestUrl.search}`;
@@ -744,6 +759,49 @@ async function fulfillSyntheticApi(route, requestUrl, method, apiMode) {
   }
   if (path === "/api/projects/project-alpha" && method === "GET") {
     await apiJson(route, SYNTHETIC_PROJECT);
+    return true;
+  }
+  if (path === "/api/projects/project-alpha" && method === "PATCH") {
+    const payload = requestJson(route);
+    if (
+      typeof payload.ticket_url_template === "string" &&
+      payload.ticket_url_template.startsWith("ftp:")
+    ) {
+      await apiJson(
+        route,
+        {
+          type: "urn:skm:error:VALIDATION_FAILED",
+          title: "Projekteinstellungen sind ungültig.",
+          status: 422,
+          detail:
+            "Die Projekteinstellungen konnten mit diesen Eingaben nicht gespeichert werden.",
+          code: "VALIDATION_FAILED",
+          correlationId: null,
+          retryable: true,
+          suggestedAction: "correct-input",
+          fieldErrors: [
+            {
+              field: "ticket_url_template",
+              message:
+                "Die Ticket-Link-Vorlage muss eine http(s)-URL mit <ticket_id> sein.",
+            },
+          ],
+        },
+        422,
+      );
+      return true;
+    }
+    await apiJson(route, {
+      ...SYNTHETIC_PROJECT_WITH_TICKET_TEMPLATE,
+      name:
+        typeof payload.name === "string" && payload.name.trim()
+          ? payload.name
+          : SYNTHETIC_PROJECT_WITH_TICKET_TEMPLATE.name,
+      ticket_url_template:
+        payload.ticket_url_template === undefined
+          ? SYNTHETIC_PROJECT_WITH_TICKET_TEMPLATE.ticket_url_template
+          : payload.ticket_url_template,
+    });
     return true;
   }
   if (path === "/api/projects/project-empty" && method === "GET") {
@@ -1042,6 +1100,198 @@ async function closeSourceDialogAndVerifyFocusReturn(page) {
   }
 }
 
+async function assertTicketLinkVisible(page) {
+  const ticketLink = page.getByRole("link", { name: "Ticket T-1" });
+  await ticketLink.waitFor({ state: "visible", timeout: 10_000 });
+  const href = await ticketLink.getAttribute("href");
+  if (href !== "https://tickets.example.test/T-T-1") {
+    fail("source dialog ticket link did not use the configured template");
+  }
+  const target = await ticketLink.getAttribute("target");
+  const rel = await ticketLink.getAttribute("rel");
+  if (target !== "_blank" || rel !== "noopener noreferrer") {
+    fail("source dialog ticket link is missing safe external-link attributes");
+  }
+}
+
+async function captureProjectSettingsStates(
+  captures,
+  page,
+  viewport,
+  outputRoot,
+  onState,
+) {
+  await page.getByRole("tab", { name: "Einstellungen", exact: true }).click();
+  await page
+    .getByRole("heading", { name: "Projekt bearbeiten" })
+    .waitFor({ state: "visible", timeout: 10_000 });
+  await page
+    .getByRole("form", { name: "Projekt löschen" })
+    .waitFor({ state: "visible", timeout: 10_000 });
+  await captureState(
+    captures,
+    page,
+    viewport,
+    outputRoot,
+    "project-settings-default",
+    "project",
+    onState,
+  );
+
+  const settingsForm = page.getByRole("form", {
+    name: "Projekteinstellungen speichern",
+  });
+  await settingsForm.getByLabel("Ticket-Link-Vorlage").fill(
+    "ftp://tickets.example.test/<ticket_id>",
+  );
+  await settingsForm
+    .getByRole("button", { name: "Einstellungen speichern" })
+    .click();
+  await settingsForm
+    .getByText(
+      "Die Ticket-Link-Vorlage muss eine http(s)-URL mit <ticket_id> sein.",
+    )
+    .waitFor({ state: "visible", timeout: 10_000 });
+  await captureState(
+    captures,
+    page,
+    viewport,
+    outputRoot,
+    "project-settings-validation-error",
+    "project",
+    onState,
+  );
+
+  const deleteForm = page.getByRole("form", { name: "Projekt löschen" });
+  await deleteForm.getByLabel("Projektname bestätigen").fill("Alpha");
+  await captureState(
+    captures,
+    page,
+    viewport,
+    outputRoot,
+    "project-settings-delete-confirmation",
+    "project",
+    onState,
+  );
+
+  await settingsForm
+    .getByLabel("Ticket-Link-Vorlage")
+    .fill("https://tickets.example.test/T-<ticket_id>");
+  await settingsForm
+    .getByRole("button", { name: "Einstellungen speichern" })
+    .click();
+  await page
+    .getByText("Projekteinstellungen gespeichert.")
+    .waitFor({ state: "visible", timeout: 10_000 });
+}
+
+async function captureExplorerInteractionStates(
+  captures,
+  page,
+  viewport,
+  outputRoot,
+  onState,
+) {
+  const sortButton = page.getByRole("button", {
+    name: /Hinweise \/ Score sortieren/,
+  });
+  await sortButton.click();
+  await page
+    .locator("th", { has: sortButton })
+    .evaluate((cell) => {
+      if (cell.getAttribute("aria-sort") !== "ascending") {
+        throw new Error("score sort did not expose ascending state");
+      }
+    });
+  await captureState(
+    captures,
+    page,
+    viewport,
+    outputRoot,
+    "explorer-sort-score-ascending",
+    "project",
+    onState,
+  );
+
+  await sortButton.click();
+  await page
+    .locator("th", { has: sortButton })
+    .evaluate((cell) => {
+      if (cell.getAttribute("aria-sort") !== "descending") {
+        throw new Error("score sort did not expose descending state");
+      }
+    });
+  await captureState(
+    captures,
+    page,
+    viewport,
+    outputRoot,
+    "explorer-sort-score-descending",
+    "project",
+    onState,
+  );
+
+  await sortButton.click();
+  await page
+    .locator("th", { has: sortButton })
+    .evaluate((cell) => {
+      if (cell.getAttribute("aria-sort") !== "none") {
+        throw new Error("score sort did not return to unsorted state");
+      }
+    });
+  await captureState(
+    captures,
+    page,
+    viewport,
+    outputRoot,
+    "explorer-sort-score-unsorted",
+    "project",
+    onState,
+  );
+
+  await page
+    .getByRole("button", { name: "Kontrollleiste einklappen" })
+    .click();
+  await page
+    .getByRole("button", { name: "Kontrollleiste ausklappen" })
+    .waitFor({ state: "visible", timeout: 10_000 });
+  await captureState(
+    captures,
+    page,
+    viewport,
+    outputRoot,
+    "explorer-collapsed-rail",
+    "project",
+    onState,
+  );
+  await page
+    .getByRole("button", { name: "Kontrollleiste ausklappen" })
+    .click();
+  await page
+    .getByRole("button", { name: "Kontrollleiste einklappen" })
+    .waitFor({ state: "visible", timeout: 10_000 });
+
+  const workspace = page.locator(".explorer-table-workspace").first();
+  await workspace.evaluate((element) => {
+    element.scrollTop = element.scrollHeight;
+  });
+  await page.getByRole("button", { name: "Nach oben scrollen" }).click();
+  await page.waitForFunction(
+    () =>
+      (document.querySelector(".explorer-table-workspace")?.scrollTop ?? 0) ===
+      0,
+  );
+  await captureState(
+    captures,
+    page,
+    viewport,
+    outputRoot,
+    "explorer-after-scroll-to-top",
+    "project",
+    onState,
+  );
+}
+
 async function captureScreenshot(page) {
   const image = await page.screenshot({
     type: "png",
@@ -1212,6 +1462,13 @@ async function captureProjectScenarios(
         "project",
         onState,
       );
+      await captureExplorerInteractionStates(
+        captures,
+        page,
+        viewport,
+        outputRoot,
+        onState,
+      );
 
       await page
         .getByPlaceholder("Titel, Kategorie, Summary oder Status")
@@ -1260,6 +1517,39 @@ async function captureProjectScenarios(
         viewport,
         outputRoot,
         "explorer-source-dialog",
+        "project",
+        onState,
+      );
+      await closeSourceDialogAndVerifyFocusReturn(page);
+
+      await captureProjectSettingsStates(
+        captures,
+        page,
+        viewport,
+        outputRoot,
+        onState,
+      );
+      await page
+        .getByRole("tab", { name: "Explorer", exact: true })
+        .click();
+      await page
+        .getByRole("row", { name: /Passwort zurücksetzen/ })
+        .first()
+        .waitFor({ state: "visible", timeout: 10_000 });
+      await page
+        .getByRole("row", { name: /Passwort zurücksetzen/ })
+        .getByRole("button", { name: "Quellen anzeigen" })
+        .click();
+      await page
+        .getByRole("dialog", { name: "Passwort zurücksetzen" })
+        .waitFor({ state: "visible", timeout: 10_000 });
+      await assertTicketLinkVisible(page);
+      await captureState(
+        captures,
+        page,
+        viewport,
+        outputRoot,
+        "explorer-source-dialog-ticket-link",
         "project",
         onState,
       );

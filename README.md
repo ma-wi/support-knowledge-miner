@@ -9,7 +9,7 @@ The MVP is explicitly local-only. Do not connect it to production systems, produ
 - Sign in with a seeded local user's email, restore a still-valid session after a
   reload in the same browser tab, sign out explicitly, and manage equal-permission
   users.
-- Create, open, rename, and delete independent projects.
+- Create, open, configure, rename, and delete independent projects.
 - Import CSV or JSON records with `ticket_id`, `message_group_id`, `message`, and `answer` fields.
 - Persist dataset versions, import logs, skipped-record reasons, and audit actor identity.
 - Configure global OpenAI and Ollama provider instances for Embedding and/or LLM
@@ -21,12 +21,13 @@ The MVP is explicitly local-only. Do not connect it to production systems, produ
   from persisted vectors, including vector basis, lineage, outlier, membership,
   parameter, model, optional LLM summary and source traceability.
 - Review Cluster-Sets in a table-first Explorer with search/filter, category
-  grouping, source dialog, exclude/include controls, mismatch hints and refinement
-  from included rows.
+  grouping, deterministic tri-state sorting, source dialog with optional safe
+  ticket links, exclude/include controls, mismatch hints and refinement from
+  included rows.
 - Export the current filtered Explorer table state as CSV or JSON with persisted
   export metadata; raw source-dialog texts are not implicitly exported.
-- Use the React sidebar shell to reach sign-in, settings, project, import,
-  indexing, Cluster-Set, Explorer and project-delete workflows.
+- Use the top-right app menu and project tabs to reach sign-in, global settings,
+  project import, indexing, Cluster-Set, Explorer and project-settings workflows.
 
 The durable product behavior is specified in `docs/specifications/support-knowledge-miner-mvp1.md`.
 

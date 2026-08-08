@@ -128,10 +128,15 @@ An opened project shows these project tabs:
 - Indizieren
 - Cluster-Sets
 - Explorer
-- Projekt löschen
+- Einstellungen
 
 The project header shows project name and context, but no general right-side
-connection/status tag such as „lokal verbunden“.
+connection/status tag such as „lokal verbunden“. Project rename, optional
+ticket-link template and project deletion are owned by the `Einstellungen` tab.
+The ticket-link template is nullable; an empty value disables source-dialog
+ticket links. Non-empty templates must be absolute `http(s)` URLs containing
+`<ticket_id>` and must not contain credentials. The app never probes configured
+ticket URLs.
 
 ### Import
 
@@ -359,7 +364,11 @@ The Explorer loads one finished cluster set. When the Explorer tab is opened
 directly and no set is already loaded, the UI loads the most recently updated
 completed cluster set. Recalculation and Explorer edits both update the owning
 cluster set's `updated_at` timestamp for this ordering. The loaded Explorer has a
-left control rail and a main table workspace. The control rail contains:
+collapsible left control rail and a main table workspace. The control rail is
+integrated into the Cluster Explorer panel and follows normal page scroll; the
+main table workspace remains the separate scroll area for large cluster lists.
+The floating icon-only „Nach oben“ control resets the table workspace and page
+scroll. The control rail contains:
 
 - loaded cluster-set selector/context.
 - text search over visible cluster fields.
@@ -391,6 +400,11 @@ The table shows:
 - quality or mismatch indicators.
 - actions: show sources, exclude/include, manually correct fields, refine.
 
+Status, title, category, customer-question count, support-answer count and
+hint/score headers are sortable. Header activation cycles ascending, descending
+and unsorted. Unsorted restores the API/display baseline order. Sorting is
+client-side, stable and deterministic for equal values.
+
 „Quellen anzeigen“ opens a dialog with real source pairs:
 
 - `ticket_id`.
@@ -400,13 +414,18 @@ The table shows:
 - membership score.
 - assignment type.
 
-The source dialog loads raw source text in bounded pages. The initial request uses
-at most 50 source pairs and further pages are loaded explicitly with „Weitere
-Quellen laden“. Failed source loads render a persistent alert inside the dialog,
-preserve the Explorer filters and never substitute a normal empty state.
+When the project has a configured ticket-link template, the ticket label renders
+as an external link that substitutes the encoded `ticket_id`, opens in a new tab
+and uses `noopener noreferrer`. Without a configured or usable template, ticket
+labels remain plain text. The source dialog loads raw source text in bounded
+pages. The initial request uses at most 50 source pairs and further pages are
+loaded explicitly with „Weitere Quellen laden“. Failed source loads render a
+persistent alert inside the dialog, preserve the Explorer filters and never
+substitute a normal empty state.
 
-The dialog is accessible, traps focus, closes by button/Escape and returns focus to
-the opener.
+The dialog is accessible, traps focus, uses a sticky header, occupies more of
+the viewport than ordinary panels, closes by button, Escape or backdrop click,
+does not close on content clicks, and returns focus to the opener.
 
 ### Exclusion, outlier management and refinement
 
@@ -555,7 +574,10 @@ Required:
   set.
 - category grouping.
 - cluster table.
+- sortable table headers for Status, Titel, Kategorie, Kundenanfragen,
+  Supportantworten and Hinweise / Score.
 - source dialog.
+- rail collapse/expand and scroll-to-top controls.
 - exclusion/include actions.
 - refinement action using selected or included clusters.
 - Export rail group with CSV/JSON format choice, hidden when no clusters are loaded.
@@ -660,7 +682,8 @@ Required:
 - FR-47: Explorer search/filter changes only visible rows, not persisted results.
 - FR-48: The Explorer table shows title, category, summarized question, summarized
   answer, counts, status, hints and actions.
-- FR-49: Source dialog shows original support pairs with traceability fields.
+- FR-49: Source dialog shows original support pairs with traceability fields and
+  safe optional external ticket links derived from the project template.
 - FR-50: Excluded clusters remain visible separately and can be included again.
 - FR-51: Outlier exclusion is controlled in the Explorer control rail and creates
   a child cluster set.
@@ -679,7 +702,10 @@ Required:
   uses the Summary-only flow without recalculating cluster assignments.
 - FR-59: The top-right app menu contains Projekte, Einstellungen and Abmelden;
   the standalone visible Abmelden topbar button is not shown.
-- FR-58: Feedback/status messages render as overlays with manual close and
+- FR-60: The Explorer rail is collapsible on desktop and the Explorer table
+  supports deterministic tri-state client-side sorting for the accepted sortable
+  headers while unsorted restores baseline order.
+- FR-61: Feedback/status messages render as overlays with manual close and
   auto-dismiss.
 
 ## Quality and operational requirements
@@ -810,10 +836,11 @@ status and safe diagnostic metadata so the UI can recover after reload.
   matrices.
 - [x] AC-13: LLM summaries use default sample count `10`, positive-integer
   validation, all-examples mode, random sampling and persisted sample provenance.
-- [x] AC-14: The Cluster Explorer shows a table with title, category, summarized
-  question, summarized answer, counts, hints and actions.
+- [x] AC-14: The Cluster Explorer shows a sortable table with title, category,
+  summarized question, summarized answer, counts, hints and actions.
 - [x] AC-15: The source dialog shows page-bounded real customer
-  questions/support answers with traceability fields.
+  questions/support answers with traceability fields and optional safe ticket
+  links.
 - [x] AC-16: Exclusion, outlier exclusion and refinement create or preserve
   cluster-set lineage as specified.
 - [x] AC-17: Child cluster sets can use a different vector basis than the parent.

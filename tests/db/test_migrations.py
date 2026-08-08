@@ -27,6 +27,7 @@ def test_migration_files_are_ordered() -> None:
         "0016_explorer_exports.sql",
         "0017_provider_instances_and_global_jobs.sql",
         "0018_provider_available_models.sql",
+        "0019_project_ticket_url_template.sql",
     ]
 
 

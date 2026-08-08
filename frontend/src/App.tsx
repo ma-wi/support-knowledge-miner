@@ -21,6 +21,7 @@ type ApiProject = {
   lifecycle_state: string;
   created_at: string;
   updated_at: string;
+  ticket_url_template: string | null;
 };
 
 type Project = {
@@ -28,6 +29,7 @@ type Project = {
   name: string;
   lifecycleState: string;
   updatedAt: string;
+  ticketUrlTemplate: string | null;
 };
 
 type ApiImportLog = {
@@ -373,8 +375,20 @@ type Feedback = {
 type ActivePage = "projects" | "settings";
 type SettingsTab = "providers" | "users";
 type ProjectTab =
-  "import" | "indexing" | "cluster-sets" | "explorer" | "delete";
+  "import" | "indexing" | "cluster-sets" | "explorer" | "settings";
 type ExplorerExportFormat = "csv" | "json";
+type ClusterSortKey =
+  | "status"
+  | "title"
+  | "category"
+  | "customerQuestions"
+  | "supportAnswers"
+  | "hintsScore";
+type SortDirection = "asc" | "desc";
+type ClusterSortState = {
+  key: ClusterSortKey;
+  direction: SortDirection;
+} | null;
 type ClusterSetRefinementDraft = {
   parentClusterSetId: string;
   indexingRunId: string;
@@ -398,6 +412,8 @@ const ERROR_MESSAGES_BY_CODE: Record<string, string> = {
     "Die Aktion konnte nicht abgeschlossen werden. Bitte erneut versuchen oder den aktuellen Stand neu laden.",
   VALIDATION_FAILED:
     "Die Eingaben sind ungültig. Bitte prüfen und erneut versuchen.",
+  PROJECT_NOT_FOUND:
+    "Das Projekt wurde nicht gefunden. Bitte Projektliste neu laden.",
   INDEXING_MODEL_UNAVAILABLE:
     "Das gewählte Embedding-Modell ist nicht verfügbar. Bitte Provider-Einstellungen prüfen oder ein anderes Modell wählen.",
   INDEXING_CLOUD_CONFIRMATION_REQUIRED:
@@ -519,6 +535,7 @@ function toProject(project: ApiProject): Project {
     name: project.name,
     lifecycleState: project.lifecycle_state,
     updatedAt: project.updated_at,
+    ticketUrlTemplate: project.ticket_url_template ?? null,
   };
 }
 
@@ -763,6 +780,35 @@ function toClusterSource(source: ApiClusterSource): ClusterSource {
   };
 }
 
+function buildTicketUrl(
+  ticketUrlTemplate: string | null,
+  ticketId: string,
+): string | null {
+  if (ticketUrlTemplate === null || ticketUrlTemplate.trim() === "") {
+    return null;
+  }
+  if (!ticketUrlTemplate.includes("<ticket_id>")) {
+    return null;
+  }
+  try {
+    const href = ticketUrlTemplate.replaceAll(
+      "<ticket_id>",
+      encodeURIComponent(ticketId),
+    );
+    const parsed = new URL(href);
+    if (
+      !["http:", "https:"].includes(parsed.protocol) ||
+      parsed.username !== "" ||
+      parsed.password !== ""
+    ) {
+      return null;
+    }
+    return parsed.toString();
+  } catch {
+    return null;
+  }
+}
+
 function toExportLog(log: ApiExportLog): ExportLog {
   return {
     id: log.id,
@@ -905,12 +951,19 @@ function clusterSetParameterEntries(
 class ApiRequestError extends Error {
   readonly status: number;
   readonly code: string | null;
+  readonly fieldErrors: Record<string, string>;
 
-  constructor(message: string, status: number, code: string | null = null) {
+  constructor(
+    message: string,
+    status: number,
+    code: string | null = null,
+    fieldErrors: Record<string, string> = {},
+  ) {
     super(message);
     this.name = "ApiRequestError";
     this.status = status;
     this.code = code;
+    this.fieldErrors = fieldErrors;
   }
 }
 
@@ -918,21 +971,45 @@ function normalizeApiError(payload: {
   title?: unknown;
   detail?: unknown;
   code?: unknown;
-}): { message: string | null; code: string | null } {
+  fieldErrors?: unknown;
+}): {
+  message: string | null;
+  code: string | null;
+  fieldErrors: Record<string, string>;
+} {
   const code = typeof payload.code === "string" ? payload.code : null;
+  const fieldErrors: Record<string, string> = {};
+  if (Array.isArray(payload.fieldErrors)) {
+    for (const item of payload.fieldErrors) {
+      if (
+        typeof item === "object" &&
+        item !== null &&
+        "field" in item &&
+        "message" in item &&
+        typeof item.field === "string" &&
+        typeof item.message === "string"
+      ) {
+        fieldErrors[item.field] = item.message;
+      }
+    }
+  }
   if (code !== null && ERROR_MESSAGES_BY_CODE[code] !== undefined) {
-    return { message: ERROR_MESSAGES_BY_CODE[code], code };
+    return { message: ERROR_MESSAGES_BY_CODE[code], code, fieldErrors };
   }
   if (code !== null) {
-    return { message: ERROR_MESSAGES_BY_CODE.UNEXPECTED_ERROR, code };
+    return {
+      message: ERROR_MESSAGES_BY_CODE.UNEXPECTED_ERROR,
+      code,
+      fieldErrors,
+    };
   }
   if (typeof payload.detail === "string" && payload.detail.trim() !== "") {
-    return { message: payload.detail, code };
+    return { message: payload.detail, code, fieldErrors };
   }
   if (typeof payload.title === "string" && payload.title.trim() !== "") {
-    return { message: payload.title, code };
+    return { message: payload.title, code, fieldErrors };
   }
-  return { message: null, code };
+  return { message: null, code, fieldErrors };
 }
 
 function actionErrorMessage(error: unknown, fallback: string): string {
@@ -955,15 +1032,18 @@ async function apiRequest<T>(
   if (!response.ok) {
     let detail: string | null = null;
     let code: string | null = null;
+    let fieldErrors: Record<string, string> = {};
     try {
       const payload = (await response.json()) as {
         title?: unknown;
         detail?: unknown;
         code?: unknown;
+        fieldErrors?: unknown;
       };
       const normalized = normalizeApiError(payload);
       detail = normalized.message;
       code = normalized.code;
+      fieldErrors = normalized.fieldErrors;
     } catch {
       detail = null;
     }
@@ -971,6 +1051,7 @@ async function apiRequest<T>(
       detail ?? `Anfrage fehlgeschlagen (HTTP ${response.status}).`,
       response.status,
       code,
+      fieldErrors ?? {},
     );
   }
   if (response.status === 204) {
@@ -1025,6 +1106,7 @@ function App() {
   const [clusterSearchQuery, setClusterSearchQuery] = useState("");
   const [clusterCategoryFilter, setClusterCategoryFilter] = useState("");
   const [clusterGroupByCategory, setClusterGroupByCategory] = useState(false);
+  const [clusterSort, setClusterSort] = useState<ClusterSortState>(null);
   const [showExcludedClusters, setShowExcludedClusters] = useState(false);
   const [includeOutlierRows, setIncludeOutlierRows] = useState(true);
   const [outlierThreshold, setOutlierThreshold] = useState("0.5");
@@ -1033,11 +1115,22 @@ function App() {
   const [explorerExportError, setExplorerExportError] = useState<string | null>(
     null,
   );
+  const [explorerRailCollapsed, setExplorerRailCollapsed] = useState(false);
   const [clusterSetRefinementDraft, setClusterSetRefinementDraft] =
     useState<ClusterSetRefinementDraft | null>(null);
   const [clusterSetGenerationRequest, setClusterSetGenerationRequest] =
     useState<ClusterSetGenerationRequest | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [projectSettingsError, setProjectSettingsError] = useState<
+    string | null
+  >(null);
+  const [projectSettingsFieldErrors, setProjectSettingsFieldErrors] = useState<
+    Record<string, string>
+  >({});
+  const [projectDeleteError, setProjectDeleteError] = useState<string | null>(
+    null,
+  );
+  const [isProjectSettingsSaving, setIsProjectSettingsSaving] = useState(false);
   const [activePage, setActivePage] = useState<ActivePage>("projects");
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("providers");
   const [projectTab, setProjectTab] = useState<ProjectTab>("import");
@@ -1089,6 +1182,7 @@ function App() {
   const sourceDialogRef = useRef<HTMLElement | null>(null);
   const sourceDialogCloseRef = useRef<HTMLButtonElement | null>(null);
   const sourceDialogTriggerRef = useRef<HTMLElement | null>(null);
+  const explorerTableWorkspaceRef = useRef<HTMLDivElement | null>(null);
   const summaryDialogRef = useRef<HTMLElement | null>(null);
   const summaryDialogCloseRef = useRef<HTMLButtonElement | null>(null);
   const summaryDialogTriggerRef = useRef<HTMLElement | null>(null);
@@ -1449,6 +1543,9 @@ function App() {
     setIndexingRuns([]);
     setClusterSets([]);
     setProjectTab("import");
+    setProjectSettingsError(null);
+    setProjectSettingsFieldErrors({});
+    setProjectDeleteError(null);
     setFeedback(null);
     setExplorerSummaryError(null);
   }
@@ -1567,6 +1664,9 @@ function App() {
       const project = toProject(opened);
       setCurrentProject(project);
       setProjectTab("import");
+      setProjectSettingsError(null);
+      setProjectSettingsFieldErrors({});
+      setProjectDeleteError(null);
       setActivePage("projects");
 
       const [logs, nextClusterSets, exports] = await Promise.allSettled([
@@ -1598,32 +1698,72 @@ function App() {
     }
   }
 
-  async function renameProject(projectId: string, name: string) {
-    if (session === null || !name.trim()) {
+  async function updateProjectSettings(
+    event: FormEvent<HTMLFormElement>,
+    projectId: string,
+  ) {
+    event.preventDefault();
+    if (session === null) {
       return;
     }
+    const form = new FormData(event.currentTarget);
+    const name = String(form.get("projectName") ?? "");
+    const ticketUrlTemplate = String(form.get("ticketUrlTemplate") ?? "");
+    setFeedback(null);
+    if (!name.trim()) {
+      setProjectSettingsFieldErrors({
+        projectName: "Projektname ist erforderlich.",
+      });
+      setProjectSettingsError(
+        "Die Projekteinstellungen konnten nicht gespeichert werden.",
+      );
+      return;
+    }
+    setIsProjectSettingsSaving(true);
+    setProjectSettingsError(null);
+    setProjectSettingsFieldErrors({});
     try {
-      const renamed = await apiRequest<ApiProject>(
+      const updated = await apiRequest<ApiProject>(
         `/api/projects/${projectId}`,
         {
           method: "PATCH",
           token: session.token,
-          body: JSON.stringify({ name }),
+          body: JSON.stringify({
+            name,
+            ticket_url_template:
+              ticketUrlTemplate.trim() === "" ? null : ticketUrlTemplate,
+          }),
         },
       );
-      const project = toProject(renamed);
+      const project = toProject(updated);
       setProjects((existing) =>
         existing.map((item) => (item.id === projectId ? project : item)),
       );
       if (currentProject?.id === projectId) {
         setCurrentProject(project);
       }
-      showFeedback("success", "Projekt umbenannt.");
+      showFeedback("success", "Projekteinstellungen gespeichert.");
     } catch (error: unknown) {
-      showFeedback(
-        "error",
-        actionErrorMessage(error, "Projekt konnte nicht umbenannt werden."),
-      );
+      if (error instanceof ApiRequestError) {
+        setProjectSettingsFieldErrors(error.fieldErrors);
+        if (error.code === "VALIDATION_FAILED") {
+          setProjectSettingsError(
+            "Die Projekteinstellungen konnten nicht gespeichert werden. Bitte Eingaben prüfen.",
+          );
+        } else if (error.code === "PROJECT_NOT_FOUND") {
+          setProjectSettingsError("Das Projekt wurde nicht gefunden.");
+        } else {
+          setProjectSettingsError(
+            "Die Projekteinstellungen konnten nicht gespeichert werden.",
+          );
+        }
+      } else {
+        setProjectSettingsError(
+          "Die Projekteinstellungen konnten nicht gespeichert werden.",
+        );
+      }
+    } finally {
+      setIsProjectSettingsSaving(false);
     }
   }
 
@@ -1638,6 +1778,7 @@ function App() {
     const formElement = event.currentTarget;
     const form = new FormData(formElement);
     const confirmationName = String(form.get("confirmationName") ?? "");
+    setProjectDeleteError(null);
     try {
       await apiRequest<void>(`/api/projects/${projectId}`, {
         method: "DELETE",
@@ -1665,8 +1806,7 @@ function App() {
       }
       showFeedback("success", "Projekt gelöscht.");
     } catch (error: unknown) {
-      showFeedback(
-        "error",
+      setProjectDeleteError(
         actionErrorMessage(
           error,
           "Projekt konnte nicht gelöscht werden. Namensbestätigung prüfen.",
@@ -2973,6 +3113,14 @@ function App() {
     resetSourceDialogState();
   }
 
+  function scrollExplorerToTop() {
+    explorerTableWorkspaceRef.current?.scrollTo({
+      top: 0,
+      behavior: "smooth",
+    });
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
   function createRefinementDraftFromVisibleClusters() {
     if (loadedClusterSet === null) {
       return;
@@ -3270,6 +3418,109 @@ function App() {
     return value === null ? "-" : value.toFixed(2);
   }
 
+  function compareClusterText(left: string | null, right: string | null) {
+    return (left ?? "").localeCompare(right ?? "", "de", {
+      sensitivity: "base",
+      numeric: true,
+    });
+  }
+
+  function compareClusterNumbers(left: number | null, right: number | null) {
+    if (left === null && right === null) {
+      return 0;
+    }
+    if (left === null) {
+      return 1;
+    }
+    if (right === null) {
+      return -1;
+    }
+    return left - right;
+  }
+
+  function clusterSortValue(cluster: Cluster, key: ClusterSortKey) {
+    if (key === "status") {
+      return cluster.effectiveStatus;
+    }
+    if (key === "title") {
+      return cluster.effectiveTitle;
+    }
+    if (key === "category") {
+      return clusterCategory(cluster);
+    }
+    if (key === "customerQuestions" || key === "supportAnswers") {
+      return cluster.memberCount;
+    }
+    return cluster.score;
+  }
+
+  function sortClustersForDisplay(
+    nextClusters: Cluster[],
+    sortState: ClusterSortState,
+  ) {
+    if (sortState === null) {
+      return nextClusters;
+    }
+    const baselineOrder = new Map(
+      clusters.map((cluster, index) => [cluster.id, index]),
+    );
+    const directionMultiplier = sortState.direction === "asc" ? 1 : -1;
+    return nextClusters.slice().sort((left, right) => {
+      const leftValue = clusterSortValue(left, sortState.key);
+      const rightValue = clusterSortValue(right, sortState.key);
+      const primaryComparison =
+        typeof leftValue === "number" || typeof rightValue === "number"
+          ? compareClusterNumbers(
+              typeof leftValue === "number" ? leftValue : null,
+              typeof rightValue === "number" ? rightValue : null,
+            )
+          : compareClusterText(String(leftValue), String(rightValue));
+      if (primaryComparison !== 0) {
+        return primaryComparison * directionMultiplier;
+      }
+      return (
+        (baselineOrder.get(left.id) ?? 0) - (baselineOrder.get(right.id) ?? 0)
+      );
+    });
+  }
+
+  function cycleClusterSort(key: ClusterSortKey) {
+    setClusterSort((current) => {
+      if (current === null || current.key !== key) {
+        return { key, direction: "asc" };
+      }
+      if (current.direction === "asc") {
+        return { key, direction: "desc" };
+      }
+      return null;
+    });
+  }
+
+  function clusterHeaderSortLabel(key: ClusterSortKey, label: string) {
+    if (clusterSort?.key !== key) {
+      return `${label} sortieren, aktuell unsortiert`;
+    }
+    return `${label} sortieren, aktuell ${
+      clusterSort.direction === "asc" ? "aufsteigend" : "absteigend"
+    }`;
+  }
+
+  function clusterHeaderSortIndicator(key: ClusterSortKey) {
+    if (clusterSort?.key !== key) {
+      return "↕";
+    }
+    return clusterSort.direction === "asc" ? "↑" : "↓";
+  }
+
+  function clusterHeaderAriaSort(
+    key: ClusterSortKey,
+  ): "none" | "ascending" | "descending" {
+    if (clusterSort?.key !== key) {
+      return "none";
+    }
+    return clusterSort.direction === "asc" ? "ascending" : "descending";
+  }
+
   function formatClusterSetType(value: string): string {
     return (
       {
@@ -3308,7 +3559,7 @@ function App() {
   const clusterCategories = Array.from(
     new Set(clusters.map(clusterCategory)),
   ).sort((left, right) => left.localeCompare(right));
-  const visibleClusters = clusters.filter(
+  const filteredClusters = clusters.filter(
     (cluster) =>
       (showExcludedClusters || !clusterIsExcluded(cluster)) &&
       (includeOutlierRows || !cluster.isOutlier) &&
@@ -3316,6 +3567,7 @@ function App() {
         clusterCategory(cluster) === clusterCategoryFilter) &&
       clusterMatchesSearch(cluster, clusterSearchQuery),
   );
+  const visibleClusters = sortClustersForDisplay(filteredClusters, clusterSort);
   const visibleIncludedClusters = visibleClusters.filter(
     (cluster) => !clusterIsExcluded(cluster),
   );
@@ -3778,6 +4030,49 @@ function App() {
           </div>
         </td>
       </tr>
+    );
+  }
+
+  function renderSourceTicketLabel(source: ClusterSource) {
+    const ticketLabel = `Ticket ${source.ticketId}`;
+    const ticketHref = buildTicketUrl(
+      currentProject?.ticketUrlTemplate ?? null,
+      source.ticketId,
+    );
+    return (
+      <>
+        {ticketHref === null ? (
+          ticketLabel
+        ) : (
+          <a
+            className="source-ticket-link"
+            href={ticketHref}
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            {ticketLabel}
+          </a>
+        )}{" "}
+        · Gruppe {source.messageGroupId}
+      </>
+    );
+  }
+
+  function renderSortableClusterHeader(key: ClusterSortKey, label: string) {
+    return (
+      <th aria-sort={clusterHeaderAriaSort(key)} scope="col">
+        <button
+          type="button"
+          className="sort-header-button"
+          aria-label={clusterHeaderSortLabel(key, label)}
+          onClick={() => cycleClusterSort(key)}
+        >
+          <span>{label}</span>
+          <span className="sort-indicator" aria-hidden="true">
+            {clusterHeaderSortIndicator(key)}
+          </span>
+        </button>
+      </th>
     );
   }
 
@@ -4252,31 +4547,6 @@ function App() {
                         {formatProjectUpdatedAt(currentProject.updatedAt)}
                       </p>
                     </div>
-                    <form
-                      key={`${currentProject.id}:${currentProject.name}`}
-                      className="project-rename-form"
-                      aria-label="Projekt umbenennen"
-                      onSubmit={(event) => {
-                        event.preventDefault();
-                        const form = new FormData(event.currentTarget);
-                        void renameProject(
-                          currentProject.id,
-                          String(form.get("projectName") ?? ""),
-                        );
-                      }}
-                    >
-                      <label>
-                        Projektname
-                        <input
-                          name="projectName"
-                          defaultValue={currentProject.name}
-                          required
-                        />
-                      </label>
-                      <button type="submit" className="secondary">
-                        Umbenennen
-                      </button>
-                    </form>
                   </div>
                 </section>
 
@@ -4291,7 +4561,7 @@ function App() {
                       ["indexing", "Indizieren"],
                       ["cluster-sets", "Cluster-Sets"],
                       ["explorer", "Explorer"],
-                      ["delete", "Projekt löschen"],
+                      ["settings", "Einstellungen"],
                     ] as const
                   ).map(([tab, label]) => (
                     <button
@@ -5165,308 +5435,365 @@ function App() {
                           im Tab „Cluster-Sets“ einen fertigen Satz aus.
                         </p>
                       ) : (
-                        <div className="explorer-workspace-grid">
+                        <div
+                          className={`explorer-workspace-grid ${
+                            explorerRailCollapsed
+                              ? "explorer-workspace-grid-collapsed"
+                              : ""
+                          }`}
+                        >
                           <aside
-                            className="explorer-rail"
+                            className={`explorer-rail ${
+                              explorerRailCollapsed
+                                ? "explorer-rail-collapsed"
+                                : ""
+                            }`}
                             aria-label="Explorer Kontrollleiste"
                           >
-                            <section
-                              className="rail-group"
-                              aria-label="Cluster-Set Auswahl"
-                            >
-                              <h3>Cluster-Set</h3>
-                              <label>
-                                Geladenes Set
-                                <select
-                                  value={loadedClusterSet.id}
-                                  onChange={(event) => {
-                                    if (
-                                      session === null ||
-                                      currentProject === null
-                                    ) {
-                                      return;
-                                    }
-                                    void loadClusterSetClusters(
-                                      session.token,
-                                      currentProject.id,
-                                      event.target.value,
-                                    );
-                                  }}
-                                >
-                                  {completedClusterSets.map((clusterSet) => (
-                                    <option
-                                      key={clusterSet.id}
-                                      value={clusterSet.id}
-                                    >
-                                      {clusterSet.displayName}
-                                    </option>
-                                  ))}
-                                </select>
-                              </label>
-                              <button
-                                type="button"
-                                className="secondary"
-                                onClick={() => setProjectTab("cluster-sets")}
-                              >
-                                Cluster-Sets verwalten
-                              </button>
-                            </section>
-
-                            <section
-                              className="rail-group"
-                              aria-label="Explorer Filter"
-                            >
-                              <h3>Suche & Filter</h3>
-                              <label>
-                                Textsuche
-                                <input
-                                  value={clusterSearchQuery}
-                                  onChange={(event) =>
-                                    setClusterSearchQuery(event.target.value)
-                                  }
-                                  placeholder="Titel, Kategorie, Summary oder Status"
-                                />
-                              </label>
-                              <label>
-                                Kategorie
-                                <select
-                                  value={clusterCategoryFilter}
-                                  onChange={(event) =>
-                                    setClusterCategoryFilter(event.target.value)
-                                  }
-                                >
-                                  <option value="">Alle Kategorien</option>
-                                  {clusterCategories.map((category) => (
-                                    <option key={category} value={category}>
-                                      {category}
-                                    </option>
-                                  ))}
-                                </select>
-                              </label>
-                              <label className="inline-check">
-                                <input
-                                  type="checkbox"
-                                  checked={clusterGroupByCategory}
-                                  onChange={(event) =>
-                                    setClusterGroupByCategory(
-                                      event.target.checked,
-                                    )
-                                  }
-                                />
-                                Nach Kategorie gruppieren
-                              </label>
-                              <label className="inline-check">
-                                <input
-                                  type="checkbox"
-                                  checked={showExcludedClusters}
-                                  onChange={(event) =>
-                                    setShowExcludedClusters(
-                                      event.target.checked,
-                                    )
-                                  }
-                                />
-                                Ausgeschlossene anzeigen
-                              </label>
-                              <label className="inline-check">
-                                <input
-                                  type="checkbox"
-                                  checked={includeOutlierRows}
-                                  onChange={(event) =>
-                                    setIncludeOutlierRows(event.target.checked)
-                                  }
-                                />
-                                Ausreißer in Tabelle anzeigen
-                              </label>
-                            </section>
-
-                            <section
-                              className="rail-group"
-                              aria-label="Explorer Verfeinerung"
-                            >
-                              <h3>Verfeinerung</h3>
-                              <p className="hint">
-                                Nutzt die aktuell sichtbaren eingeschlossenen
-                                Cluster als Quelle für ein neues
-                                Child-Cluster-Set.
-                              </p>
-                              <button
-                                type="button"
-                                onClick={
-                                  createRefinementDraftFromVisibleClusters
-                                }
-                              >
-                                Eingeschlossene Cluster verfeinern
-                              </button>
-                            </section>
-
-                            <section
-                              className="rail-group"
-                              aria-label="Ausreißer ausschließen"
-                            >
-                              <h3>Ausreißer</h3>
-                              <p className="hint">
-                                Erstellt ein neues Child-Cluster-Set.
-                              </p>
-                              <label>
-                                Threshold
-                                <input
-                                  type="number"
-                                  min="0"
-                                  max="1"
-                                  step="0.01"
-                                  value={outlierThreshold}
-                                  onChange={(event) =>
-                                    setOutlierThreshold(event.target.value)
-                                  }
-                                />
-                              </label>
-                              <button
-                                type="button"
-                                onClick={() => void createOutlierExclusionSet()}
-                              >
-                                Ausreißer berechnen
-                              </button>
-                            </section>
-
-                            <section
-                              className="rail-group"
-                              aria-label="Explorer Summary"
-                            >
-                              <h3>Summary</h3>
-                              <p className="hint">
-                                Ersetzt die aktuellen Summary-Felder dieses
-                                Cluster-Sets. Versions- und Kopie-Modi sind
-                                nicht aktiv.
-                              </p>
-                              {explorerSummaryError !== null && (
-                                <div className="status error" role="alert">
-                                  {explorerSummaryError}
-                                </div>
+                            <div className="explorer-rail-header">
+                              {!explorerRailCollapsed && (
+                                <strong>Kontrollleiste</strong>
                               )}
                               <button
                                 type="button"
-                                disabled={
-                                  !canRegenerateLoadedClusterSetSummaries ||
-                                  clusterSetSummaryRequestId ===
-                                    loadedClusterSet.id
+                                className="secondary icon-button explorer-rail-toggle"
+                                aria-label={
+                                  explorerRailCollapsed
+                                    ? "Kontrollleiste ausklappen"
+                                    : "Kontrollleiste einklappen"
                                 }
-                                onClick={(event) =>
-                                  openSummaryRegenerationDialog(
-                                    loadedClusterSet,
-                                    event.currentTarget,
+                                title={
+                                  explorerRailCollapsed
+                                    ? "Kontrollleiste ausklappen"
+                                    : "Kontrollleiste einklappen"
+                                }
+                                aria-expanded={!explorerRailCollapsed}
+                                aria-controls="explorer-rail-content"
+                                onClick={() =>
+                                  setExplorerRailCollapsed(
+                                    (collapsed) => !collapsed,
                                   )
                                 }
                               >
-                                {clusterSetSummaryRequestId ===
-                                loadedClusterSet.id
-                                  ? "Summaries werden gestartet"
-                                  : "Summaries neu erstellen"}
+                                <span aria-hidden="true">
+                                  {explorerRailCollapsed ? "›" : "‹"}
+                                </span>
                               </button>
-                              {!canRegenerateLoadedClusterSetSummaries && (
-                                <p className="hint">
-                                  Für dieses Cluster-Set ist kein aktiver
-                                  LLM-Provider hinterlegt.
-                                </p>
-                              )}
-                            </section>
-
-                            {clusters.length > 0 && (
+                            </div>
+                            <div
+                              id="explorer-rail-content"
+                              className="explorer-rail-content"
+                              hidden={explorerRailCollapsed}
+                            >
                               <section
                                 className="rail-group"
-                                aria-label="Explorer Export"
+                                aria-label="Cluster-Set Auswahl"
                               >
-                                <h3>Export</h3>
-                                <p className="hint">
-                                  Exportiert die aktuelle gefilterte
-                                  Explorer-Tabelle ohne Originaltexte aus dem
-                                  Quellen-Dialog.
-                                </p>
-                                {explorerExportError !== null && (
-                                  <div
-                                    className="status error stack"
-                                    role="alert"
+                                <h3>Cluster-Set</h3>
+                                <label>
+                                  Geladenes Set
+                                  <select
+                                    value={loadedClusterSet.id}
+                                    onChange={(event) => {
+                                      if (
+                                        session === null ||
+                                        currentProject === null
+                                      ) {
+                                        return;
+                                      }
+                                      void loadClusterSetClusters(
+                                        session.token,
+                                        currentProject.id,
+                                        event.target.value,
+                                      );
+                                    }}
                                   >
-                                    <strong>
-                                      Explorer-Export fehlgeschlagen.
-                                    </strong>
-                                    <p>{explorerExportError}</p>
-                                    <p className="hint">
-                                      Filter und Format bleiben erhalten. Bitte
-                                      Eingaben anpassen oder den Export erneut
-                                      starten.
-                                    </p>
+                                    {completedClusterSets.map((clusterSet) => (
+                                      <option
+                                        key={clusterSet.id}
+                                        value={clusterSet.id}
+                                      >
+                                        {clusterSet.displayName}
+                                      </option>
+                                    ))}
+                                  </select>
+                                </label>
+                                <button
+                                  type="button"
+                                  className="secondary"
+                                  onClick={() => setProjectTab("cluster-sets")}
+                                >
+                                  Cluster-Sets verwalten
+                                </button>
+                              </section>
+
+                              <section
+                                className="rail-group"
+                                aria-label="Explorer Filter"
+                              >
+                                <h3>Suche & Filter</h3>
+                                <label>
+                                  Textsuche
+                                  <input
+                                    value={clusterSearchQuery}
+                                    onChange={(event) =>
+                                      setClusterSearchQuery(event.target.value)
+                                    }
+                                    placeholder="Titel, Kategorie, Summary oder Status"
+                                  />
+                                </label>
+                                <label>
+                                  Kategorie
+                                  <select
+                                    value={clusterCategoryFilter}
+                                    onChange={(event) =>
+                                      setClusterCategoryFilter(
+                                        event.target.value,
+                                      )
+                                    }
+                                  >
+                                    <option value="">Alle Kategorien</option>
+                                    {clusterCategories.map((category) => (
+                                      <option key={category} value={category}>
+                                        {category}
+                                      </option>
+                                    ))}
+                                  </select>
+                                </label>
+                                <label className="inline-check">
+                                  <input
+                                    type="checkbox"
+                                    checked={clusterGroupByCategory}
+                                    onChange={(event) =>
+                                      setClusterGroupByCategory(
+                                        event.target.checked,
+                                      )
+                                    }
+                                  />
+                                  Nach Kategorie gruppieren
+                                </label>
+                                <label className="inline-check">
+                                  <input
+                                    type="checkbox"
+                                    checked={showExcludedClusters}
+                                    onChange={(event) =>
+                                      setShowExcludedClusters(
+                                        event.target.checked,
+                                      )
+                                    }
+                                  />
+                                  Ausgeschlossene anzeigen
+                                </label>
+                                <label className="inline-check">
+                                  <input
+                                    type="checkbox"
+                                    checked={includeOutlierRows}
+                                    onChange={(event) =>
+                                      setIncludeOutlierRows(
+                                        event.target.checked,
+                                      )
+                                    }
+                                  />
+                                  Ausreißer in Tabelle anzeigen
+                                </label>
+                              </section>
+
+                              <section
+                                className="rail-group"
+                                aria-label="Explorer Verfeinerung"
+                              >
+                                <h3>Verfeinerung</h3>
+                                <p className="hint">
+                                  Nutzt die aktuell sichtbaren eingeschlossenen
+                                  Cluster als Quelle für ein neues
+                                  Child-Cluster-Set.
+                                </p>
+                                <button
+                                  type="button"
+                                  onClick={
+                                    createRefinementDraftFromVisibleClusters
+                                  }
+                                >
+                                  Eingeschlossene Cluster verfeinern
+                                </button>
+                              </section>
+
+                              <section
+                                className="rail-group"
+                                aria-label="Ausreißer ausschließen"
+                              >
+                                <h3>Ausreißer</h3>
+                                <p className="hint">
+                                  Erstellt ein neues Child-Cluster-Set.
+                                </p>
+                                <label>
+                                  Threshold
+                                  <input
+                                    type="number"
+                                    min="0"
+                                    max="1"
+                                    step="0.01"
+                                    value={outlierThreshold}
+                                    onChange={(event) =>
+                                      setOutlierThreshold(event.target.value)
+                                    }
+                                  />
+                                </label>
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    void createOutlierExclusionSet()
+                                  }
+                                >
+                                  Ausreißer berechnen
+                                </button>
+                              </section>
+
+                              <section
+                                className="rail-group"
+                                aria-label="Explorer Summary"
+                              >
+                                <h3>Summary</h3>
+                                <p className="hint">
+                                  Ersetzt die aktuellen Summary-Felder dieses
+                                  Cluster-Sets. Versions- und Kopie-Modi sind
+                                  nicht aktiv.
+                                </p>
+                                {explorerSummaryError !== null && (
+                                  <div className="status error" role="alert">
+                                    {explorerSummaryError}
                                   </div>
                                 )}
-                                <form
-                                  className="stack"
-                                  onSubmit={createExplorerExport}
+                                <button
+                                  type="button"
+                                  disabled={
+                                    !canRegenerateLoadedClusterSetSummaries ||
+                                    clusterSetSummaryRequestId ===
+                                      loadedClusterSet.id
+                                  }
+                                  onClick={(event) =>
+                                    openSummaryRegenerationDialog(
+                                      loadedClusterSet,
+                                      event.currentTarget,
+                                    )
+                                  }
                                 >
-                                  <label>
-                                    Format
-                                    <select
-                                      value={explorerExportFormat}
-                                      onChange={(event) =>
-                                        setExplorerExportFormat(
-                                          event.target
-                                            .value as ExplorerExportFormat,
-                                        )
-                                      }
-                                    >
-                                      <option value="csv">CSV</option>
-                                      <option value="json">JSON</option>
-                                    </select>
-                                  </label>
-                                  <button
-                                    type="submit"
-                                    disabled={visibleClusters.length === 0}
-                                  >
-                                    Aktuelle Tabelle exportieren
-                                  </button>
-                                </form>
-                                <section aria-label="Exporthistorie">
-                                  <h3>Exporthistorie</h3>
-                                  <div className="user-list">
-                                    {visibleExportLogs.length === 0 && (
-                                      <p className="hint">
-                                        Noch keine Explorer-Exporte für dieses
-                                        Projekt.
-                                      </p>
-                                    )}
-                                    {visibleExportLogs.map((log) => (
-                                      <article
-                                        className="user-card"
-                                        key={log.id}
-                                      >
-                                        <div className="user-heading">
-                                          <strong>{log.outputFilename}</strong>
-                                          <span>{log.exportType}</span>
-                                        </div>
-                                        <p className="hint">
-                                          Zeilen: {log.rowCount}; Cluster-Set:{" "}
-                                          {log.clusterSetId ?? "-"}
-                                        </p>
-                                        <p className="hint">
-                                          Erstellt: {log.createdAt}
-                                        </p>
-                                      </article>
-                                    ))}
-                                  </div>
-                                </section>
-                                {lastExportContent && (
-                                  <pre
-                                    className="log-detail"
-                                    aria-label="Letzter Explorer Export"
-                                    tabIndex={0}
-                                  >
-                                    {lastExportContentType}:{"\n"}
-                                    {lastExportContent}
-                                  </pre>
+                                  {clusterSetSummaryRequestId ===
+                                  loadedClusterSet.id
+                                    ? "Summaries werden gestartet"
+                                    : "Summaries neu erstellen"}
+                                </button>
+                                {!canRegenerateLoadedClusterSetSummaries && (
+                                  <p className="hint">
+                                    Für dieses Cluster-Set ist kein aktiver
+                                    LLM-Provider hinterlegt.
+                                  </p>
                                 )}
                               </section>
-                            )}
+
+                              {clusters.length > 0 && (
+                                <section
+                                  className="rail-group"
+                                  aria-label="Explorer Export"
+                                >
+                                  <h3>Export</h3>
+                                  <p className="hint">
+                                    Exportiert die aktuelle gefilterte
+                                    Explorer-Tabelle ohne Originaltexte aus dem
+                                    Quellen-Dialog.
+                                  </p>
+                                  {explorerExportError !== null && (
+                                    <div
+                                      className="status error stack"
+                                      role="alert"
+                                    >
+                                      <strong>
+                                        Explorer-Export fehlgeschlagen.
+                                      </strong>
+                                      <p>{explorerExportError}</p>
+                                      <p className="hint">
+                                        Filter und Format bleiben erhalten.
+                                        Bitte Eingaben anpassen oder den Export
+                                        erneut starten.
+                                      </p>
+                                    </div>
+                                  )}
+                                  <form
+                                    className="stack"
+                                    onSubmit={createExplorerExport}
+                                  >
+                                    <label>
+                                      Format
+                                      <select
+                                        value={explorerExportFormat}
+                                        onChange={(event) =>
+                                          setExplorerExportFormat(
+                                            event.target
+                                              .value as ExplorerExportFormat,
+                                          )
+                                        }
+                                      >
+                                        <option value="csv">CSV</option>
+                                        <option value="json">JSON</option>
+                                      </select>
+                                    </label>
+                                    <button
+                                      type="submit"
+                                      disabled={visibleClusters.length === 0}
+                                    >
+                                      Aktuelle Tabelle exportieren
+                                    </button>
+                                  </form>
+                                  <section aria-label="Exporthistorie">
+                                    <h3>Exporthistorie</h3>
+                                    <div className="user-list">
+                                      {visibleExportLogs.length === 0 && (
+                                        <p className="hint">
+                                          Noch keine Explorer-Exporte für dieses
+                                          Projekt.
+                                        </p>
+                                      )}
+                                      {visibleExportLogs.map((log) => (
+                                        <article
+                                          className="user-card"
+                                          key={log.id}
+                                        >
+                                          <div className="user-heading">
+                                            <strong>
+                                              {log.outputFilename}
+                                            </strong>
+                                            <span>{log.exportType}</span>
+                                          </div>
+                                          <p className="hint">
+                                            Zeilen: {log.rowCount}; Cluster-Set:{" "}
+                                            {log.clusterSetId ?? "-"}
+                                          </p>
+                                          <p className="hint">
+                                            Erstellt: {log.createdAt}
+                                          </p>
+                                        </article>
+                                      ))}
+                                    </div>
+                                  </section>
+                                  {lastExportContent && (
+                                    <pre
+                                      className="log-detail"
+                                      aria-label="Letzter Explorer Export"
+                                      tabIndex={0}
+                                    >
+                                      {lastExportContentType}:{"\n"}
+                                      {lastExportContent}
+                                    </pre>
+                                  )}
+                                </section>
+                              )}
+                            </div>
                           </aside>
 
-                          <div className="explorer-table-workspace">
+                          <div
+                            className="explorer-table-workspace"
+                            ref={explorerTableWorkspaceRef}
+                          >
                             <div
                               className="metric-grid"
                               aria-label="Explorer Kennzahlen"
@@ -5554,14 +5881,32 @@ function App() {
                               <table className="cluster-table">
                                 <thead>
                                   <tr>
-                                    <th>Status</th>
-                                    <th>Titel</th>
-                                    <th>Kategorie</th>
+                                    {renderSortableClusterHeader(
+                                      "status",
+                                      "Status",
+                                    )}
+                                    {renderSortableClusterHeader(
+                                      "title",
+                                      "Titel",
+                                    )}
+                                    {renderSortableClusterHeader(
+                                      "category",
+                                      "Kategorie",
+                                    )}
                                     <th>Frage</th>
                                     <th>Antwort</th>
-                                    <th>Kundenanfragen</th>
-                                    <th>Supportantworten</th>
-                                    <th>Hinweise</th>
+                                    {renderSortableClusterHeader(
+                                      "customerQuestions",
+                                      "Kundenanfragen",
+                                    )}
+                                    {renderSortableClusterHeader(
+                                      "supportAnswers",
+                                      "Supportantworten",
+                                    )}
+                                    {renderSortableClusterHeader(
+                                      "hintsScore",
+                                      "Hinweise / Score",
+                                    )}
                                     <th>Aktionen</th>
                                   </tr>
                                 </thead>
@@ -5610,12 +5955,28 @@ function App() {
                               </section>
                             )}
                           </div>
+                          <button
+                            type="button"
+                            className="icon-button scroll-to-top"
+                            aria-label="Nach oben scrollen"
+                            title="Nach oben scrollen"
+                            onClick={scrollExplorerToTop}
+                          >
+                            <span aria-hidden="true">↑</span>
+                          </button>
                         </div>
                       )}
                     </section>
 
                     {sourceDialogCluster !== null && (
-                      <div className="dialog-backdrop">
+                      <div
+                        className="dialog-backdrop"
+                        onClick={(event) => {
+                          if (event.target === event.currentTarget) {
+                            closeSourceDialog();
+                          }
+                        }}
+                      >
                         <section
                           className="source-dialog"
                           role="dialog"
@@ -5623,7 +5984,7 @@ function App() {
                           aria-labelledby="source-dialog-title"
                           ref={sourceDialogRef}
                         >
-                          <div className="panel-title">
+                          <div className="panel-title source-dialog-header">
                             <div>
                               <p className="eyebrow">Quellen</p>
                               <h2 id="source-dialog-title">
@@ -5689,8 +6050,7 @@ function App() {
                                     key={source.messagePairId}
                                   >
                                     <strong>
-                                      Ticket {source.ticketId} · Gruppe{" "}
-                                      {source.messageGroupId}
+                                      {renderSourceTicketLabel(source)}
                                     </strong>
                                     <p>Kundenfrage: {source.message}</p>
                                     <p>Supportantwort: {source.answer}</p>
@@ -5906,23 +6266,122 @@ function App() {
                   </section>
                 )}
 
-                {currentProject && projectTab === "delete" && (
-                  <section className="panel-grid" aria-label="Projekt löschen">
-                    <section className="panel stack">
-                      <p className="eyebrow">Gefahrenbereich</p>
-                      <h2>Projekt löschen</h2>
-                      <p className="hint">
-                        Löscht das Projekt dauerhaft. Zur Bestätigung muss der
-                        Projektname exakt eingegeben werden.
-                      </p>
-                    </section>
+                {currentProject && projectTab === "settings" && (
+                  <section
+                    className="panel-grid"
+                    aria-label="Projekteinstellungen"
+                  >
                     <form
-                      className="panel stack"
+                      key={`${currentProject.id}:${currentProject.name}:${currentProject.ticketUrlTemplate ?? ""}`}
+                      className="panel project-settings-form stack"
+                      onSubmit={(event) =>
+                        void updateProjectSettings(event, currentProject.id)
+                      }
+                      aria-label="Projekteinstellungen speichern"
+                    >
+                      <div>
+                        <p className="eyebrow">Einstellungen</p>
+                        <h2>Projekt bearbeiten</h2>
+                        <p className="hint">
+                          Ändere den Projektnamen und optional die
+                          Ticket-Link-Vorlage für Quellen im Explorer.
+                        </p>
+                      </div>
+                      {projectSettingsError !== null && (
+                        <div className="status error" role="alert">
+                          {projectSettingsError}
+                        </div>
+                      )}
+                      <label>
+                        Projektname
+                        <input
+                          name="projectName"
+                          defaultValue={currentProject.name}
+                          aria-invalid={
+                            projectSettingsFieldErrors.projectName !== undefined
+                          }
+                          aria-describedby={
+                            projectSettingsFieldErrors.projectName !== undefined
+                              ? "project-name-error"
+                              : undefined
+                          }
+                          required
+                        />
+                      </label>
+                      {projectSettingsFieldErrors.projectName !== undefined && (
+                        <p
+                          id="project-name-error"
+                          className="field-error"
+                          role="alert"
+                        >
+                          {projectSettingsFieldErrors.projectName}
+                        </p>
+                      )}
+                      <label>
+                        Ticket-Link-Vorlage
+                        <input
+                          name="ticketUrlTemplate"
+                          defaultValue={currentProject.ticketUrlTemplate ?? ""}
+                          placeholder="https://tickets.example.test/<ticket_id>"
+                          aria-invalid={
+                            projectSettingsFieldErrors.ticket_url_template !==
+                            undefined
+                          }
+                          aria-describedby={
+                            projectSettingsFieldErrors.ticket_url_template !==
+                            undefined
+                              ? "ticket-url-template-help ticket-url-template-error"
+                              : "ticket-url-template-help"
+                          }
+                        />
+                      </label>
+                      <p id="ticket-url-template-help" className="hint">
+                        Leer lassen, um Ticket-Links zu deaktivieren. Erlaubt
+                        sind absolute http(s)-URLs mit genauem Platzhalter{" "}
+                        <code>{"<ticket_id>"}</code>; die Anwendung prüft keine
+                        Erreichbarkeit.
+                      </p>
+                      {projectSettingsFieldErrors.ticket_url_template !==
+                        undefined && (
+                        <p
+                          id="ticket-url-template-error"
+                          className="field-error"
+                          role="alert"
+                        >
+                          {projectSettingsFieldErrors.ticket_url_template}
+                        </p>
+                      )}
+                      <button
+                        type="submit"
+                        className="primary"
+                        disabled={isProjectSettingsSaving}
+                      >
+                        {isProjectSettingsSaving
+                          ? "Einstellungen werden gespeichert"
+                          : "Einstellungen speichern"}
+                      </button>
+                    </form>
+
+                    <form
+                      className="panel stack danger-panel"
                       onSubmit={(event) =>
                         deleteProject(event, currentProject.id)
                       }
                       aria-label="Projekt löschen"
                     >
+                      <div>
+                        <p className="eyebrow">Gefahrenbereich</p>
+                        <h2>Projekt löschen</h2>
+                        <p className="hint">
+                          Löscht das Projekt dauerhaft. Zur Bestätigung muss der
+                          Projektname exakt eingegeben werden.
+                        </p>
+                      </div>
+                      {projectDeleteError !== null && (
+                        <div className="status error" role="alert">
+                          {projectDeleteError}
+                        </div>
+                      )}
                       <label>
                         Projektname bestätigen
                         <input name="confirmationName" />

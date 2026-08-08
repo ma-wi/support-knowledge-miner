@@ -58,6 +58,12 @@ x-skm-problem-codes:
     status: 422
     detail: Die Aktion wurde nicht ausgeführt, weil Eingaben korrigiert werden müssen.
     suggestedAction: correct-input
+  PROJECT_NOT_FOUND:
+    type: urn:skm:error:PROJECT_NOT_FOUND
+    title: Das Projekt wurde nicht gefunden.
+    status: 404
+    detail: Die Projektaktion wurde nicht ausgeführt, weil das Projekt nicht mehr verfügbar ist.
+    suggestedAction: reload
   INDEXING_NOT_COMPLETE:
     type: urn:skm:error:INDEXING_NOT_COMPLETE
     title: Diese Indizierung ist noch nicht fertig.

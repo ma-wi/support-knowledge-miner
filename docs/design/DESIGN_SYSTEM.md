@@ -60,8 +60,11 @@ reason and removal strategy.
   workspace.
 - Mobile behavior: project tabs wrap, Explorer rail/table stack, wide tables scroll
   horizontally inside bordered containers.
-- Scroll and sticky behavior: tables scroll within `.cluster-table-wrap`; dialogs
-  scroll internally with bounded viewport height.
+- Scroll and sticky behavior: Explorer rail content remains integrated in the
+  Cluster Explorer panel and follows page scroll; the Explorer table workspace is
+  the independent vertical scroll area for large cluster lists. Tables scroll
+  horizontally within `.cluster-table-wrap`; source dialogs scroll internally
+  with bounded viewport height and sticky headers.
 
 ## Component rules
 
@@ -86,24 +89,27 @@ and error styling, include a manual close action and auto-dismiss when appropria
 ### Tables and lists
 
 Use tables for analyst comparison across Cluster rows. Tables keep left-aligned
-headers, visible row separators and horizontal scroll on small screens. List/card
-layouts are acceptable for projects, users, imports, jobs and Cluster-Set tree
-nodes.
+headers, visible row separators and horizontal scroll on small screens. Sortable
+Explorer headers are button controls with visible sort state and `aria-sort`;
+their cycle is ascending, descending and unsorted. List/card layouts are
+acceptable for projects, users, imports, jobs and Cluster-Set tree nodes.
 
 ### Navigation
 
 Primary app navigation is opened from a top-right three-bar menu with exactly
 Projekte, Einstellungen and Abmelden. No signed-in view renders a persistent left
 global sidebar. Project workflow tabs are: Import, Indizieren, Cluster-Sets,
-Explorer and Projekt löschen. Removed Profile, Runs, Kandidaten and separate
-Export tabs must not be reintroduced without an accepted requirement.
+Explorer and Einstellungen. Removed Profile, Runs, Kandidaten, separate Export
+and separate Projekt-löschen tabs must not be reintroduced without an accepted
+requirement.
 
 ### Dialogs and drawers
 
 Source and Summary-regeneration dialogs use modal semantics with `role="dialog"`
 and `aria-modal="true"`.
 They focus the close button on open, trap Tab/Shift+Tab inside the dialog, close by
-button or Escape, and return focus to the opener.
+button or Escape, and return focus to the opener. Source dialogs may also close
+from backdrop clicks and use a sticky header for long source lists.
 
 ### Cards
 

@@ -36,13 +36,18 @@ class FakeAuthService:
         )
 
 
-def project(project_id: UUID, name: str) -> PublicProject:
+def project(
+    project_id: UUID,
+    name: str,
+    ticket_url_template: str | None = None,
+) -> PublicProject:
     return PublicProject(
         id=project_id,
         name=name,
         lifecycle_state="active",
         created_at=NOW,
         updated_at=NOW,
+        ticket_url_template=ticket_url_template,
     )
 
 
@@ -66,13 +71,48 @@ class FakeProjectService:
     def rename_project(
         self, project_id: UUID, name: str, *, actor_user_id: UUID
     ) -> PublicProject:
+        return self.update_project_settings(
+            project_id,
+            name=name,
+            ticket_url_template=None,
+            ticket_url_template_unchanged=True,
+            actor_user_id=actor_user_id,
+        )
+
+    def update_project_settings(
+        self,
+        project_id: UUID,
+        *,
+        name: str,
+        ticket_url_template: str | None = None,
+        ticket_url_template_unchanged: bool = False,
+        actor_user_id: UUID,
+    ) -> PublicProject:
         self.actor_ids.append(actor_user_id)
         for index, item in enumerate(self.projects):
             if item.id == project_id:
-                renamed = project(project_id, name.strip())
+                if ticket_url_template == "ftp://tickets.example.test/<ticket_id>":
+                    raise ProjectError(
+                        "ticket URL template is invalid",
+                        field_errors={
+                            "ticket_url_template": (
+                                "Die Ticket-Link-Vorlage muss eine http(s)-URL "
+                                "mit <ticket_id> sein."
+                            )
+                        },
+                    )
+                renamed = project(
+                    project_id,
+                    name.strip(),
+                    item.ticket_url_template
+                    if ticket_url_template_unchanged
+                    else ticket_url_template,
+                )
                 self.projects[index] = renamed
                 return renamed
-        raise ProjectError("project not found")
+        from backend.projects.service import ProjectNotFoundError
+
+        raise ProjectNotFoundError("project not found")
 
     def delete_project(
         self,
@@ -117,6 +157,7 @@ def test_project_lifecycle_and_deleted_project_is_not_returned(
     listed = client.get("/api/projects", headers=auth_headers())
     assert listed.status_code == 200
     assert [item["name"] for item in listed.json()] == ["Alpha", "Beta"]
+    assert [item["ticket_url_template"] for item in listed.json()] == [None, None]
 
     created = client.post(
         "/api/projects",
@@ -137,6 +178,7 @@ def test_project_lifecycle_and_deleted_project_is_not_returned(
     )
     assert renamed.status_code == 200
     assert renamed.json()["name"] == "Alpha renamed"
+    assert renamed.json()["ticket_url_template"] is None
 
     bad_delete = client.request(
         "DELETE",
@@ -144,7 +186,8 @@ def test_project_lifecycle_and_deleted_project_is_not_returned(
         headers=auth_headers(),
         json={"confirmation_name": "Alpha"},
     )
-    assert bad_delete.status_code == 400
+    assert bad_delete.status_code == 422
+    assert bad_delete.json()["code"] == "VALIDATION_FAILED"
 
     deleted = client.request(
         "DELETE",
@@ -158,3 +201,64 @@ def test_project_lifecycle_and_deleted_project_is_not_returned(
     assert after_delete.status_code == 404
     remaining = client.get("/api/projects", headers=auth_headers())
     assert [item["name"] for item in remaining.json()] == ["Beta", "Gamma"]
+
+
+def test_project_settings_update_validates_ticket_url_template(
+    client: TestClient,
+) -> None:
+    invalid = client.patch(
+        f"/api/projects/{PROJECT_A_ID}",
+        headers=auth_headers(),
+        json={
+            "name": "Alpha",
+            "ticket_url_template": "ftp://tickets.example.test/<ticket_id>",
+        },
+    )
+
+    assert invalid.status_code == 422
+    payload = invalid.json()
+    assert payload["code"] == "VALIDATION_FAILED"
+    assert payload["suggestedAction"] == "correct-input"
+    assert payload["fieldErrors"] == [
+        {
+            "field": "ticket_url_template",
+            "message": "Die Ticket-Link-Vorlage muss eine http(s)-URL mit <ticket_id> sein.",
+        }
+    ]
+
+    updated = client.patch(
+        f"/api/projects/{PROJECT_A_ID}",
+        headers=auth_headers(),
+        json={
+            "name": "Alpha Settings",
+            "ticket_url_template": "https://tickets.example.test/T-<ticket_id>",
+        },
+    )
+
+    assert updated.status_code == 200
+    assert updated.json()["name"] == "Alpha Settings"
+    assert (
+        updated.json()["ticket_url_template"]
+        == "https://tickets.example.test/T-<ticket_id>"
+    )
+
+
+def test_project_settings_update_maps_missing_project_to_safe_problem(
+    client: TestClient,
+) -> None:
+    missing_id = UUID("dddddddd-dddd-dddd-dddd-dddddddddddd")
+
+    response = client.patch(
+        f"/api/projects/{missing_id}",
+        headers=auth_headers(),
+        json={
+            "name": "Missing",
+            "ticket_url_template": "https://tickets.example.test/T-<ticket_id>",
+        },
+    )
+
+    assert response.status_code == 404
+    payload = response.json()
+    assert payload["code"] == "PROJECT_NOT_FOUND"
+    assert payload["suggestedAction"] == "reload"
+    assert payload["detail"] == "Das Projekt wurde nicht gefunden."

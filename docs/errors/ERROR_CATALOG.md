@@ -36,6 +36,7 @@ not hide a specific domain reason when that reason enables a better recovery act
 | Code | Default category | Typical status | Default recovery |
 |---|---|---:|---|
 | `VALIDATION_FAILED` | validation | 422 | correct-input |
+| `PROJECT_NOT_FOUND` | not-found | 404 | reload |
 | `AUTHENTICATION_REQUIRED` | authentication | 401 | reauthenticate |
 | `PERMISSION_DENIED` | authorization | 403 | return or contact-support |
 | `RESOURCE_NOT_FOUND` | not-found | 404 | return |
@@ -95,6 +96,27 @@ Active codes are declared below or indexed to a capability catalog.
 - API contract: `docs/api/problem-details-contract.yaml`
 - Frontend mapping: `frontend/src/App.tsx` `ERROR_MESSAGES_BY_CODE`
 - Required tests: provider API validation tests and frontend normalizer mapping tests
+
+### `PROJECT_NOT_FOUND`
+
+- Status: active
+- Category: not-found
+- Trigger: A user-triggered project settings or lifecycle action targets a project that is no longer available.
+- HTTP status: 404
+- Problem type: `urn:skm:error:PROJECT_NOT_FOUND`
+- User-facing title: Das Projekt wurde nicht gefunden.
+- User-facing explanation: Die Projektaktion wurde nicht ausgeführt, weil das Projekt nicht mehr verfügbar ist.
+- Suggested action: Projektliste neu laden.
+- Suggested action code: reload
+- Retryable: yes
+- UI placement: project settings form or affected project page section
+- Input preservation: Preserve safe local draft fields until navigation or reload.
+- Correlation reference: safe request identifier when available
+- Security considerations: Do not expose internal IDs beyond the user-selected local project context.
+- Backend source: `backend/projects/service.py`; `backend/api/app.py`
+- API contract: `backend/api/app.py` project Problem Details mapping
+- Frontend mapping: `frontend/src/App.tsx` `ERROR_MESSAGES_BY_CODE` and project settings form mapping
+- Required tests: project API not-found Problem Details test and project settings negative UI tests
 
 ### `INDEXING_MODEL_UNAVAILABLE`
 
