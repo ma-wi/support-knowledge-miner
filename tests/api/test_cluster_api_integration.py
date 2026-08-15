@@ -27,6 +27,7 @@ DATASET_ID = UUID("cccccccc-cccc-cccc-cccc-cccccccccccc")
 LLM_PROVIDER_ID = UUID("77777777-7777-7777-7777-777777777777")
 CLUSTER_ID = UUID("dddddddd-dddd-dddd-dddd-dddddddddddd")
 CLUSTER_SET_ID = UUID("99999999-9999-9999-9999-999999999999")
+DUPLICATE_CLUSTER_SET_ID = UUID("99999999-9999-9999-9999-999999999998")
 PAIR_ID = UUID("eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee")
 NOW = datetime(2026, 7, 22, tzinfo=UTC)
 
@@ -61,6 +62,10 @@ class FakeClusterService:
         self.summary_regeneration_payload: ClusterSetSummaryInput | None = None
         self.summary_regeneration_enqueued_id: UUID | None = None
         self.deleted_by: UUID | None = None
+        self.duplicated_by: UUID | None = None
+        self.duplicated_source_id: UUID | None = None
+        self.batch_deleted_by: UUID | None = None
+        self.batch_deleted_ids: list[UUID] | None = None
         self.cluster = self._cluster()
         self.cluster_set = self._cluster_set()
         self.update_error: ClusterError | None = None
@@ -198,6 +203,46 @@ class FakeClusterService:
         assert cluster_set_id == CLUSTER_SET_ID
         self.deleted_by = actor_user_id
 
+    def duplicate_cluster_set(
+        self, project_id: UUID, cluster_set_id: UUID, *, actor_user_id: UUID
+    ) -> ClusterSet:
+        assert project_id == PROJECT_ID
+        assert cluster_set_id == CLUSTER_SET_ID
+        self.duplicated_by = actor_user_id
+        self.duplicated_source_id = cluster_set_id
+        self.cluster_set = self._cluster_set(
+            cluster_set_id=DUPLICATE_CLUSTER_SET_ID,
+            display_name="Reset Cluster-Set (Kopie)",
+            status="queued",
+        )
+        return self.cluster_set
+
+    def batch_delete_cluster_sets(
+        self,
+        project_id: UUID,
+        cluster_set_ids: list[UUID],
+        *,
+        actor_user_id: UUID,
+    ) -> list[UUID]:
+        assert project_id == PROJECT_ID
+        if not cluster_set_ids:
+            raise ClusterError(
+                "Cluster-Set batch delete requires a non-empty selection",
+                code="CLUSTER_SET_BATCH_DELETE_FAILED",
+                status_code=422,
+                retryable=True,
+                suggested_action="reload",
+                field_errors={
+                    "cluster_set_ids": (
+                        "Cluster-Set batch delete requires a non-empty selection"
+                    )
+                },
+            )
+        self.batch_deleted_by = actor_user_id
+        self.batch_deleted_ids = cluster_set_ids
+        self.cluster_set = self._cluster_set()
+        return cluster_set_ids
+
     def list_clusters_for_set(
         self, project_id: UUID, cluster_set_id: UUID
     ) -> list[Cluster]:
@@ -230,13 +275,14 @@ class FakeClusterService:
     def _cluster_set(
         self,
         *,
+        cluster_set_id: UUID = CLUSTER_SET_ID,
         display_name: str = "Reset Cluster-Set",
         vector_basis: str = "combined",
         status: str = "completed",
         phase: str = "completed",
     ) -> ClusterSet:
         return ClusterSet(
-            id=CLUSTER_SET_ID,
+            id=cluster_set_id,
             project_id=PROJECT_ID,
             indexing_run_id=RUN_ID,
             dataset_version_id=DATASET_ID,
@@ -270,6 +316,8 @@ class FakeClusterService:
             created_at=NOW,
             updated_at=NOW,
             cluster_count=1,
+            active_cluster_count=1,
+            active_message_pair_count=2,
         )
 
     def _cluster(
@@ -506,6 +554,8 @@ def test_cluster_set_api_creates_lists_cancels_deletes_and_exposes_events() -> N
     )
     assert listed.status_code == 200
     assert listed.json()[0]["cluster_count"] == 1
+    assert listed.json()[0]["active_cluster_count"] == 1
+    assert listed.json()[0]["active_message_pair_count"] == 2
     assert listed.json()[0]["llm_sample_strategy"]["requested"] == 2
 
     clusters = client.get(
@@ -537,6 +587,118 @@ def test_cluster_set_api_creates_lists_cancels_deletes_and_exposes_events() -> N
     )
     assert deleted.status_code == 204
     assert fake_service.deleted_by == OWNER_ID
+
+
+def test_cluster_set_api_duplicates_without_enqueueing_copy() -> None:
+    fake_service = FakeClusterService()
+    client = TestClient(
+        create_app(
+            auth_service=FakeAuthService(),  # type: ignore[arg-type]
+            cluster_service=fake_service,  # type: ignore[arg-type]
+        )
+    )
+
+    response = client.post(
+        f"/api/projects/{PROJECT_ID}/cluster-sets/{CLUSTER_SET_ID}/duplicate",
+        headers=auth_headers(),
+    )
+
+    assert response.status_code == 201
+    payload = response.json()
+    assert payload["id"] == str(DUPLICATE_CLUSTER_SET_ID)
+    assert payload["display_name"] == "Reset Cluster-Set (Kopie)"
+    assert payload["parent_cluster_set_id"] is None
+    assert fake_service.duplicated_by == OWNER_ID
+    assert fake_service.duplicated_source_id == CLUSTER_SET_ID
+    assert fake_service.enqueued_id is None
+
+
+def test_cluster_set_api_running_duplicate_unavailable_uses_stable_problem() -> None:
+    class RunningDuplicateUnavailableService(FakeClusterService):
+        source_status = "running"
+
+        def duplicate_cluster_set(
+            self, project_id: UUID, cluster_set_id: UUID, *, actor_user_id: UUID
+        ) -> ClusterSet:
+            assert self.source_status == "running"
+            raise ClusterError(
+                "running Cluster-Set duplicate unavailable",
+                code="CLUSTER_SET_DUPLICATE_UNAVAILABLE",
+                status_code=409,
+                retryable=True,
+                suggested_action="reload",
+            )
+
+    client = TestClient(
+        create_app(
+            auth_service=FakeAuthService(),  # type: ignore[arg-type]
+            cluster_service=RunningDuplicateUnavailableService(),  # type: ignore[arg-type]
+        )
+    )
+
+    response = client.post(
+        f"/api/projects/{PROJECT_ID}/cluster-sets/{CLUSTER_SET_ID}/duplicate",
+        headers=auth_headers(),
+    )
+
+    assert response.status_code == 409
+    payload = response.json()
+    assert payload["type"] == "urn:skm:error:CLUSTER_SET_DUPLICATE_UNAVAILABLE"
+    assert payload["code"] == "CLUSTER_SET_DUPLICATE_UNAVAILABLE"
+    assert payload["suggestedAction"] == "reload"
+
+
+def test_cluster_set_api_batch_deletes_all_or_nothing_selection() -> None:
+    fake_service = FakeClusterService()
+    client = TestClient(
+        create_app(
+            auth_service=FakeAuthService(),  # type: ignore[arg-type]
+            cluster_service=fake_service,  # type: ignore[arg-type]
+        )
+    )
+
+    response = client.post(
+        f"/api/projects/{PROJECT_ID}/cluster-sets/batch-delete",
+        headers=auth_headers(),
+        json={"cluster_set_ids": [str(CLUSTER_SET_ID), str(DUPLICATE_CLUSTER_SET_ID)]},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["deleted_cluster_set_ids"] == [
+        str(CLUSTER_SET_ID),
+        str(DUPLICATE_CLUSTER_SET_ID),
+    ]
+    assert payload["cluster_sets"][0]["id"] == str(CLUSTER_SET_ID)
+    assert fake_service.batch_deleted_by == OWNER_ID
+    assert fake_service.batch_deleted_ids == [CLUSTER_SET_ID, DUPLICATE_CLUSTER_SET_ID]
+
+
+def test_cluster_set_api_batch_delete_empty_selection_uses_stable_problem() -> None:
+    fake_service = FakeClusterService()
+    client = TestClient(
+        create_app(
+            auth_service=FakeAuthService(),  # type: ignore[arg-type]
+            cluster_service=fake_service,  # type: ignore[arg-type]
+        )
+    )
+
+    response = client.post(
+        f"/api/projects/{PROJECT_ID}/cluster-sets/batch-delete",
+        headers=auth_headers(),
+        json={"cluster_set_ids": []},
+    )
+
+    assert response.status_code == 422
+    payload = response.json()
+    assert payload["type"] == "urn:skm:error:CLUSTER_SET_BATCH_DELETE_FAILED"
+    assert payload["code"] == "CLUSTER_SET_BATCH_DELETE_FAILED"
+    assert payload["fieldErrors"] == [
+        {
+            "field": "cluster_set_ids",
+            "message": "Cluster-Set batch delete requires a non-empty selection",
+        }
+    ]
 
 
 def test_cluster_set_api_regenerates_summaries_without_reclustering() -> None:
@@ -654,6 +816,85 @@ def test_cluster_set_api_maps_invalid_llm_sample_count_to_problem_details() -> N
     assert fake_service.started_by is None
 
 
+def test_cluster_set_api_maps_invalid_algorithm_request_shape_to_problem_details() -> (
+    None
+):
+    fake_service = FakeClusterService()
+    client = TestClient(
+        create_app(
+            auth_service=FakeAuthService(),  # type: ignore[arg-type]
+            cluster_service=fake_service,  # type: ignore[arg-type]
+        )
+    )
+
+    for request_body, field_name in (
+        (
+            {"indexing_run_id": str(RUN_ID), "algorithm_settings": "bad"},
+            "algorithm_settings",
+        ),
+        ({"indexing_run_id": str(RUN_ID), "refinement_mode": 3}, "refinement_mode"),
+    ):
+        response = client.post(
+            f"/api/projects/{PROJECT_ID}/cluster-sets",
+            headers=auth_headers(),
+            json=request_body,
+        )
+        assert response.status_code == 422
+        payload = response.json()
+        assert payload["type"] == "urn:skm:error:CLUSTER_ALGORITHM_PARAMETERS_INVALID"
+        assert payload["code"] == "CLUSTER_ALGORITHM_PARAMETERS_INVALID"
+        assert payload["suggestedAction"] == "correct-input"
+        assert payload["fieldErrors"][0]["field"] == field_name
+
+    assert fake_service.started_by is None
+
+
+def test_cluster_set_api_maps_null_agglomerative_split_error_to_problem_details() -> (
+    None
+):
+    class InvalidAlgorithmClusterService(FakeClusterService):
+        def start_cluster_set(
+            self,
+            project_id: UUID,
+            payload: ClusterSetInput,
+            *,
+            actor_user_id: UUID,
+        ) -> ClusterSet:
+            assert payload.algorithm_settings["n_clusters"] is None
+            raise ClusterError(
+                "n_clusters must not be null",
+                code="CLUSTER_ALGORITHM_PARAMETERS_INVALID",
+                status_code=422,
+                retryable=True,
+                suggested_action="correct-input",
+                field_errors={"n_clusters": "n_clusters must not be null"},
+            )
+
+    client = TestClient(
+        create_app(
+            auth_service=FakeAuthService(),  # type: ignore[arg-type]
+            cluster_service=InvalidAlgorithmClusterService(),  # type: ignore[arg-type]
+        )
+    )
+
+    response = client.post(
+        f"/api/projects/{PROJECT_ID}/cluster-sets",
+        headers=auth_headers(),
+        json={
+            "indexing_run_id": str(RUN_ID),
+            "algorithm_settings": {"algorithm": "agglomerative", "n_clusters": None},
+        },
+    )
+
+    assert response.status_code == 422
+    payload = response.json()
+    assert payload["type"] == "urn:skm:error:CLUSTER_ALGORITHM_PARAMETERS_INVALID"
+    assert payload["code"] == "CLUSTER_ALGORITHM_PARAMETERS_INVALID"
+    assert payload["fieldErrors"] == [
+        {"field": "n_clusters", "message": "n_clusters must not be null"}
+    ]
+
+
 def test_cluster_set_summary_api_maps_invalid_llm_sample_count_to_problem_details() -> (
     None
 ):
@@ -729,6 +970,47 @@ def test_cluster_set_api_unexpected_error_uses_stable_suggested_action() -> None
     assert payload["type"] == "urn:skm:error:UNEXPECTED_ERROR"
     assert payload["code"] == "UNEXPECTED_ERROR"
     assert payload["suggestedAction"] == "retry"
+
+
+def test_cluster_set_api_budget_error_uses_cluster_budget_contract() -> None:
+    class BudgetClusterService(FakeClusterService):
+        def start_cluster_set(
+            self,
+            project_id: UUID,
+            payload: ClusterSetInput,
+            *,
+            actor_user_id: UUID,
+        ) -> ClusterSet:
+            raise ClusterError(
+                "clustering working set estimate exceeds the 5 GiB limit",
+                code="CLUSTER_BUDGET_EXCEEDED",
+                status_code=422,
+                retryable=True,
+            )
+
+    client = TestClient(
+        create_app(
+            auth_service=FakeAuthService(),  # type: ignore[arg-type]
+            cluster_service=BudgetClusterService(),  # type: ignore[arg-type]
+        )
+    )
+
+    response = client.post(
+        f"/api/projects/{PROJECT_ID}/cluster-sets",
+        headers=auth_headers(),
+        json={"indexing_run_id": str(RUN_ID)},
+    )
+
+    assert response.status_code == 422
+    payload = response.json()
+    assert payload["type"] == "urn:skm:error:CLUSTER_BUDGET_EXCEEDED"
+    assert payload["title"] == "Die Clusterung ist zu groß."
+    assert (
+        payload["detail"] == "Die aktuelle Datenmenge, Dimension oder Zusammenfassung "
+        "überschreitet das Clusterbudget."
+    )
+    assert payload["code"] == "CLUSTER_BUDGET_EXCEEDED"
+    assert payload["suggestedAction"] == "reduce-scope"
 
 
 def test_cluster_set_clusters_require_completed_set() -> None:

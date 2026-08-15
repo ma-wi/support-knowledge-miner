@@ -346,6 +346,7 @@ class ClusterSetRequest(BaseModel):
     algorithm_settings: dict[str, object] = Field(
         default_factory=lambda: {"algorithm": "hdbscan", "min_cluster_size": 2}
     )
+    refinement_mode: str = "common"
     source_cluster_ids: list[UUID] = Field(default_factory=list)
     source_pair_ids: list[UUID] = Field(default_factory=list)
     outlier_threshold: float | None = None
@@ -361,6 +362,12 @@ class ClusterSetRenameRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     display_name: str = Field(min_length=1)
+
+
+class ClusterSetBatchDeleteRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    cluster_set_ids: list[UUID]
 
 
 class ClusterSetSummaryRequest(BaseModel):
@@ -411,6 +418,8 @@ class ClusterSetResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     cluster_count: int
+    active_cluster_count: int
+    active_message_pair_count: int
 
 
 class ClusterSetEventResponse(BaseModel):
@@ -422,6 +431,11 @@ class ClusterSetEventResponse(BaseModel):
     event_type: str
     metadata: dict[str, object]
     created_at: datetime
+
+
+class ClusterSetBatchDeleteResponse(BaseModel):
+    deleted_cluster_set_ids: list[UUID]
+    cluster_sets: list[ClusterSetResponse]
 
 
 class ActiveJobsResponse(BaseModel):
@@ -946,9 +960,10 @@ def _cluster_problem_contract(code: str) -> dict[str, str]:
             "suggested_action": "correct-input",
         },
         "CLUSTER_BUDGET_EXCEEDED": {
-            "title": "Das Summary-Budget ist überschritten.",
+            "title": "Die Clusterung ist zu groß.",
             "detail": (
-                "Die Zusammenfassung überschreitet das erlaubte Text- oder Aufruflimit."
+                "Die aktuelle Datenmenge, Dimension oder Zusammenfassung "
+                "überschreitet das Clusterbudget."
             ),
             "suggested_action": "reduce-scope",
         },
@@ -1012,6 +1027,46 @@ def _cluster_problem_contract(code: str) -> dict[str, str]:
             "title": "Die Quelle ist leer.",
             "detail": "Die gewählte Quelle enthält keine nutzbaren Zeilen.",
             "suggested_action": "select-sources",
+        },
+        "CLUSTER_ALGORITHM_PARAMETERS_INVALID": {
+            "title": "Die Cluster-Parameter sind ungültig.",
+            "detail": (
+                "Die Parameter passen nicht zum gewählten Algorithmus oder "
+                "Verfeinerungsmodus."
+            ),
+            "suggested_action": "correct-input",
+        },
+        "CLUSTER_BATCH_REFINEMENT_EMPTY_GROUP": {
+            "title": "Eine Parent-Gruppe hat keine Quellen.",
+            "detail": (
+                "Mindestens ein ausgewählter Parent-Cluster enthält keine "
+                "nutzbaren Quellen."
+            ),
+            "suggested_action": "select-sources",
+        },
+        "CLUSTER_BATCH_REFINEMENT_GROUP_INVALID": {
+            "title": "Eine Parent-Gruppe kann nicht verfeinert werden.",
+            "detail": (
+                "Eine Parent-Gruppe ist für die gewählten Cluster-Parameter zu "
+                "klein oder ungültig."
+            ),
+            "suggested_action": "adjust-clustering-parameters",
+        },
+        "CLUSTER_SET_DUPLICATE_UNAVAILABLE": {
+            "title": "Das Cluster-Set kann nicht dupliziert werden.",
+            "detail": (
+                "Das ausgewählte Cluster-Set ist nicht mehr für eine Duplikation "
+                "verfügbar."
+            ),
+            "suggested_action": "reload",
+        },
+        "CLUSTER_SET_BATCH_DELETE_FAILED": {
+            "title": "Cluster-Sets konnten nicht gelöscht werden.",
+            "detail": (
+                "Die ausgewählten Cluster-Sets konnten nicht vollständig gelöscht "
+                "werden."
+            ),
+            "suggested_action": "reload",
         },
         "CLUSTER_OUTLIER_EMPTY_RESULT": {
             "title": "Die Ausreißer-Einstellung ist zu streng.",
@@ -1246,6 +1301,27 @@ def create_app(
     async def request_validation_error_handler(
         request: Request, exc: RequestValidationError
     ) -> Response:
+        if _is_cluster_set_create_request(request) and (
+            _validation_error_has_body_field(exc, "algorithm_settings")
+            or _validation_error_has_body_field(exc, "refinement_mode")
+        ):
+            field_errors: dict[str, str] = {}
+            if _validation_error_has_body_field(exc, "algorithm_settings"):
+                field_errors["algorithm_settings"] = (
+                    "algorithm_settings must be an object"
+                )
+            if _validation_error_has_body_field(exc, "refinement_mode"):
+                field_errors["refinement_mode"] = "refinement_mode must be a string"
+            return _cluster_problem_response(
+                ClusterError(
+                    "Cluster algorithm parameters are invalid",
+                    code="CLUSTER_ALGORITHM_PARAMETERS_INVALID",
+                    status_code=422,
+                    retryable=True,
+                    suggested_action="correct-input",
+                    field_errors=field_errors,
+                )
+            )
         if (
             _is_cluster_set_create_request(request)
             or _is_cluster_set_summary_request(request)
@@ -1889,6 +1965,7 @@ def create_app(
                     message_weight=payload.message_weight,
                     answer_weight=payload.answer_weight,
                     algorithm_settings=payload.algorithm_settings,
+                    refinement_mode=payload.refinement_mode,
                     source_cluster_ids=payload.source_cluster_ids,
                     source_pair_ids=payload.source_pair_ids,
                     outlier_threshold=payload.outlier_threshold,
@@ -1920,6 +1997,32 @@ def create_app(
             _cluster_set_response(cluster_set)
             for cluster_set in cluster_service.list_cluster_sets(project_id)
         ]
+
+    @app.post(
+        "/api/projects/{project_id}/cluster-sets/batch-delete",
+        response_model=ClusterSetBatchDeleteResponse,
+    )
+    def batch_delete_cluster_sets(
+        project_id: UUID,
+        payload: ClusterSetBatchDeleteRequest,
+        actor: CurrentUser = Depends(current_user),
+    ) -> ClusterSetBatchDeleteResponse | JSONResponse:
+        try:
+            deleted_ids = cluster_service.batch_delete_cluster_sets(
+                project_id,
+                payload.cluster_set_ids,
+                actor_user_id=actor.id,
+            )
+            cluster_sets = [
+                _cluster_set_response(cluster_set)
+                for cluster_set in cluster_service.list_cluster_sets(project_id)
+            ]
+        except ClusterError as exc:
+            return _cluster_problem_response(exc)
+        return ClusterSetBatchDeleteResponse(
+            deleted_cluster_set_ids=deleted_ids,
+            cluster_sets=cluster_sets,
+        )
 
     @app.get(
         "/api/projects/{project_id}/cluster-sets/{cluster_set_id}",
@@ -1956,6 +2059,26 @@ def create_app(
                 project_id,
                 cluster_set_id,
                 payload.display_name,
+                actor_user_id=actor.id,
+            )
+        except ClusterError as exc:
+            return _cluster_problem_response(exc)
+        return _cluster_set_response(cluster_set)
+
+    @app.post(
+        "/api/projects/{project_id}/cluster-sets/{cluster_set_id}/duplicate",
+        response_model=ClusterSetResponse,
+        status_code=status.HTTP_201_CREATED,
+    )
+    def duplicate_cluster_set(
+        project_id: UUID,
+        cluster_set_id: UUID,
+        actor: CurrentUser = Depends(current_user),
+    ) -> ClusterSetResponse | JSONResponse:
+        try:
+            cluster_set = cluster_service.duplicate_cluster_set(
+                project_id,
+                cluster_set_id,
                 actor_user_id=actor.id,
             )
         except ClusterError as exc:

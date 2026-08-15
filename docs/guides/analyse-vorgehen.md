@@ -50,12 +50,12 @@ Empfohlener Start:
 | Parameter | Startwert | Wann ändern? |
 | --- | --- | --- |
 | Vektorbasis | `message` | Wenn du primär Kundenfragen zu FAQs bündeln willst. |
-| Algorithmus | HDBSCAN | Wenn du natürliche, variable Clustergrößen erwartest. |
+| Algorithmus | HDBSCAN oder Agglomerative | HDBSCAN für natürliche, variable Clustergrößen; Agglomerative, wenn du eine grobe Zielanzahl brauchst. |
 | Backend | `auto` | Standard; nutzt verfügbare Beschleunigung und fällt sonst auf CPU zurück. |
 | Reduktion | `none` oder PCA | `none` für kleine/mittlere Daten; PCA bei vielen Daten oder sehr hohen Dimensionen. |
 | `min_cluster_size` | ca. 2-5% der Datensätze, mindestens 5 | Größer = weniger, gröbere Cluster. Kleiner = mehr, feinere Cluster. |
 | `min_samples` | leer oder ca. 10-20 | Größer = konservativer, mehr Ausreißer. Kleiner = mehr Zuordnungen. |
-| `cluster_selection_epsilon` | `0.0` bis `0.1` | Erhöhen, wenn zu viele sehr ähnliche Kleincluster entstehen. |
+| `selection_epsilon` | `0.0` bis `0.1` | Erhöhen, wenn HDBSCAN zu viele sehr ähnliche Kleincluster erzeugt. |
 | Summary-Beispiele | 10 | Für langsame lokale LLMs 3-8; für präzisere Summaries 10-20. |
 
 ### PCA/UMAP-Dimensionen
@@ -77,6 +77,11 @@ Faustregeln:
 | > 10.000 | 75-150 | 50-100 | Erst grob clustern, danach Child-Cluster-Sets verfeinern. |
 
 PCA ist der stabilere erste Versuch: schneller, deterministischer und weniger verzerrend. UMAP kann Nachbarschaften stärker formen und Cluster sichtbarer trennen, kann aber auch künstliche Trennungen erzeugen. Deshalb: erst ohne Reduktion oder mit PCA testen; UMAP nur gezielt vergleichen.
+
+Agglomerative ist sinnvoll, wenn du eine klare Zielanzahl für eine grobe erste
+Sortierung brauchst. Nutze `n_clusters`, wenn du eine feste Anzahl erwartest, oder
+`distance_threshold`, wenn die Distanz selbst die Schnittregel sein soll. Beide
+Schnittparameter werden nicht kombiniert.
 
 Datensatzgrößen als grobe Orientierung:
 
@@ -136,13 +141,15 @@ Typischer Ablauf:
 2. Im Explorer suchen, filtern, Quellen prüfen.
 3. Irrelevante Cluster als `rejected` markieren.
 4. „Eingeschlossene Cluster verfeinern“ verwenden.
-5. Parameter für das Child-Cluster-Set feiner setzen.
-6. Summaries neu erstellen.
-7. Exportieren.
+5. Entweder gemeinsam neu clustern oder „separat je Parent-Cluster“ wählen, wenn
+   mehrere gute Parent-Cluster unabhängig geschärft werden sollen.
+6. Parameter für das Child-Cluster-Set feiner setzen.
+7. Summaries neu erstellen.
+8. Exportieren.
 
 Parameter-Tuning:
 
-- Zu viele Cluster: `min_cluster_size` erhöhen, danach `cluster_selection_epsilon` auf `0.1-0.2`.
+- Zu viele Cluster: `min_cluster_size` erhöhen, danach `selection_epsilon` auf `0.1-0.2`.
 - Zu wenige/grobe Cluster: `min_cluster_size` senken, `epsilon` Richtung `0.0`.
 - Zu viele Ausreißer: `min_samples` senken oder `outlier_threshold` weglassen/senken.
 - Zu wenige Ausreißer: `min_samples` erhöhen oder `outlier_threshold` vorsichtig setzen.

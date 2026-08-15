@@ -86,7 +86,7 @@ x-skm-problem-codes:
     type: urn:skm:error:CLUSTER_BUDGET_EXCEEDED
     title: Die Clusterung ist zu groß.
     status: 422
-    detail: Die aktuelle Datenmenge oder Dimension überschreitet das Clusterbudget.
+    detail: Die aktuelle Datenmenge, Dimension oder Zusammenfassung überschreitet das Clusterbudget.
     suggestedAction: reduce-scope
   LLM_PROVIDER_UNAVAILABLE:
     type: urn:skm:error:LLM_PROVIDER_UNAVAILABLE
@@ -160,6 +160,36 @@ x-skm-problem-codes:
     status: 422
     detail: Für die Verfeinerung ist mindestens ein eingeschlossener Cluster erforderlich.
     suggestedAction: select-sources
+  CLUSTER_ALGORITHM_PARAMETERS_INVALID:
+    type: urn:skm:error:CLUSTER_ALGORITHM_PARAMETERS_INVALID
+    title: Die Cluster-Parameter sind ungültig.
+    status: 422
+    detail: Die Parameter passen nicht zum gewählten Algorithmus oder Verfeinerungsmodus.
+    suggestedAction: correct-input
+  CLUSTER_BATCH_REFINEMENT_EMPTY_GROUP:
+    type: urn:skm:error:CLUSTER_BATCH_REFINEMENT_EMPTY_GROUP
+    title: Eine Parent-Gruppe hat keine Quellen.
+    status: 422
+    detail: Mindestens ein ausgewählter Parent-Cluster enthält keine nutzbaren Quellen.
+    suggestedAction: select-sources
+  CLUSTER_BATCH_REFINEMENT_GROUP_INVALID:
+    type: urn:skm:error:CLUSTER_BATCH_REFINEMENT_GROUP_INVALID
+    title: Eine Parent-Gruppe kann nicht verfeinert werden.
+    status: 422
+    detail: Eine Parent-Gruppe ist für die gewählten Cluster-Parameter zu klein oder ungültig.
+    suggestedAction: adjust-clustering-parameters
+  CLUSTER_SET_DUPLICATE_UNAVAILABLE:
+    type: urn:skm:error:CLUSTER_SET_DUPLICATE_UNAVAILABLE
+    title: Das Cluster-Set kann nicht dupliziert werden.
+    status: 409
+    detail: Das ausgewählte Cluster-Set ist nicht mehr für eine Duplikation verfügbar.
+    suggestedAction: reload
+  CLUSTER_SET_BATCH_DELETE_FAILED:
+    type: urn:skm:error:CLUSTER_SET_BATCH_DELETE_FAILED
+    title: Cluster-Sets konnten nicht gelöscht werden.
+    status: 409
+    detail: Die ausgewählten Cluster-Sets konnten nicht vollständig gelöscht werden.
+    suggestedAction: reload
   CLUSTER_MANUAL_UPDATE_INVALID:
     type: urn:skm:error:CLUSTER_MANUAL_UPDATE_INVALID
     title: Cluster-Änderung ist ungültig.

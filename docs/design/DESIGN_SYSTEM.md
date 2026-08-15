@@ -93,6 +93,9 @@ headers, visible row separators and horizontal scroll on small screens. Sortable
 Explorer headers are button controls with visible sort state and `aria-sort`;
 their cycle is ascending, descending and unsorted. List/card layouts are
 acceptable for projects, users, imports, jobs and Cluster-Set tree nodes.
+Dense metadata lists in cards must wrap long labels and values without horizontal
+overflow. Persisted parameter names may use shorter UI labels when the shortened
+label stays unambiguous, for example `selection_epsilon`.
 
 ### Navigation
 
@@ -114,7 +117,16 @@ from backdrop clicks and use a sticky header for long source lists.
 ### Cards
 
 Cards show a strong title, compact metadata, status/progress when applicable and
-only state-valid actions.
+only state-valid actions. Cluster-Set cards keep heading, progress and actions
+visible while dense metadata can be collapsed independently. Job cards keep
+progress bars and diagnostics inside the card or provide local scrolling for long
+diagnostic strings.
+
+### Batch toolbars
+
+Batch toolbars belong directly above the affected list, show the current selection
+count, keep destructive actions disabled without a selection and preserve safe
+selection state after recoverable failures.
 
 ### Feedback messages
 

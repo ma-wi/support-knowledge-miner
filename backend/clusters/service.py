@@ -42,10 +42,12 @@ SUPPORTED_DERIVATION_TYPES = {
     "outlier_exclusion",
     "manual_edit",
 }
+SUPPORTED_REFINEMENT_MODES = {"common", "per_parent"}
 AGGLOMERATIVE_MAX_RECORDS = 10_000
 HDBSCAN_MAX_RECORDS = 100_000
 MAX_CLUSTER_DIMENSIONS = 8_192
-MAX_CLUSTER_WORKING_SET_BYTES = 512 * 1024 * 1024
+MAX_CLUSTER_WORKING_SET_MIB = 5 * 1024
+MAX_CLUSTER_WORKING_SET_BYTES = MAX_CLUSTER_WORKING_SET_MIB * 1024 * 1024
 NATIVE_VECTOR_FETCH_BATCH_SIZE = 64
 NATIVE_MATRIX_BYTES_PER_VALUE = np.dtype(np.float32).itemsize
 ESTIMATOR_MATRIX_BYTES_PER_VALUE = np.dtype(np.float64).itemsize
@@ -86,6 +88,8 @@ DEFAULT_CLUSTER_SET_ALGORITHM = {
     "execution_backend": "auto",
 }
 MAX_CLUSTER_SET_NAME_LENGTH = 160
+MAX_CLUSTER_ORIGIN_TITLE_LENGTH = 160
+MAX_PER_PARENT_REFINEMENT_GROUPS = 100
 MAX_SUMMARY_PROMPT_CHARACTERS = 50_000
 MAX_SUMMARY_EXAMPLE_FIELD_CHARACTERS = 1_200
 MAX_SUMMARY_FIELD_CHARACTERS = 500
@@ -237,6 +241,36 @@ class ClusterSetBasisBudget:
 
 
 @dataclass(frozen=True)
+class BatchRefinementGroup:
+    cluster_id: UUID
+    title: str
+    label: int | None
+    is_outlier: bool
+    pair_ids: list[UUID]
+
+
+@dataclass(frozen=True)
+class ClusterOrigin:
+    source_parent_cluster_id: UUID
+    source_parent_cluster_title: str
+    source_parent_cluster_label: int | None
+    source_parent_cluster_is_outlier: bool
+    batch_group_index: int
+    local_cluster_label: int
+
+    def as_metadata(self) -> dict[str, Any]:
+        return {
+            "mode": "per_parent",
+            "source_parent_cluster_id": str(self.source_parent_cluster_id),
+            "source_parent_cluster_title": self.source_parent_cluster_title,
+            "source_parent_cluster_label": self.source_parent_cluster_label,
+            "source_parent_cluster_is_outlier": self.source_parent_cluster_is_outlier,
+            "batch_group_index": self.batch_group_index,
+            "local_cluster_label": self.local_cluster_label,
+        }
+
+
+@dataclass(frozen=True)
 class ClusterManualUpdate:
     manual_title: str | None = None
     manual_category: str | None = None
@@ -256,6 +290,7 @@ class ClusterSetInput:
     algorithm_settings: dict[str, Any] = field(
         default_factory=lambda: dict(DEFAULT_CLUSTER_SET_ALGORITHM)
     )
+    refinement_mode: str = "common"
     source_cluster_ids: list[UUID] = field(default_factory=list)
     source_pair_ids: list[UUID] = field(default_factory=list)
     outlier_threshold: float | None = None
@@ -313,6 +348,8 @@ class ClusterSet:
     created_at: datetime
     updated_at: datetime
     cluster_count: int
+    active_cluster_count: int = 0
+    active_message_pair_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -393,9 +430,13 @@ def _integer(
     if value is None:
         return None
     if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
-        raise ClusterError(f"{field} must be an integer >= {minimum}")
+        raise _algorithm_settings_error(
+            f"{field} must be an integer >= {minimum}", field
+        )
     if maximum is not None and value > maximum:
-        raise ClusterError(f"{field} must be an integer <= {maximum}")
+        raise _algorithm_settings_error(
+            f"{field} must be an integer <= {maximum}", field
+        )
     return value
 
 
@@ -409,12 +450,12 @@ def _number(
 ) -> float:
     value = settings.get(field, default)
     if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise ClusterError(f"{field} must be a number >= {minimum}")
+        raise _algorithm_settings_error(f"{field} must be a number >= {minimum}", field)
     result = float(value)
     if not math.isfinite(result) or result < minimum:
-        raise ClusterError(f"{field} must be a number >= {minimum}")
+        raise _algorithm_settings_error(f"{field} must be a number >= {minimum}", field)
     if maximum is not None and result > maximum:
-        raise ClusterError(f"{field} must be a number <= {maximum}")
+        raise _algorithm_settings_error(f"{field} must be a number <= {maximum}", field)
     return result
 
 
@@ -427,20 +468,37 @@ def _choice(
 ) -> str:
     value = settings.get(field, default)
     if not isinstance(value, str):
-        raise ClusterError(f"{field} must be one of {', '.join(sorted(allowed))}")
+        raise _algorithm_settings_error(
+            f"{field} must be one of {', '.join(sorted(allowed))}", field
+        )
     cleaned = value.strip().lower()
     if cleaned not in allowed:
-        raise ClusterError(f"{field} must be one of {', '.join(sorted(allowed))}")
+        raise _algorithm_settings_error(
+            f"{field} must be one of {', '.join(sorted(allowed))}", field
+        )
     return cleaned
+
+
+def _algorithm_settings_error(message: str, field: str | None = None) -> ClusterError:
+    return ClusterError(
+        message,
+        code="CLUSTER_ALGORITHM_PARAMETERS_INVALID",
+        status_code=422,
+        field_errors={field: message} if field is not None else {},
+    )
 
 
 def validate_algorithm_settings(settings: dict[str, Any]) -> AlgorithmConfiguration:
     """Validate and normalize the accepted profile algorithm contract."""
     if not isinstance(settings, dict):
-        raise ClusterError("algorithm_settings must be an object")
+        raise _algorithm_settings_error(
+            "algorithm_settings must be an object", "algorithm_settings"
+        )
     algorithm = settings.get("algorithm")
     if not isinstance(algorithm, str) or algorithm not in SUPPORTED_ALGORITHMS:
-        raise ClusterError("algorithm must be hdbscan or agglomerative")
+        raise _algorithm_settings_error(
+            "algorithm must be hdbscan or agglomerative", "algorithm"
+        )
 
     if algorithm == "hdbscan":
         allowed = {
@@ -457,7 +515,8 @@ def validate_algorithm_settings(settings: dict[str, Any]) -> AlgorithmConfigurat
         }
         unknown = set(settings) - allowed
         if unknown:
-            raise ClusterError(f"unknown hdbscan setting: {sorted(unknown)[0]}")
+            field = sorted(unknown)[0]
+            raise _algorithm_settings_error(f"unknown hdbscan setting: {field}", field)
         outlier_threshold = _outlier_threshold(settings.get("outlier_threshold"))
         reduction_method = _choice(
             settings,
@@ -541,23 +600,36 @@ def validate_algorithm_settings(settings: dict[str, Any]) -> AlgorithmConfigurat
     }
     unknown = set(settings) - allowed
     if unknown:
-        raise ClusterError(f"unknown agglomerative setting: {sorted(unknown)[0]}")
+        field = sorted(unknown)[0]
+        raise _algorithm_settings_error(
+            f"unknown agglomerative setting: {field}", field
+        )
     outlier_threshold = _outlier_threshold(settings.get("outlier_threshold"))
-    n_clusters = _integer(settings, "n_clusters", default=2, minimum=1)
-    distance_threshold_value = settings.get("distance_threshold")
+    active_settings = {
+        key: value
+        for key, value in settings.items()
+        if key not in {"n_clusters", "distance_threshold"} or value is not None
+    }
+    has_n_clusters = active_settings.get("n_clusters") is not None
+    has_distance_threshold = active_settings.get("distance_threshold") is not None
+    if has_n_clusters == has_distance_threshold:
+        raise _algorithm_settings_error(
+            "agglomerative requires exactly one of n_clusters or distance_threshold",
+            "n_clusters",
+        )
+    n_clusters = _integer(active_settings, "n_clusters", default=None, minimum=1)
+    distance_threshold_value = active_settings.get("distance_threshold")
     distance_threshold: float | None = None
     if distance_threshold_value is not None:
         distance_threshold = _number(
-            settings, "distance_threshold", default=0.0, minimum=0.0
+            active_settings, "distance_threshold", default=0.0, minimum=0.0
         )
-        if "n_clusters" in settings:
-            raise ClusterError(
-                "n_clusters and distance_threshold cannot be used together"
-            )
         n_clusters = None
-    linkage = settings.get("linkage", "ward")
+    linkage = active_settings.get("linkage", "ward")
     if not isinstance(linkage, str) or linkage not in AGGLOMERATIVE_LINKAGES:
-        raise ClusterError("linkage must be ward, complete, average, or single")
+        raise _algorithm_settings_error(
+            "linkage must be ward, complete, average, or single", "linkage"
+        )
     return AlgorithmConfiguration(
         name=algorithm,
         parameters={
@@ -661,7 +733,7 @@ def validate_cluster_input_budget(
             "clustering working set estimate "
             f"{estimated_bytes} bytes for {record_count} records with "
             f"{dimensions} dimensions exceeds the "
-            f"{MAX_CLUSTER_WORKING_SET_BYTES}-byte (512 MiB) limit; "
+            f"{MAX_CLUSTER_WORKING_SET_BYTES}-byte (5 GiB) limit; "
             f"{recommendation}"
         )
     return dimensions
@@ -794,6 +866,8 @@ def _cluster_set_from_row(row: dict[str, object]) -> ClusterSet:
         created_at=row["created_at"],  # type: ignore[arg-type]
         updated_at=row["updated_at"],  # type: ignore[arg-type]
         cluster_count=int(str(row.get("cluster_count", 0))),
+        active_cluster_count=int(str(row.get("active_cluster_count", 0))),
+        active_message_pair_count=int(str(row.get("active_message_pair_count", 0))),
     )
 
 
@@ -823,6 +897,12 @@ def _display_name(value: str | None, *, fallback: str) -> str:
     return cleaned
 
 
+def _duplicate_display_name(value: object) -> str:
+    base_name = str(value).strip() or "Cluster-Set"
+    suffix = " (Kopie)"
+    return f"{base_name[: MAX_CLUSTER_SET_NAME_LENGTH - len(suffix)]}{suffix}"
+
+
 def _derivation_type(value: str) -> str:
     cleaned = value.strip().lower()
     if cleaned not in SUPPORTED_DERIVATION_TYPES:
@@ -831,6 +911,18 @@ def _derivation_type(value: str) -> str:
             code="CLUSTER_REFINEMENT_EMPTY_SOURCE",
             status_code=422,
             field_errors={"derivation_type": "derivation_type is invalid"},
+        )
+    return cleaned
+
+
+def _refinement_mode(value: str) -> str:
+    cleaned = value.strip().lower().replace("-", "_")
+    if cleaned not in SUPPORTED_REFINEMENT_MODES:
+        raise ClusterError(
+            "refinement_mode is invalid",
+            code="CLUSTER_ALGORITHM_PARAMETERS_INVALID",
+            status_code=422,
+            field_errors={"refinement_mode": "refinement_mode is invalid"},
         )
     return cleaned
 
@@ -1023,6 +1115,18 @@ class ClusterService:
                     },
                 )
         derivation_type = _derivation_type(payload.derivation_type)
+        refinement_mode = _refinement_mode(payload.refinement_mode)
+        if derivation_type != "refinement" and refinement_mode != "common":
+            raise ClusterError(
+                "per-parent refinement requires a refinement Cluster-Set",
+                code="CLUSTER_ALGORITHM_PARAMETERS_INVALID",
+                status_code=422,
+                field_errors={
+                    "refinement_mode": (
+                        "per-parent refinement requires a refinement Cluster-Set"
+                    )
+                },
+            )
         algorithm_settings = dict(
             payload.algorithm_settings or DEFAULT_CLUSTER_SET_ALGORITHM
         )
@@ -1086,6 +1190,22 @@ class ClusterService:
         llm_sample_strategy = _summary_sample_strategy(payload) if llm_enabled else {}
         source_cluster_ids = list(dict.fromkeys(payload.source_cluster_ids))
         source_pair_ids = list(dict.fromkeys(payload.source_pair_ids))
+        if (
+            refinement_mode == "per_parent"
+            and len(source_cluster_ids) > MAX_PER_PARENT_REFINEMENT_GROUPS
+        ):
+            raise ClusterError(
+                "per-parent refinement selects too many parent clusters",
+                code="CLUSTER_BATCH_REFINEMENT_EMPTY_GROUP",
+                status_code=422,
+                retryable=True,
+                suggested_action="select-sources",
+                field_errors={
+                    "source_cluster_ids": (
+                        "per-parent refinement selects too many parent clusters"
+                    )
+                },
+            )
         cluster_set_id = uuid4()
         with open_database_connection(self._settings) as connection:
             with connection.transaction():
@@ -1211,6 +1331,7 @@ class ClusterService:
                     parent_cluster_set_id=parent_id,
                     source_cluster_ids=source_cluster_ids,
                     selected_pair_ids=selected_pair_ids,
+                    refinement_mode=refinement_mode,
                 )
                 display_name = _display_name(
                     payload.display_name, fallback="Cluster-Set"
@@ -1219,17 +1340,16 @@ class ClusterService:
                     """
                     INSERT INTO cluster_sets (
                         id, project_id, indexing_run_id, dataset_version_id,
-                        parent_cluster_set_id, display_name, status, progress,
-                        phase, derivation_type, vector_basis, message_weight,
-                        answer_weight, algorithm, parameters, source_snapshot,
+                        parent_cluster_set_id, display_name, derivation_type,
+                        vector_basis, message_weight, answer_weight,
+                        algorithm, parameters, source_snapshot,
                         llm_provider, llm_provider_configuration_id,
                         llm_provider_display_name, llm_model, llm_parameters,
                         llm_sample_strategy, created_by_user_id
                     )
                     VALUES (
-                        %s, %s, %s, %s, %s, %s, 'queued', 0, 'queued',
                         %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                        %s
+                        %s, %s, %s, %s, %s, %s, %s
                     )
                     RETURNING id, project_id, indexing_run_id, dataset_version_id,
                               %s::text AS dataset_display_name,
@@ -1244,7 +1364,9 @@ class ClusterService:
                               error_code, error_message, diagnostics,
                               started_at, completed_at, cancel_requested_at,
                               deleted_at, created_at, updated_at,
-                              0::bigint AS cluster_count
+                              0::bigint AS cluster_count,
+                              0::bigint AS active_cluster_count,
+                              0::bigint AS active_message_pair_count
                     """,
                     (
                         cluster_set_id,
@@ -1558,7 +1680,14 @@ class ClusterService:
                        cs.error_code, cs.error_message,
                        cs.diagnostics, cs.started_at, cs.completed_at,
                        cs.cancel_requested_at, cs.deleted_at, cs.created_at,
-                       cs.updated_at, COUNT(c.id) AS cluster_count
+                       cs.updated_at,
+                       COUNT(DISTINCT c.id) AS cluster_count,
+                       COUNT(DISTINCT c.id) FILTER (
+                           WHERE COALESCE(c.manual_status, c.auto_status) <> 'rejected'
+                       ) AS active_cluster_count,
+                       COUNT(DISTINCT cm.message_pair_id) FILTER (
+                           WHERE COALESCE(c.manual_status, c.auto_status) <> 'rejected'
+                       ) AS active_message_pair_count
                 FROM cluster_sets cs
                 JOIN analysis_runs r
                   ON r.id = cs.indexing_run_id AND r.project_id = cs.project_id
@@ -1566,6 +1695,10 @@ class ClusterService:
                   ON d.id = cs.dataset_version_id AND d.project_id = cs.project_id
                 LEFT JOIN clusters c
                   ON c.cluster_set_id = cs.id AND c.project_id = cs.project_id
+                LEFT JOIN cluster_memberships cm
+                  ON cm.cluster_id = c.id
+                 AND cm.project_id = c.project_id
+                 AND cm.cluster_set_id = c.cluster_set_id
                 WHERE cs.project_id = %s
                   AND (
                       cs.deleted_at IS NULL
@@ -1642,6 +1775,227 @@ class ClusterService:
         if fresh is None:
             raise RuntimeError("Cluster-Set disappeared after rename")
         return fresh
+
+    def duplicate_cluster_set(
+        self, project_id: UUID, cluster_set_id: UUID, *, actor_user_id: UUID
+    ) -> ClusterSet:
+        new_cluster_set_id = uuid4()
+        with open_database_connection(self._settings) as connection:
+            with connection.transaction():
+                source = connection.execute(
+                    """
+                    SELECT cs.id, cs.indexing_run_id, cs.dataset_version_id,
+                           cs.parent_cluster_set_id, cs.display_name,
+                           cs.status, cs.progress, cs.phase,
+                           cs.derivation_type, cs.vector_basis,
+                           cs.message_weight, cs.answer_weight,
+                           cs.algorithm, cs.parameters, cs.source_snapshot,
+                           cs.llm_provider, cs.llm_provider_configuration_id,
+                           cs.llm_provider_display_name, cs.llm_model,
+                           cs.llm_parameters, cs.llm_sample_strategy,
+                           cs.error_code, cs.error_message, cs.diagnostics,
+                           cs.started_at, cs.completed_at, cs.cancel_requested_at,
+                           r.status AS indexing_status,
+                           r.deleted_at AS indexing_deleted_at,
+                           d.deleted_at AS dataset_deleted_at
+                    FROM cluster_sets cs
+                    JOIN analysis_runs r
+                      ON r.id = cs.indexing_run_id
+                     AND r.project_id = cs.project_id
+                    JOIN dataset_versions d
+                      ON d.id = cs.dataset_version_id
+                     AND d.project_id = cs.project_id
+                    WHERE cs.id = %s
+                      AND cs.project_id = %s
+                      AND cs.deleted_at IS NULL
+                    """,
+                    (cluster_set_id, project_id),
+                ).fetchone()
+                if (
+                    source is None
+                    or source["status"] != "completed"
+                    or source["indexing_status"] != "completed"
+                    or source["indexing_deleted_at"] is not None
+                    or source["dataset_deleted_at"] is not None
+                ):
+                    raise ClusterError(
+                        "Cluster-Set cannot be duplicated",
+                        code="CLUSTER_SET_DUPLICATE_UNAVAILABLE",
+                        status_code=409,
+                        retryable=True,
+                        suggested_action="reload",
+                    )
+                connection.execute(
+                    """
+                    INSERT INTO cluster_sets (
+                        id, project_id, indexing_run_id, dataset_version_id,
+                        parent_cluster_set_id, display_name, status, progress,
+                        phase, derivation_type, vector_basis, message_weight,
+                        answer_weight, algorithm, parameters, source_snapshot,
+                        llm_provider, llm_provider_configuration_id,
+                        llm_provider_display_name, llm_model, llm_parameters,
+                        llm_sample_strategy, error_code, error_message,
+                        diagnostics, started_at, completed_at, cancel_requested_at,
+                        created_by_user_id
+                    )
+                    VALUES (
+                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                        %s, %s, %s
+                    )
+                    """,
+                    (
+                        new_cluster_set_id,
+                        project_id,
+                        source["indexing_run_id"],
+                        source["dataset_version_id"],
+                        source["parent_cluster_set_id"],
+                        _duplicate_display_name(source["display_name"]),
+                        source["status"],
+                        source["progress"],
+                        source["phase"],
+                        source["derivation_type"],
+                        source["vector_basis"],
+                        source["message_weight"],
+                        source["answer_weight"],
+                        source["algorithm"],
+                        Jsonb(_json_object(source["parameters"])),
+                        Jsonb(_json_object(source["source_snapshot"])),
+                        source["llm_provider"],
+                        source["llm_provider_configuration_id"],
+                        source["llm_provider_display_name"],
+                        source["llm_model"],
+                        Jsonb(_json_object(source["llm_parameters"])),
+                        Jsonb(_json_object(source["llm_sample_strategy"])),
+                        source["error_code"],
+                        source["error_message"],
+                        Jsonb(_json_object(source["diagnostics"])),
+                        source["started_at"],
+                        source["completed_at"],
+                        source["cancel_requested_at"],
+                        actor_user_id,
+                    ),
+                )
+                source_clusters = connection.execute(
+                    """
+                    SELECT id, analysis_run_id, dataset_version_id, auto_title,
+                           manual_title, auto_category, manual_category,
+                           auto_status, manual_status, score, is_outlier,
+                           algorithm, metadata, auto_summary_question,
+                           auto_summary_answer
+                    FROM clusters
+                    WHERE project_id = %s
+                      AND cluster_set_id = %s
+                    ORDER BY created_at, id
+                    """,
+                    (project_id, cluster_set_id),
+                ).fetchall()
+                cluster_id_map: dict[UUID, UUID] = {}
+                for cluster_row in source_clusters:
+                    source_cluster_id = cast(UUID, cluster_row["id"])
+                    new_cluster_id = uuid4()
+                    cluster_id_map[source_cluster_id] = new_cluster_id
+                    connection.execute(
+                        """
+                        INSERT INTO clusters (
+                            id, project_id, analysis_run_id, dataset_version_id,
+                            cluster_set_id, auto_title, manual_title,
+                            auto_category, manual_category, auto_status,
+                            manual_status, score, is_outlier, algorithm, metadata,
+                            auto_summary_question, auto_summary_answer
+                        )
+                        VALUES (
+                            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                            %s, %s, %s, %s, %s
+                        )
+                        """,
+                        (
+                            new_cluster_id,
+                            project_id,
+                            cluster_row["analysis_run_id"],
+                            cluster_row["dataset_version_id"],
+                            new_cluster_set_id,
+                            cluster_row["auto_title"],
+                            cluster_row["manual_title"],
+                            cluster_row["auto_category"],
+                            cluster_row["manual_category"],
+                            cluster_row["auto_status"],
+                            cluster_row["manual_status"],
+                            cluster_row["score"],
+                            cluster_row["is_outlier"],
+                            cluster_row["algorithm"],
+                            Jsonb(_json_object(cluster_row["metadata"])),
+                            cluster_row["auto_summary_question"],
+                            cluster_row["auto_summary_answer"],
+                        ),
+                    )
+                if cluster_id_map:
+                    source_memberships = connection.execute(
+                        """
+                        SELECT id, cluster_id, analysis_run_id, message_pair_id,
+                               membership_score, is_outlier, assignment_type,
+                               metadata
+                        FROM cluster_memberships
+                        WHERE project_id = %s
+                          AND cluster_set_id = %s
+                        ORDER BY created_at, id
+                        """,
+                        (project_id, cluster_set_id),
+                    ).fetchall()
+                    for membership_row in source_memberships:
+                        source_cluster_id = cast(UUID, membership_row["cluster_id"])
+                        membership_new_cluster_id = cluster_id_map.get(
+                            source_cluster_id
+                        )
+                        if membership_new_cluster_id is None:
+                            continue
+                        connection.execute(
+                            """
+                            INSERT INTO cluster_memberships (
+                                id, project_id, cluster_id, analysis_run_id,
+                                message_pair_id, membership_score, is_outlier,
+                                assignment_type, cluster_set_id, metadata
+                            )
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            """,
+                            (
+                                uuid4(),
+                                project_id,
+                                membership_new_cluster_id,
+                                membership_row["analysis_run_id"],
+                                membership_row["message_pair_id"],
+                                membership_row["membership_score"],
+                                membership_row["is_outlier"],
+                                membership_row["assignment_type"],
+                                new_cluster_set_id,
+                                Jsonb(_json_object(membership_row["metadata"])),
+                            ),
+                        )
+                self._record_cluster_set_event(
+                    connection,
+                    project_id=project_id,
+                    cluster_set_id=new_cluster_set_id,
+                    actor_user_id=actor_user_id,
+                    event_type="duplicated",
+                    metadata={"source_cluster_set_id": str(cluster_set_id)},
+                )
+                self._audit.record_event(
+                    connection,
+                    actor_user_id=actor_user_id,
+                    action="cluster_set.duplicate",
+                    target_type="cluster_set",
+                    target_id=new_cluster_set_id,
+                    metadata={
+                        "project_id": str(project_id),
+                        "source_cluster_set_id": str(cluster_set_id),
+                    },
+                )
+                row = self._fetch_cluster_set_row(
+                    connection, project_id, new_cluster_set_id
+                )
+        if row is None:
+            raise RuntimeError("Cluster-Set disappeared after duplicate")
+        return _cluster_set_from_row(dict(row))
 
     def cancel_cluster_set(
         self, project_id: UUID, cluster_set_id: UUID, *, actor_user_id: UUID
@@ -1772,6 +2126,104 @@ class ClusterService:
                     event_type="deleted",
                     metadata={},
                 )
+
+    def batch_delete_cluster_sets(
+        self,
+        project_id: UUID,
+        cluster_set_ids: list[UUID],
+        *,
+        actor_user_id: UUID,
+    ) -> list[UUID]:
+        selected_ids = list(dict.fromkeys(cluster_set_ids))
+        if not selected_ids:
+            raise ClusterError(
+                "Cluster-Set batch delete requires a non-empty selection",
+                code="CLUSTER_SET_BATCH_DELETE_FAILED",
+                status_code=422,
+                retryable=True,
+                suggested_action="reload",
+                field_errors={
+                    "cluster_set_ids": (
+                        "Cluster-Set batch delete requires a non-empty selection"
+                    )
+                },
+            )
+        with open_database_connection(self._settings) as connection:
+            with connection.transaction():
+                rows = connection.execute(
+                    """
+                    SELECT id
+                    FROM cluster_sets
+                    WHERE project_id = %s
+                      AND deleted_at IS NULL
+                      AND id = ANY(%s)
+                    FOR UPDATE
+                    """,
+                    (project_id, selected_ids),
+                ).fetchall()
+                available_ids = {UUID(str(row["id"])) for row in rows}
+                if available_ids != set(selected_ids):
+                    raise ClusterError(
+                        "Cluster-Set batch delete cannot delete every selected set",
+                        code="CLUSTER_SET_BATCH_DELETE_FAILED",
+                        status_code=409,
+                        retryable=True,
+                        suggested_action="reload",
+                    )
+                deleted_rows = connection.execute(
+                    """
+                    UPDATE cluster_sets
+                    SET deleted_at = now(),
+                        deleted_by_user_id = %s,
+                        status = CASE
+                            WHEN status IN ('queued', 'running', 'cancelling')
+                            THEN 'cancelled'
+                            ELSE status
+                        END,
+                        phase = 'deleted',
+                        completed_at = CASE
+                            WHEN status IN ('queued', 'running', 'cancelling')
+                            THEN COALESCE(completed_at, now())
+                            ELSE completed_at
+                        END,
+                        updated_at = now()
+                    WHERE project_id = %s
+                      AND deleted_at IS NULL
+                      AND id = ANY(%s)
+                    RETURNING id
+                    """,
+                    (actor_user_id, project_id, selected_ids),
+                ).fetchall()
+                deleted_ids = [UUID(str(row["id"])) for row in deleted_rows]
+                if set(deleted_ids) != set(selected_ids):
+                    raise ClusterError(
+                        "Cluster-Set batch delete did not delete every selected set",
+                        code="CLUSTER_SET_BATCH_DELETE_FAILED",
+                        status_code=409,
+                        retryable=True,
+                        suggested_action="reload",
+                    )
+                for deleted_id in selected_ids:
+                    self._record_cluster_set_event(
+                        connection,
+                        project_id=project_id,
+                        cluster_set_id=deleted_id,
+                        actor_user_id=actor_user_id,
+                        event_type="deleted",
+                        metadata={"batch": True, "selection_count": len(selected_ids)},
+                    )
+                self._audit.record_event(
+                    connection,
+                    actor_user_id=actor_user_id,
+                    action="cluster_set.batch_delete",
+                    target_type="project",
+                    target_id=project_id,
+                    metadata={
+                        "project_id": str(project_id),
+                        "cluster_set_count": len(selected_ids),
+                    },
+                )
+        return selected_ids
 
     def list_cluster_set_events(
         self, project_id: UUID, cluster_set_id: UUID
@@ -2236,58 +2688,176 @@ class ClusterService:
             vector_basis = str(cluster_set["vector_basis"])
             message_weight = float(str(cluster_set["message_weight"]))
             answer_weight = float(str(cluster_set["answer_weight"]))
-            source_pair_ids = self._snapshot_pair_ids(
-                _json_object(cluster_set["source_snapshot"])
+            source_snapshot = _json_object(cluster_set["source_snapshot"])
+            source_pair_ids = self._snapshot_pair_ids(source_snapshot)
+            is_per_parent_refinement = (
+                self._snapshot_refinement_mode(source_snapshot) == "per_parent"
             )
+            source_cluster_ids = self._snapshot_source_cluster_ids(source_snapshot)
             record_limit = (
                 AGGLOMERATIVE_MAX_RECORDS
                 if config.name == "agglomerative"
                 else HDBSCAN_MAX_RECORDS
             )
-            with open_database_connection(self._settings) as connection:
-                with connection.transaction():
-                    self._raise_if_cluster_set_cancelled(connection, cluster_set_id)
-                    input_summary = self._cluster_set_input_summary(
+            batch_groups: list[BatchRefinementGroup] = []
+            if is_per_parent_refinement:
+                parent_cluster_set_id = source_snapshot.get("parent_cluster_set_id")
+                if not isinstance(parent_cluster_set_id, str):
+                    raise ClusterError(
+                        "per-parent refinement parent is unavailable",
+                        code="CLUSTER_BATCH_REFINEMENT_EMPTY_GROUP",
+                        status_code=422,
+                    )
+                with open_database_connection(self._settings) as connection:
+                    batch_groups = self._per_parent_refinement_groups(
                         connection,
                         project_id=project_id,
-                        indexing_run_id=indexing_run_id,
+                        parent_cluster_set_id=UUID(parent_cluster_set_id),
                         dataset_version_id=dataset_version_id,
-                        source_pair_ids=source_pair_ids,
+                        source_cluster_ids=source_cluster_ids,
                     )
-                    basis_budget = self._validate_cluster_set_basis_budget(
-                        config,
-                        vector_basis=vector_basis,
-                        input_summary=input_summary,
-                    )
-                    self._publish_cluster_set_progress(
-                        cluster_set_id, CLUSTER_SET_LOAD_PROGRESS, "loading"
-                    )
-                    pair_ids, vectors, mismatch_scores = (
-                        self._load_cluster_set_embedding_matrix(
+
+            basis_budget: ClusterSetBasisBudget | None = None
+            if is_per_parent_refinement:
+                self._publish_cluster_set_progress(
+                    cluster_set_id, CLUSTER_SET_LOAD_PROGRESS, "loading"
+                )
+            else:
+                with open_database_connection(self._settings) as connection:
+                    with connection.transaction():
+                        self._raise_if_cluster_set_cancelled(connection, cluster_set_id)
+                        input_summary = self._cluster_set_input_summary(
                             connection,
                             project_id=project_id,
                             indexing_run_id=indexing_run_id,
                             dataset_version_id=dataset_version_id,
-                            vector_basis=vector_basis,
-                            message_weight=message_weight,
-                            answer_weight=answer_weight,
                             source_pair_ids=source_pair_ids,
-                            record_limit=record_limit,
-                            expected_record_count=int(
-                                str(input_summary["record_count"])
-                            ),
-                            expected_dimensions=basis_budget.output_dimensions,
-                            message_expected_dimensions=(
-                                basis_budget.message_dimensions
-                            ),
-                            answer_expected_dimensions=(basis_budget.answer_dimensions),
                         )
-                    )
-                    self._raise_if_cluster_set_cancelled(connection, cluster_set_id)
+                        basis_budget = self._validate_cluster_set_basis_budget(
+                            config,
+                            vector_basis=vector_basis,
+                            input_summary=input_summary,
+                        )
+                        self._publish_cluster_set_progress(
+                            cluster_set_id, CLUSTER_SET_LOAD_PROGRESS, "loading"
+                        )
+                        pair_ids, vectors, mismatch_scores = (
+                            self._load_cluster_set_embedding_matrix(
+                                connection,
+                                project_id=project_id,
+                                indexing_run_id=indexing_run_id,
+                                dataset_version_id=dataset_version_id,
+                                vector_basis=vector_basis,
+                                message_weight=message_weight,
+                                answer_weight=answer_weight,
+                                source_pair_ids=source_pair_ids,
+                                record_limit=record_limit,
+                                expected_record_count=int(
+                                    str(input_summary["record_count"])
+                                ),
+                                expected_dimensions=basis_budget.output_dimensions,
+                                message_expected_dimensions=(
+                                    basis_budget.message_dimensions
+                                ),
+                                answer_expected_dimensions=(
+                                    basis_budget.answer_dimensions
+                                ),
+                            )
+                        )
+                        self._raise_if_cluster_set_cancelled(connection, cluster_set_id)
 
             loaded_at = perf_counter()
             clustering_diagnostics: dict[str, object] = {}
-            if config.name == "hdbscan":
+            origin_by_pair_id: dict[object, ClusterOrigin] | None = None
+            if is_per_parent_refinement:
+                all_pair_ids: list[object] = []
+                all_labels: list[int] = []
+                all_probabilities: list[float] = []
+                all_mismatch_scores: dict[object, float] = {}
+                origin_by_pair_id = {}
+                for group_index, group in enumerate(batch_groups):
+                    with open_database_connection(self._settings) as connection:
+                        with connection.transaction():
+                            input_summary = self._cluster_set_input_summary(
+                                connection,
+                                project_id=project_id,
+                                indexing_run_id=indexing_run_id,
+                                dataset_version_id=dataset_version_id,
+                                source_pair_ids=group.pair_ids,
+                            )
+                            basis_budget = self._validate_cluster_set_basis_budget(
+                                config,
+                                vector_basis=vector_basis,
+                                input_summary=input_summary,
+                            )
+                            group_pair_ids, group_vectors, group_mismatch_scores = (
+                                self._load_cluster_set_embedding_matrix(
+                                    connection,
+                                    project_id=project_id,
+                                    indexing_run_id=indexing_run_id,
+                                    dataset_version_id=dataset_version_id,
+                                    vector_basis=vector_basis,
+                                    message_weight=message_weight,
+                                    answer_weight=answer_weight,
+                                    source_pair_ids=group.pair_ids,
+                                    record_limit=record_limit,
+                                    expected_record_count=int(
+                                        str(input_summary["record_count"])
+                                    ),
+                                    expected_dimensions=basis_budget.output_dimensions,
+                                    message_expected_dimensions=(
+                                        basis_budget.message_dimensions
+                                    ),
+                                    answer_expected_dimensions=(
+                                        basis_budget.answer_dimensions
+                                    ),
+                                )
+                            )
+                    self._publish_cluster_set_progress(
+                        cluster_set_id,
+                        CLUSTER_SET_CLUSTERING_PROGRESS,
+                        f"clustering_group_{group_index + 1}",
+                    )
+                    try:
+                        group_labels, group_probabilities = self._cluster_vectors(
+                            config, group_vectors
+                        )
+                    except ClusterError as exc:
+                        raise ClusterError(
+                            str(exc),
+                            code="CLUSTER_BATCH_REFINEMENT_GROUP_INVALID",
+                            status_code=422,
+                            retryable=True,
+                            suggested_action="adjust-clustering-parameters",
+                        ) from exc
+                    for pair_id, local_label in zip(
+                        group_pair_ids, group_labels, strict=True
+                    ):
+                        origin_by_pair_id[pair_id] = ClusterOrigin(
+                            source_parent_cluster_id=group.cluster_id,
+                            source_parent_cluster_title=group.title,
+                            source_parent_cluster_label=group.label,
+                            source_parent_cluster_is_outlier=group.is_outlier,
+                            batch_group_index=group_index,
+                            local_cluster_label=int(local_label),
+                        )
+                    all_pair_ids.extend(group_pair_ids)
+                    all_labels.extend(
+                        [
+                            (-1_000_000 - group_index)
+                            if int(label) == -1
+                            else group_index * 100_000 + int(label)
+                            for label in group_labels
+                        ]
+                    )
+                    all_probabilities.extend(group_probabilities)
+                    all_mismatch_scores.update(group_mismatch_scores)
+                pair_ids = all_pair_ids
+                labels = all_labels
+                probabilities = all_probabilities
+                mismatch_scores = all_mismatch_scores
+                clustered_at = perf_counter()
+            elif config.name == "hdbscan":
                 if config.parameters.get("reduction_method") == "none":
                     reduced_vectors = vectors
                 else:
@@ -2306,12 +2876,19 @@ class ClusterService:
                     probabilities,
                     cast(float | None, config.parameters.get("outlier_threshold")),
                 )
+                clustered_at = perf_counter()
             else:
                 self._publish_cluster_set_progress(
                     cluster_set_id, CLUSTER_SET_CLUSTERING_PROGRESS, "clustering"
                 )
                 labels, probabilities = self._cluster_vectors(config, vectors)
-            clustered_at = perf_counter()
+                clustered_at = perf_counter()
+            if basis_budget is None:
+                raise ClusterError(
+                    "Cluster-Set source contains no usable parent groups",
+                    code="CLUSTER_REFINEMENT_EMPTY_SOURCE",
+                    status_code=422,
+                )
             self._publish_cluster_set_progress(
                 cluster_set_id, CLUSTER_SET_PERSIST_PROGRESS, "persisting"
             )
@@ -2335,6 +2912,7 @@ class ClusterService:
                         vector_basis=vector_basis,
                         message_weight=message_weight,
                         answer_weight=answer_weight,
+                        origin_by_pair_id=origin_by_pair_id,
                     )
                     self._record_cluster_set_event(
                         connection,
@@ -2642,7 +3220,14 @@ class ClusterService:
                    cs.error_code, cs.error_message,
                    cs.diagnostics, cs.started_at, cs.completed_at,
                    cs.cancel_requested_at, cs.deleted_at, cs.created_at,
-                   cs.updated_at, COUNT(c.id) AS cluster_count
+                   cs.updated_at,
+                   COUNT(DISTINCT c.id) AS cluster_count,
+                   COUNT(DISTINCT c.id) FILTER (
+                       WHERE COALESCE(c.manual_status, c.auto_status) <> 'rejected'
+                   ) AS active_cluster_count,
+                   COUNT(DISTINCT cm.message_pair_id) FILTER (
+                       WHERE COALESCE(c.manual_status, c.auto_status) <> 'rejected'
+                   ) AS active_message_pair_count
             FROM cluster_sets cs
             JOIN analysis_runs r
               ON r.id = cs.indexing_run_id AND r.project_id = cs.project_id
@@ -2650,6 +3235,10 @@ class ClusterService:
               ON d.id = cs.dataset_version_id AND d.project_id = cs.project_id
             LEFT JOIN clusters c
               ON c.cluster_set_id = cs.id AND c.project_id = cs.project_id
+            LEFT JOIN cluster_memberships cm
+              ON cm.cluster_id = c.id
+             AND cm.project_id = c.project_id
+             AND cm.cluster_set_id = c.cluster_set_id
             WHERE cs.id = %s AND cs.project_id = %s AND cs.deleted_at IS NULL
             GROUP BY cs.id, d.display_name, r.deleted_at
             """,
@@ -2723,6 +3312,7 @@ class ClusterService:
                   AND c.cluster_set_id = %s
                   AND mp.dataset_version_id = %s
                   AND c.id = ANY(%s)
+                  AND COALESCE(c.manual_status, c.auto_status) <> 'rejected'
                 """,
                 (
                     project_id,
@@ -2766,10 +3356,15 @@ class ClusterService:
                     JOIN message_pairs mp
                       ON mp.id = cm.message_pair_id
                      AND mp.project_id = cm.project_id
+                    JOIN clusters c
+                      ON c.id = cm.cluster_id
+                     AND c.project_id = cm.project_id
+                     AND c.cluster_set_id = cm.cluster_set_id
                     WHERE cm.project_id = %s
                       AND cm.cluster_set_id = %s
                       AND mp.dataset_version_id = %s
                       AND cm.message_pair_id = ANY(%s)
+                      AND COALESCE(c.manual_status, c.auto_status) <> 'rejected'
                     """,
                     (
                         project_id,
@@ -2810,10 +3405,12 @@ class ClusterService:
         parent_cluster_set_id: UUID | None,
         source_cluster_ids: list[UUID],
         selected_pair_ids: list[UUID] | None,
+        refinement_mode: str = "common",
     ) -> dict[str, Any]:
         if selected_pair_ids is not None:
             return {
                 "type": "selected_pairs",
+                "refinement_mode": refinement_mode,
                 "parent_cluster_set_id": (
                     str(parent_cluster_set_id)
                     if parent_cluster_set_id is not None
@@ -2862,6 +3459,150 @@ class ClusterService:
                 code="CLUSTER_SET_LINEAGE_UNAVAILABLE",
                 status_code=503,
             ) from exc
+
+    def _snapshot_refinement_mode(self, source_snapshot: dict[str, Any]) -> str:
+        value = source_snapshot.get("refinement_mode", "common")
+        if not isinstance(value, str):
+            return "common"
+        return value.strip().lower().replace("-", "_")
+
+    def _snapshot_source_cluster_ids(
+        self, source_snapshot: dict[str, Any]
+    ) -> list[UUID]:
+        raw_ids = source_snapshot.get("source_cluster_ids")
+        if not isinstance(raw_ids, list):
+            return []
+        try:
+            return [UUID(str(item)) for item in raw_ids]
+        except (TypeError, ValueError) as exc:
+            raise ClusterError(
+                "Cluster-Set source snapshot is invalid",
+                code="CLUSTER_SET_LINEAGE_UNAVAILABLE",
+                status_code=503,
+            ) from exc
+
+    def _per_parent_refinement_groups(
+        self,
+        connection: Any,
+        *,
+        project_id: UUID,
+        parent_cluster_set_id: UUID,
+        dataset_version_id: UUID,
+        source_cluster_ids: list[UUID],
+    ) -> list[BatchRefinementGroup]:
+        if not source_cluster_ids:
+            raise ClusterError(
+                "per-parent refinement requires selected parent clusters",
+                code="CLUSTER_BATCH_REFINEMENT_EMPTY_GROUP",
+                status_code=422,
+                field_errors={
+                    "source_cluster_ids": (
+                        "per-parent refinement requires selected parent clusters"
+                    )
+                },
+            )
+        if len(source_cluster_ids) > MAX_PER_PARENT_REFINEMENT_GROUPS:
+            raise ClusterError(
+                "per-parent refinement selects too many parent clusters",
+                code="CLUSTER_BATCH_REFINEMENT_EMPTY_GROUP",
+                status_code=422,
+                retryable=True,
+                suggested_action="select-sources",
+                field_errors={
+                    "source_cluster_ids": (
+                        "per-parent refinement selects too many parent clusters"
+                    )
+                },
+            )
+        rows = connection.execute(
+            """
+            SELECT c.id AS cluster_id,
+                   COALESCE(c.manual_title, c.auto_title) AS title,
+                   c.metadata,
+                   c.is_outlier,
+                   mp.id AS message_pair_id
+            FROM clusters c
+            LEFT JOIN cluster_memberships cm
+              ON cm.cluster_id = c.id
+             AND cm.project_id = c.project_id
+             AND cm.cluster_set_id = c.cluster_set_id
+            LEFT JOIN message_pairs mp
+              ON mp.id = cm.message_pair_id
+             AND mp.project_id = cm.project_id
+            WHERE c.project_id = %s
+              AND c.cluster_set_id = %s
+              AND c.id = ANY(%s)
+              AND COALESCE(c.manual_status, c.auto_status) <> 'rejected'
+              AND (mp.id IS NULL OR mp.dataset_version_id = %s)
+            ORDER BY array_position(%s::uuid[], c.id), mp.ordinal ASC
+            """,
+            (
+                project_id,
+                parent_cluster_set_id,
+                source_cluster_ids,
+                dataset_version_id,
+                source_cluster_ids,
+            ),
+        ).fetchall()
+        by_cluster: dict[UUID, BatchRefinementGroup] = {}
+        pairs_by_cluster: dict[UUID, list[UUID]] = {}
+        for row in rows:
+            cluster_id = UUID(str(row["cluster_id"]))
+            metadata = row["metadata"]
+            label_value: int | None = None
+            if isinstance(metadata, dict):
+                raw_label = metadata.get("label")
+                if isinstance(raw_label, int):
+                    label_value = raw_label
+            if cluster_id not in by_cluster:
+                title = str(row["title"])[:MAX_CLUSTER_ORIGIN_TITLE_LENGTH]
+                by_cluster[cluster_id] = BatchRefinementGroup(
+                    cluster_id=cluster_id,
+                    title=title,
+                    label=label_value,
+                    is_outlier=bool(row["is_outlier"]),
+                    pair_ids=[],
+                )
+                pairs_by_cluster[cluster_id] = []
+            pair_id = row["message_pair_id"]
+            if pair_id is not None:
+                pairs_by_cluster[cluster_id].append(UUID(str(pair_id)))
+        if set(by_cluster) != set(source_cluster_ids):
+            raise ClusterError(
+                "per-parent refinement contains unavailable parent clusters",
+                code="CLUSTER_BATCH_REFINEMENT_EMPTY_GROUP",
+                status_code=422,
+                field_errors={
+                    "source_cluster_ids": (
+                        "selected parent clusters must belong to the parent Cluster-Set"
+                    )
+                },
+            )
+        groups: list[BatchRefinementGroup] = []
+        for cluster_id in source_cluster_ids:
+            group = by_cluster[cluster_id]
+            pair_ids = list(dict.fromkeys(pairs_by_cluster[cluster_id]))
+            if not pair_ids:
+                raise ClusterError(
+                    "per-parent refinement group contains no usable rows",
+                    code="CLUSTER_BATCH_REFINEMENT_EMPTY_GROUP",
+                    status_code=422,
+                    field_errors={
+                        "source_cluster_ids": (
+                            "selected parent cluster contains no usable rows"
+                        )
+                    },
+                )
+            groups.append(
+                BatchRefinementGroup(
+                    cluster_id=group.cluster_id,
+                    title=group.title,
+                    label=group.label,
+                    is_outlier=group.is_outlier,
+                    pair_ids=pair_ids,
+                )
+            )
+        return groups
 
     def _cluster_set_input_summary(
         self,
@@ -3703,18 +4444,36 @@ class ClusterService:
         vector_basis: str,
         message_weight: float,
         answer_weight: float,
+        origin_by_pair_id: dict[object, ClusterOrigin] | None = None,
     ) -> None:
-        grouped: dict[int, list[tuple[object, float]]] = {}
+        grouped: dict[tuple[int | None, int], list[tuple[object, float]]] = {}
         for pair_id, label, probability in zip(
             pair_ids, labels, probabilities, strict=True
         ):
-            grouped.setdefault(int(label), []).append((pair_id, probability))
+            origin = origin_by_pair_id.get(pair_id) if origin_by_pair_id else None
+            grouped.setdefault(
+                (origin.batch_group_index if origin is not None else None, int(label)),
+                [],
+            ).append((pair_id, probability))
 
-        for label in sorted(grouped):
-            members = grouped[label]
-            is_outlier = label == -1
+        for group_key in sorted(grouped):
+            _group_index, label = group_key
+            members = grouped[group_key]
+            first_origin = (
+                origin_by_pair_id.get(members[0][0]) if origin_by_pair_id else None
+            )
+            local_label = first_origin.local_cluster_label if first_origin else label
+            is_outlier = local_label == -1
             cluster_id = uuid4()
-            title = "Outliers" if is_outlier else f"Cluster {label + 1}"
+            title = (
+                f"{first_origin.source_parent_cluster_title} · Outliers"
+                if is_outlier and first_origin is not None
+                else (
+                    f"{first_origin.source_parent_cluster_title} · Cluster {local_label + 1}"
+                    if first_origin is not None
+                    else ("Outliers" if is_outlier else f"Cluster {label + 1}")
+                )
+            )
             status = "outlier" if is_outlier else "unreviewed"
             score = sum(item[1] for item in members) / len(members)
             qa_scores = [
@@ -3761,6 +4520,11 @@ class ClusterService:
                             "answer_weight": answer_weight,
                             "qa_mismatch": qa_metadata,
                             "non_quadratic": True,
+                            **(
+                                {"refinement": first_origin.as_metadata()}
+                                if first_origin is not None
+                                else {}
+                            ),
                         }
                     ),
                 ),

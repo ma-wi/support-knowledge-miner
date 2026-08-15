@@ -8,11 +8,12 @@
   `docs/requirements/chg-001-browser-session-live-run-status.md`,
   `docs/requirements/chg-002-analysis-clustering-feedback.md`,
   `docs/requirements/chg-003-cluster-generation-pending-feedback.md`,
-  `docs/requirements/chg-004-analyst-clustering-redesign.md`
+  `docs/requirements/chg-004-analyst-clustering-redesign.md`,
+  `docs/requirements/chg-005-cluster-set-batch-refinement.md`
 - Applicable ADRs: ADR-0001, ADR-0002, ADR-0004, ADR-0005, ADR-0006, ADR-0007
 - Superseded ADRs: ADR-0003
 - Decision owner: anfordernder Product Owner
-- Last reviewed: 2026-08-05
+- Last reviewed: 2026-08-09
 
 ## Purpose
 
@@ -72,6 +73,10 @@ analysis profiles and no separate candidate workflow in the accepted MVP state.
 - Cluster-set generation with vector basis, algorithm, parameters and optional LLM
   summary generation.
 - Hierarchical cluster-set refinement with parent links and source snapshots.
+- Per-parent batch refinement that creates one child cluster set while preserving
+  every generated child cluster's parent-cluster origin.
+- Cluster-set overview selection, all-or-nothing batch deletion, same-level
+  duplication and active cluster/message-pair counts.
 - Outlier exclusion as a structural operation that creates a new child cluster set.
 - Table-first Cluster Explorer with search/filter, category grouping, source dialog,
   exclusion/include controls and mismatch indicators.
@@ -301,11 +306,16 @@ optional locked `gpu-cu12` and `gpu-cu13` Python extras and is not part of the
 default CPU-compatible setup. HDBSCAN does not guarantee an
 exact target number of clusters; coarse top-level work must use coarse HDBSCAN
 parameters/reduction or a target-count-capable algorithm such as Agglomerative.
-Agglomerative rejects more than 10,000 records before writes. No implementation may
-construct a complete pairwise all-record distance matrix. Both algorithms preflight
-a conservative 512 MiB working-set budget before loading vectors. Rejected requests
-report safe concrete capacity details and corrective suggestions before cluster
-writes.
+Agglomerative accepts either a fixed `n_clusters` target or a
+`distance_threshold` split rule plus `linkage`; the UI sends exactly one split
+parameter. In per-parent refinement the visible labels are `n_clusters je Parent`
+and `distance_threshold je Parent`. Agglomerative rejects more than 10,000 records
+before writes. No implementation may construct a complete pairwise all-record
+distance matrix. Both algorithms preflight a conservative 5 GiB working-set
+budget before loading vectors. Common refinement applies that budget to the full
+selected source set. Per-parent batch refinement applies the budget and vector
+loading separately to each selected parent group. Rejected requests report safe
+concrete capacity details and corrective suggestions before cluster writes.
 
 A cluster set stores its selected indexing run, parent cluster set when present,
 derivation type, source filter, immutable source snapshot, vector basis, algorithm,
@@ -313,6 +323,12 @@ parameters, optional LLM configuration, LLM sample strategy/seed, progress/statu
 errors and timestamps. A cluster set is not overwritten by recalculation,
 refinement, source changes or outlier exclusion; each structural operation creates
 a new child cluster set.
+
+Cluster-set parameter displays include vector basis, algorithm, algorithm-specific
+parameters, LLM provider/model and LLM sample strategy, including numeric sample
+count or „alle Beispiele“. The UI shortens the stored
+`cluster_selection_epsilon` parameter label to `selection_epsilon` and wraps long
+labels/values without overlapping adjacent content.
 
 Cluster summaries can be regenerated on an existing completed cluster set without
 recomputing cluster assignments. Summary-only regeneration reuses the stored
@@ -331,6 +347,18 @@ jobs remains available.
 Cluster sets can be renamed and deleted. Display-name changes are saved without a
 separate „Namen speichern“ button. If a deleted cluster set is parent of other sets,
 a non-loadable history node remains so child lineage is still understandable.
+Cluster-set cards show active cluster count and active message-pair count. Active
+means cluster status `effectiveStatus !== rejected`; outliers count as active
+unless rejected. The dense metadata block below progress and above action buttons
+can be collapsed per card while the heading, progress and actions remain visible.
+Multiple visible cluster sets can be selected and deleted through the
+all-or-nothing `Aktionen` menu entry `Löschen`; if any selected set is invalid,
+stale, unavailable or outside the project, none are deleted and a safe conflict is
+shown. A cluster set can be duplicated at the same tree level; the duplicate copies
+the source set 1:1 for persisted set state, parameters, source snapshot, LLM
+settings, diagnostics, timestamps, clusters, memberships, manual titles,
+categories and statuses, but not child cluster sets. Duplication does not enqueue
+or start recalculation, refinement or summary generation.
 
 ### LLM cluster summaries
 
@@ -368,9 +396,14 @@ collapsible left control rail and a main table workspace. The control rail is
 integrated into the Cluster Explorer panel and follows normal page scroll; the
 main table workspace remains the separate scroll area for large cluster lists.
 The floating icon-only „Nach oben“ control resets the table workspace and page
-scroll. The control rail contains:
+scroll. The loaded set selector in the control rail shows completed cluster sets
+in their parent/child tree order rather than as a flat list. The control rail
+contains:
 
 - loaded cluster-set selector/context.
+- loaded-set metadata with total clusters, non-rejected clusters, rejected
+  clusters, counts per status and summed message-pair counts for each of those
+  values.
 - text search over visible cluster fields.
 - filters for status, category, outlier and excluded state.
 - outlier controls.
@@ -384,6 +417,13 @@ The main table workspace contains:
 - category grouping.
 - tabular cluster analysis.
 - separate excluded section.
+
+When a loaded cluster set was created through per-parent batch refinement, the
+included cluster rows can be grouped by parent-cluster origin. The parent origin is
+read from `clusters.metadata.refinement` fields `mode`,
+`source_parent_cluster_id`, `source_parent_cluster_title`,
+`source_parent_cluster_label`, `source_parent_cluster_is_outlier`,
+`batch_group_index` and `local_cluster_label`.
 
 Search and filters change only the visible view. They do not alter memberships,
 cluster summaries, exclusions or persisted cluster sets.
@@ -442,14 +482,22 @@ support answers. A cluster can then be refined or re-clustered by another vector
 basis to identify mismatched support pairs.
 
 „Eingeschlossene Cluster verfeinern“ opens cluster-set creation with parent cluster
-set and included sources prefilled. Starting it creates a new child cluster set.
-The child can use a different vector basis than the parent. Example: stage 1
-clusters coarsely by customer questions; stage 2 clusters the remaining sources by
-support answers.
+set and included sources prefilled. The `Verfeinerung vorausgefüllt` info box shows
+the parent cluster-set name as `Zu verfeinerndes Cluster-Set` and lists the
+selected parent cluster names. Starting it creates a new child cluster set. The
+child can use a different vector basis than the parent. Refinement can run either
+as one common reclustering over all included sources or separately per selected
+parent cluster. Per-parent batch refinement creates exactly one child cluster set
+as the run container; every generated child cluster stores its parent-cluster
+origin metadata. If any parent group has no usable source pairs or becomes invalid
+for the selected algorithm settings, the request/job fails safely and no partial
+successful child clusters are shown. Example: stage 1 clusters coarsely by customer
+questions; stage 2 clusters the remaining sources by support answers.
 
 The cluster-set tree shows root and child sets with expand/fold. Each node shows
-operation type, parent, vector basis, algorithm, all persisted cluster-set
-parameters, source count, outlier/exclusion count, status and allowed actions.
+operation type, parent, vector basis, algorithm, active counts, all persisted
+cluster-set parameters, source count, outlier/exclusion count, status and allowed
+actions.
 
 ### Explorer export
 
@@ -549,11 +597,17 @@ Required:
 - completed indexing selector.
 - vector-basis selector.
 - algorithm selector and algorithm-specific parameter fields.
+- Agglomerative split-rule fields for either `n_clusters` or
+  `distance_threshold` plus `linkage`.
 - optional LLM provider/model selector.
 - sample count input with default `10` and „Alle Beispiele verwenden“ checkbox.
 - OpenAI LLM confirmation when needed.
 - create cluster-set action.
 - expandable/foldable cluster-set tree.
+- collapsible per-card metadata block for dense cluster-set details.
+- active cluster and active message-pair counts.
+- multi-select toolbar with all-or-nothing batch delete.
+- duplicate action that creates a same-level copy without children.
 - rename/delete cluster-set actions.
 - load action disabled until status is `fertig`.
 - „Cluster verfeinern“ action that creates a child set.
@@ -561,18 +615,20 @@ Required:
 - create/refine/outlier-recalculate actions remain available for additional
   cluster-set jobs subject to local queue admission; cancel remains available for
   active jobs.
+- newly created or duplicated sets are scrolled and focused into view.
 
 ### UI-08 Explorer
 
 Required:
 
-- loaded cluster-set selector/context.
+- loaded cluster-set selector/context with visible parent/child tree structure.
 - default load of the most recently updated completed cluster set.
 - left control rail for cluster-set selection, search/filter, outlier controls,
   Summary regeneration and export.
 - metrics, lineage path and all persisted cluster-set parameters for the loaded
   set.
-- category grouping.
+- category grouping and parent-origin grouping for per-parent batch refinement
+  results.
 - cluster table.
 - sortable table headers for Status, Titel, Kategorie, Kundenanfragen,
   Supportantworten and Hinweise / Score.
@@ -656,8 +712,9 @@ Required:
 - FR-33: Agglomerative rejects more than 10,000 records before writes.
 - FR-34: Clustering must not construct a complete pairwise all-record distance
   matrix.
-- FR-35: Clustering preflights the fixed 512 MiB working-set budget before loading
-  vectors.
+- FR-35: Clustering preflights the fixed 5 GiB working-set budget before loading
+  vectors; per-parent batch refinement applies the preflight per parent group
+  instead of to the aggregate selected source set.
 - FR-36: Running cluster-set jobs show status, percentage, progressbar, phase and
   cancel action, and do not block additional cluster-set starts while the bounded
   local queue accepts work.
@@ -677,6 +734,26 @@ Required:
   that cluster.
 - FR-45a: Completed cluster sets with LLM configuration can regenerate only LLM
   summaries without recalculating or replacing cluster assignments.
+- FR-45b: Cluster-set creation and refinement expose only algorithm-compatible
+  fields; Agglomerative sends exactly one of `n_clusters` or
+  `distance_threshold` with `linkage`.
+- FR-45c: Refinement can run as common reclustering or per-parent batch
+  refinement; per-parent mode creates one child cluster set and stores parent-origin
+  metadata per generated child cluster.
+- FR-45d: Cluster-set cards show active cluster and active message-pair counts
+  using `effectiveStatus !== rejected`, with outliers counted unless rejected.
+- FR-45e: Cluster-set overview multi-selection supports all-or-nothing batch
+  delete through an actions menu, and single cluster sets can be duplicated at the
+  same tree level as full clones of set state, clusters and memberships without
+  duplicating child cluster sets or starting recalculation.
+- FR-45f: Cluster-set parameter displays include LLM provider/model, sample
+  strategy, sample count or „alle Beispiele“, and render
+  `cluster_selection_epsilon` as `selection_epsilon`.
+- FR-45g: Cluster-set card metadata can be collapsed independently without hiding
+  heading, progress or actions; long parameter labels/values and indexing
+  diagnostics wrap or scroll within their cards.
+- FR-45h: The Explorer cluster-set selector shows parent/child tree structure and
+  per-parent refinement results can be grouped by parent origin.
 - FR-46: Explorer search is text search over visible cluster fields unless a future
   semantic-search mode is explicitly added.
 - FR-47: Explorer search/filter changes only visible rows, not persisted results.

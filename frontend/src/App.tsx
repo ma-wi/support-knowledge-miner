@@ -205,6 +205,13 @@ type ApiClusterSet = {
   created_at: string;
   updated_at: string;
   cluster_count: number;
+  active_cluster_count?: number;
+  active_message_pair_count?: number;
+};
+
+type ApiClusterSetBatchDeleteResponse = {
+  deleted_cluster_set_ids: string[];
+  cluster_sets: ApiClusterSet[];
 };
 
 type ClusterSet = {
@@ -242,6 +249,8 @@ type ClusterSet = {
   createdAt: string;
   updatedAt: string;
   clusterCount: number;
+  activeClusterCount: number;
+  activeMessagePairCount: number;
 };
 
 type ApiCluster = {
@@ -389,11 +398,27 @@ type ClusterSortState = {
   key: ClusterSortKey;
   direction: SortDirection;
 } | null;
+type ClusterSetRefinementSource = {
+  id: string;
+  title: string;
+  label: string;
+  isOutlier: boolean;
+};
 type ClusterSetRefinementDraft = {
   parentClusterSetId: string;
+  parentClusterSetName: string;
   indexingRunId: string;
   sourceClusterIds: string[];
+  sources: ClusterSetRefinementSource[];
   description: string;
+};
+type ClusterOrigin = {
+  sourceParentClusterId: string;
+  sourceParentClusterTitle: string;
+  sourceParentClusterLabel: number | null;
+  sourceParentClusterIsOutlier: boolean;
+  batchGroupIndex: number;
+  localClusterLabel: number;
 };
 
 const API_BASE = import.meta.env.VITE_SKM_API_BASE_URL ?? "";
@@ -427,7 +452,7 @@ const ERROR_MESSAGES_BY_CODE: Record<string, string> = {
   CLUSTER_SUMMARY_SAMPLE_COUNT_INVALID:
     "Die Beispielanzahl für Zusammenfassungen ist ungültig. Bitte einen Wert ab 1 wählen.",
   CLUSTER_BUDGET_EXCEEDED:
-    "Die Zusammenfassung überschreitet das erlaubte Text- oder Aufruflimit. Bitte weniger Beispiele wählen.",
+    "Die aktuelle Datenmenge, Dimension oder Zusammenfassung überschreitet das Clusterbudget. Bitte Datenmenge, Dimensionen oder Beispiele reduzieren.",
   LLM_CLOUD_CONFIRMATION_REQUIRED:
     "Diese Zusammenfassung würde Originaltexte an OpenAI senden. Bitte Cloud-Nutzung bewusst bestätigen.",
   LLM_PROVIDER_UNAVAILABLE:
@@ -448,6 +473,12 @@ const ERROR_MESSAGES_BY_CODE: Record<string, string> = {
     "Die Cluster-Änderung ist ungültig und wurde nicht gespeichert.",
   CLUSTER_REFINEMENT_EMPTY_SOURCE:
     "Die gewählte Quelle enthält keine nutzbaren Zeilen für eine Verfeinerung.",
+  CLUSTER_ALGORITHM_PARAMETERS_INVALID:
+    "Die Cluster-Parameter passen nicht zum gewählten Algorithmus oder Verfeinerungsmodus.",
+  CLUSTER_BATCH_REFINEMENT_EMPTY_GROUP:
+    "Mindestens ein ausgewählter Parent-Cluster enthält keine nutzbaren Quellen.",
+  CLUSTER_BATCH_REFINEMENT_GROUP_INVALID:
+    "Eine Parent-Gruppe ist für die gewählten Cluster-Parameter zu klein oder ungültig.",
   CLUSTER_SEARCH_NO_RESULTS:
     "Keine Cluster entsprechen der aktuellen Textsuche oder dem Filter.",
   CLUSTER_OUTLIER_EMPTY_RESULT:
@@ -466,6 +497,10 @@ const ERROR_MESSAGES_BY_CODE: Record<string, string> = {
     "cuML/RAPIDS ist in dieser lokalen Laufzeit nicht verfügbar. Bitte CPU-Backend wählen.",
   CLUSTER_SET_LINEAGE_UNAVAILABLE:
     "Die Analyse-Historie ist unvollständig. Bitte Liste neu laden.",
+  CLUSTER_SET_DUPLICATE_UNAVAILABLE:
+    "Das ausgewählte Cluster-Set ist nicht mehr für eine Duplikation verfügbar.",
+  CLUSTER_SET_BATCH_DELETE_FAILED:
+    "Die ausgewählten Cluster-Sets konnten nicht vollständig gelöscht werden.",
   EXPLORER_EXPORT_EMPTY:
     "Im aktuellen Filterstand gibt es keine exportierbaren Zeilen.",
   EXPLORER_EXPORT_FORMAT_INVALID:
@@ -725,6 +760,9 @@ function toClusterSet(clusterSet: ApiClusterSet): ClusterSet {
     createdAt: clusterSet.created_at,
     updatedAt: clusterSet.updated_at,
     clusterCount: clusterSet.cluster_count,
+    activeClusterCount:
+      clusterSet.active_cluster_count ?? clusterSet.cluster_count,
+    activeMessagePairCount: clusterSet.active_message_pair_count ?? 0,
   };
 }
 
@@ -843,7 +881,7 @@ const CLUSTER_SET_PARAMETER_LABELS: Record<string, string> = {
   algorithm: "Algorithmus",
   min_cluster_size: "min_cluster_size",
   min_samples: "min_samples",
-  cluster_selection_epsilon: "cluster_selection_epsilon",
+  cluster_selection_epsilon: "selection_epsilon",
   reduction_method: "Reduktion",
   reduction_dimensions: "Ziel-Dimensionen",
   execution_backend: "Backend",
@@ -853,6 +891,11 @@ const CLUSTER_SET_PARAMETER_LABELS: Record<string, string> = {
   n_clusters: "n_clusters",
   linkage: "Linkage",
   distance_threshold: "distance_threshold",
+  llm_provider: "LLM-Provider",
+  llm_model: "LLM-Modell",
+  llm_sample_strategy: "LLM-Strategie",
+  llm_sample_requested: "LLM-Samples",
+  llm_sample_seed: "LLM-Seed",
 };
 
 const CLUSTER_SET_PARAMETER_ORDER = [
@@ -872,12 +915,50 @@ const CLUSTER_SET_PARAMETER_ORDER = [
   "n_clusters",
   "linkage",
   "distance_threshold",
+  "llm_provider",
+  "llm_model",
+  "llm_sample_strategy",
+  "llm_sample_requested",
+  "llm_sample_seed",
 ];
 
 type ClusterSetParameterEntry = {
   key: string;
   label: string;
   value: string;
+};
+
+type ClusterStatusSummaryEntry = {
+  status: string;
+  label: string;
+  clusterCount: number;
+  messagePairCount: number;
+};
+
+type ExplorerClusterSetSummary = {
+  totalClusters: number;
+  totalMessagePairCount: number;
+  activeClusters: number;
+  activeMessagePairCount: number;
+  rejectedClusters: number;
+  rejectedMessagePairCount: number;
+  statusEntries: ClusterStatusSummaryEntry[];
+};
+
+const CLUSTER_STATUS_ORDER = [
+  "unreviewed",
+  "in_progress",
+  "reviewed",
+  "rejected",
+  "outlier",
+];
+
+const CLUSTER_STATUS_LABELS: Record<string, string> = {
+  unreviewed: "unreviewed",
+  in_progress: "in_progress",
+  reviewed: "reviewed",
+  rejected: "rejected",
+  outlier: "outlier",
 };
 
 function formatClusterSetParameterValue(key: string, value: unknown): string {
@@ -907,6 +988,9 @@ function formatClusterSetParameterValue(key: string, value: unknown): string {
     return value ? "ja" : "nein";
   }
   if (typeof value === "string") {
+    if (key === "llm_sample_requested" && value === "all") {
+      return "alle Beispiele";
+    }
     return value.trim() || "-";
   }
   try {
@@ -926,6 +1010,15 @@ function clusterSetParameterEntries(
     algorithm: clusterSet.algorithm,
     ...clusterSet.parameters,
   };
+  if (clusterSet.llmProvider !== null) {
+    values.llm_provider =
+      clusterSet.llmProviderDisplayName ?? clusterSet.llmProvider;
+    values.llm_model = clusterSet.llmModel ?? "-";
+    values.llm_sample_strategy =
+      clusterSet.llmSampleStrategy.strategy ?? "random";
+    values.llm_sample_requested = clusterSet.llmSampleStrategy.requested ?? "-";
+    values.llm_sample_seed = clusterSet.llmSampleStrategy.seed ?? "-";
+  }
   const keys = [
     ...CLUSTER_SET_PARAMETER_ORDER,
     ...Object.keys(values)
@@ -946,6 +1039,141 @@ function clusterSetParameterEntries(
       label: CLUSTER_SET_PARAMETER_LABELS[key] ?? key,
       value: formatClusterSetParameterValue(key, values[key]),
     }));
+}
+
+function formatClusterStatusLabel(status: string): string {
+  return CLUSTER_STATUS_LABELS[status] ?? status;
+}
+
+function formatClusterAndPairCount(
+  clusterCount: number,
+  messagePairCount: number,
+): string {
+  const clusterLabel = clusterCount === 1 ? "Cluster" : "Cluster";
+  const pairLabel =
+    messagePairCount === 1 ? "Nachrichtenpaar" : "Nachrichtenpaare";
+  return `${clusterCount} ${clusterLabel} / ${messagePairCount} ${pairLabel}`;
+}
+
+function summarizeExplorerClusters(
+  clusters: Cluster[],
+): ExplorerClusterSetSummary {
+  const byStatus = new Map<
+    string,
+    { clusterCount: number; messagePairCount: number }
+  >();
+  let totalMessagePairCount = 0;
+  let activeClusters = 0;
+  let activeMessagePairCount = 0;
+  let rejectedClusters = 0;
+  let rejectedMessagePairCount = 0;
+
+  for (const cluster of clusters) {
+    const status = cluster.effectiveStatus;
+    const messagePairCount = cluster.memberCount;
+    totalMessagePairCount += messagePairCount;
+    const existing = byStatus.get(status) ?? {
+      clusterCount: 0,
+      messagePairCount: 0,
+    };
+    existing.clusterCount += 1;
+    existing.messagePairCount += messagePairCount;
+    byStatus.set(status, existing);
+    if (status === "rejected") {
+      rejectedClusters += 1;
+      rejectedMessagePairCount += messagePairCount;
+    } else {
+      activeClusters += 1;
+      activeMessagePairCount += messagePairCount;
+    }
+  }
+
+  const statusEntries = Array.from(byStatus.entries())
+    .sort(([left], [right]) => {
+      const leftIndex = CLUSTER_STATUS_ORDER.indexOf(left);
+      const rightIndex = CLUSTER_STATUS_ORDER.indexOf(right);
+      if (leftIndex !== -1 || rightIndex !== -1) {
+        return (
+          (leftIndex === -1 ? Number.MAX_SAFE_INTEGER : leftIndex) -
+          (rightIndex === -1 ? Number.MAX_SAFE_INTEGER : rightIndex)
+        );
+      }
+      return left.localeCompare(right, "de");
+    })
+    .map(([status, counts]) => ({
+      status,
+      label: formatClusterStatusLabel(status),
+      clusterCount: counts.clusterCount,
+      messagePairCount: counts.messagePairCount,
+    }));
+
+  return {
+    totalClusters: clusters.length,
+    totalMessagePairCount,
+    activeClusters,
+    activeMessagePairCount,
+    rejectedClusters,
+    rejectedMessagePairCount,
+    statusEntries,
+  };
+}
+
+function metadataObject(value: unknown): Record<string, unknown> | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return null;
+  }
+  return value as Record<string, unknown>;
+}
+
+function clusterOrigin(cluster: Cluster): ClusterOrigin | null {
+  const refinement = metadataObject(cluster.metadata.refinement);
+  if (refinement === null || refinement.mode !== "per_parent") {
+    return null;
+  }
+  const sourceParentClusterId = refinement.source_parent_cluster_id;
+  const sourceParentClusterTitle = refinement.source_parent_cluster_title;
+  const batchGroupIndex = refinement.batch_group_index;
+  const localClusterLabel = refinement.local_cluster_label;
+  if (
+    typeof sourceParentClusterId !== "string" ||
+    typeof sourceParentClusterTitle !== "string" ||
+    typeof batchGroupIndex !== "number" ||
+    !Number.isSafeInteger(batchGroupIndex) ||
+    typeof localClusterLabel !== "number" ||
+    !Number.isSafeInteger(localClusterLabel)
+  ) {
+    return null;
+  }
+  const sourceParentClusterLabel = refinement.source_parent_cluster_label;
+  const sourceParentClusterIsOutlier =
+    refinement.source_parent_cluster_is_outlier;
+  return {
+    sourceParentClusterId,
+    sourceParentClusterTitle,
+    sourceParentClusterLabel:
+      typeof sourceParentClusterLabel === "number" &&
+      Number.isSafeInteger(sourceParentClusterLabel)
+        ? sourceParentClusterLabel
+        : null,
+    sourceParentClusterIsOutlier:
+      typeof sourceParentClusterIsOutlier === "boolean"
+        ? sourceParentClusterIsOutlier
+        : false,
+    batchGroupIndex,
+    localClusterLabel,
+  };
+}
+
+function clusterOriginGroupLabel(origin: ClusterOrigin | null): string {
+  if (origin === null) {
+    return "Parent: nicht gespeichert";
+  }
+  const label =
+    origin.sourceParentClusterLabel === null
+      ? ""
+      : ` · Label ${origin.sourceParentClusterLabel}`;
+  const outlier = origin.sourceParentClusterIsOutlier ? " · Ausreißer" : "";
+  return `Parent: ${origin.sourceParentClusterTitle}${label}${outlier}`;
 }
 
 class ApiRequestError extends Error {
@@ -1120,6 +1348,21 @@ function App() {
     useState<ClusterSetRefinementDraft | null>(null);
   const [clusterSetGenerationRequest, setClusterSetGenerationRequest] =
     useState<ClusterSetGenerationRequest | null>(null);
+  const [selectedClusterSetIds, setSelectedClusterSetIds] = useState<string[]>(
+    [],
+  );
+  const [collapsedClusterSetMetadataIds, setCollapsedClusterSetMetadataIds] =
+    useState<string[]>([]);
+  const [clusterSetBatchDeleteInProgress, setClusterSetBatchDeleteInProgress] =
+    useState(false);
+  const [clusterSetDuplicateRequestId, setClusterSetDuplicateRequestId] =
+    useState<string | null>(null);
+  const [clusterSetDuplicateErrors, setClusterSetDuplicateErrors] = useState<
+    Record<string, string>
+  >({});
+  const [clusterSetFocusId, setClusterSetFocusId] = useState<string | null>(
+    null,
+  );
   const [isLoading, setIsLoading] = useState(false);
   const [projectSettingsError, setProjectSettingsError] = useState<
     string | null
@@ -1150,6 +1393,13 @@ function App() {
     useState(". ");
   const [lowercaseIndexingInput, setLowercaseIndexingInput] = useState(false);
   const [clusterSetVectorBasis, setClusterSetVectorBasis] = useState("message");
+  const [clusterSetAlgorithm, setClusterSetAlgorithm] = useState("hdbscan");
+  const [
+    clusterSetAgglomerativeSplitRule,
+    setClusterSetAgglomerativeSplitRule,
+  ] = useState("n_clusters");
+  const [clusterSetRefinementMode, setClusterSetRefinementMode] =
+    useState("common");
   const [clusterSetReductionMethod, setClusterSetReductionMethod] =
     useState("none");
   const [clusterSetExecutionBackend, setClusterSetExecutionBackend] =
@@ -1183,6 +1433,7 @@ function App() {
   const sourceDialogCloseRef = useRef<HTMLButtonElement | null>(null);
   const sourceDialogTriggerRef = useRef<HTMLElement | null>(null);
   const explorerTableWorkspaceRef = useRef<HTMLDivElement | null>(null);
+  const clusterSetCardRefs = useRef(new Map<string, HTMLElement>());
   const summaryDialogRef = useRef<HTMLElement | null>(null);
   const summaryDialogCloseRef = useRef<HTMLButtonElement | null>(null);
   const summaryDialogTriggerRef = useRef<HTMLElement | null>(null);
@@ -2649,6 +2900,11 @@ function App() {
     const epsilonRaw = String(
       form.get("clusterSelectionEpsilon") ?? "0",
     ).trim();
+    const nClusters = Number.parseInt(String(form.get("nClusters") ?? "2"), 10);
+    const distanceThresholdRaw = String(
+      form.get("distanceThreshold") ?? "",
+    ).trim();
+    const linkage = String(form.get("linkage") ?? "ward");
     const reductionMethod = String(form.get("reductionMethod") ?? "none");
     const executionBackend = String(form.get("executionBackend") ?? "auto");
     const reductionDimensions = Number.parseInt(
@@ -2679,6 +2935,67 @@ function App() {
       );
       return;
     }
+    if (
+      clusterSetAlgorithm === "agglomerative" &&
+      clusterSetAgglomerativeSplitRule === "n_clusters" &&
+      !Number.isFinite(nClusters)
+    ) {
+      showFeedback(
+        "error",
+        ERROR_MESSAGES_BY_CODE.CLUSTER_ALGORITHM_PARAMETERS_INVALID,
+      );
+      return;
+    }
+    const distanceThreshold = Number.parseFloat(distanceThresholdRaw);
+    if (
+      clusterSetAlgorithm === "agglomerative" &&
+      clusterSetAgglomerativeSplitRule === "distance_threshold" &&
+      !Number.isFinite(distanceThreshold)
+    ) {
+      showFeedback(
+        "error",
+        ERROR_MESSAGES_BY_CODE.CLUSTER_ALGORITHM_PARAMETERS_INVALID,
+      );
+      return;
+    }
+    const algorithmSettings =
+      clusterSetAlgorithm === "agglomerative"
+        ? {
+            algorithm: "agglomerative",
+            linkage,
+            ...(clusterSetAgglomerativeSplitRule === "distance_threshold"
+              ? { distance_threshold: distanceThreshold }
+              : { n_clusters: Number.isFinite(nClusters) ? nClusters : 2 }),
+          }
+        : {
+            algorithm: "hdbscan",
+            min_cluster_size: Number.isFinite(minClusterSize)
+              ? minClusterSize
+              : 2,
+            ...(minSamplesRaw
+              ? { min_samples: Number.parseInt(minSamplesRaw, 10) }
+              : {}),
+            cluster_selection_epsilon: epsilonRaw
+              ? Number.parseFloat(epsilonRaw)
+              : 0,
+            reduction_method: reductionMethod,
+            execution_backend: executionBackend,
+            ...(reductionMethod !== "none"
+              ? {
+                  reduction_dimensions: Number.isFinite(reductionDimensions)
+                    ? reductionDimensions
+                    : 10,
+                }
+              : {}),
+            ...(reductionMethod === "umap"
+              ? {
+                  umap_n_neighbors: Number.isFinite(umapNeighbors)
+                    ? umapNeighbors
+                    : 15,
+                  umap_min_dist: Number.isFinite(umapMinDist) ? umapMinDist : 0,
+                }
+              : {}),
+          };
     const request: ClusterSetGenerationRequest = {
       projectId: currentProject.id,
       indexingRunId,
@@ -2700,6 +3017,10 @@ function App() {
               clusterSetRefinementDraft?.parentClusterSetId ?? null,
             derivation_type:
               clusterSetRefinementDraft === null ? "root" : "refinement",
+            refinement_mode:
+              clusterSetRefinementDraft === null
+                ? "common"
+                : clusterSetRefinementMode,
             vector_basis: clusterSetVectorBasis,
             message_weight:
               clusterSetVectorBasis === "combined"
@@ -2709,37 +3030,7 @@ function App() {
               clusterSetVectorBasis === "combined"
                 ? Number(form.get("answerWeight") ?? 0.5)
                 : 0,
-            algorithm_settings: {
-              algorithm: "hdbscan",
-              min_cluster_size: Number.isFinite(minClusterSize)
-                ? minClusterSize
-                : 2,
-              ...(minSamplesRaw
-                ? { min_samples: Number.parseInt(minSamplesRaw, 10) }
-                : {}),
-              cluster_selection_epsilon: epsilonRaw
-                ? Number.parseFloat(epsilonRaw)
-                : 0,
-              reduction_method: reductionMethod,
-              execution_backend: executionBackend,
-              ...(reductionMethod !== "none"
-                ? {
-                    reduction_dimensions: Number.isFinite(reductionDimensions)
-                      ? reductionDimensions
-                      : 10,
-                  }
-                : {}),
-              ...(reductionMethod === "umap"
-                ? {
-                    umap_n_neighbors: Number.isFinite(umapNeighbors)
-                      ? umapNeighbors
-                      : 15,
-                    umap_min_dist: Number.isFinite(umapMinDist)
-                      ? umapMinDist
-                      : 0,
-                  }
-                : {}),
-            },
+            algorithm_settings: algorithmSettings,
             outlier_threshold: outlierThresholdRaw
               ? Number.parseFloat(outlierThresholdRaw)
               : null,
@@ -2760,6 +3051,7 @@ function App() {
         return;
       }
       upsertClusterSet(toClusterSet(created));
+      setClusterSetFocusId(created.id);
       setClusterSetRefinementDraft(null);
       showFeedback(
         "success",
@@ -2959,6 +3251,102 @@ function App() {
     }
   }
 
+  function toggleClusterSetSelection(clusterSetId: string, checked: boolean) {
+    setSelectedClusterSetIds((existing) =>
+      checked
+        ? [...existing.filter((id) => id !== clusterSetId), clusterSetId]
+        : existing.filter((id) => id !== clusterSetId),
+    );
+  }
+
+  async function duplicateClusterSet(clusterSetId: string) {
+    if (session === null || currentProject === null) {
+      return;
+    }
+    setClusterSetDuplicateRequestId(clusterSetId);
+    setClusterSetDuplicateErrors((existing) => {
+      const { [clusterSetId]: _removed, ...remaining } = existing;
+      return remaining;
+    });
+    try {
+      const duplicated = await apiRequest<ApiClusterSet>(
+        `/api/projects/${currentProject.id}/cluster-sets/${clusterSetId}/duplicate`,
+        { method: "POST", token: session.token },
+      );
+      const nextClusterSet = toClusterSet(duplicated);
+      upsertClusterSet(nextClusterSet);
+      setClusterSetFocusId(nextClusterSet.id);
+      setClusterSetDuplicateErrors((existing) => {
+        const { [clusterSetId]: _removed, ...remaining } = existing;
+        return remaining;
+      });
+      showFeedback("success", "Cluster-Set dupliziert.");
+    } catch (error: unknown) {
+      const message = actionErrorMessage(
+        error,
+        "Cluster-Set konnte nicht dupliziert werden.",
+      );
+      setClusterSetDuplicateErrors((existing) => ({
+        ...existing,
+        [clusterSetId]: message,
+      }));
+      showFeedback("error", message);
+    } finally {
+      setClusterSetDuplicateRequestId((activeId) =>
+        activeId === clusterSetId ? null : activeId,
+      );
+    }
+  }
+
+  async function batchDeleteClusterSets() {
+    if (
+      session === null ||
+      currentProject === null ||
+      selectedClusterSetIds.length === 0
+    ) {
+      return;
+    }
+    if (
+      !window.confirm(
+        `${selectedClusterSetIds.length} Cluster-Sets löschen? Die Aktion löscht nur, wenn alle ausgewählten Sets noch verfügbar sind.`,
+      )
+    ) {
+      return;
+    }
+    setClusterSetBatchDeleteInProgress(true);
+    try {
+      const result = await apiRequest<ApiClusterSetBatchDeleteResponse>(
+        `/api/projects/${currentProject.id}/cluster-sets/batch-delete`,
+        {
+          method: "POST",
+          token: session.token,
+          body: JSON.stringify({ cluster_set_ids: selectedClusterSetIds }),
+        },
+      );
+      const deletedIds = new Set(result.deleted_cluster_set_ids);
+      setClusterSets(result.cluster_sets.map(toClusterSet));
+      setSelectedClusterSetIds((existing) =>
+        existing.filter((id) => !deletedIds.has(id)),
+      );
+      if (clusterSetLoadId !== null && deletedIds.has(clusterSetLoadId)) {
+        setClusters([]);
+        resetSourceDialogState();
+        setClusterSetLoadId(null);
+      }
+      showFeedback("success", "Ausgewählte Cluster-Sets gelöscht.");
+    } catch (error: unknown) {
+      showFeedback(
+        "error",
+        actionErrorMessage(
+          error,
+          "Cluster-Sets konnten nicht gelöscht werden.",
+        ),
+      );
+    } finally {
+      setClusterSetBatchDeleteInProgress(false);
+    }
+  }
+
   async function updateCluster(
     event: FormEvent<HTMLFormElement>,
     clusterId: string,
@@ -3125,9 +3513,13 @@ function App() {
     if (loadedClusterSet === null) {
       return;
     }
-    const sourceClusterIds = visibleIncludedClusters.map(
-      (cluster) => cluster.id,
-    );
+    const sourceClusters = visibleIncludedClusters.map((cluster) => ({
+      id: cluster.id,
+      title: cluster.effectiveTitle,
+      label: clusterCategory(cluster),
+      isOutlier: cluster.isOutlier,
+    }));
+    const sourceClusterIds = sourceClusters.map((cluster) => cluster.id);
     if (sourceClusterIds.length === 0) {
       showFeedback(
         "error",
@@ -3137,10 +3529,13 @@ function App() {
     }
     setClusterSetRefinementDraft({
       parentClusterSetId: loadedClusterSet.id,
+      parentClusterSetName: loadedClusterSet.displayName,
       indexingRunId: loadedClusterSet.indexingRunId,
       sourceClusterIds,
+      sources: sourceClusters,
       description: `${sourceClusterIds.length} sichtbare eingeschlossene Cluster aus ${loadedClusterSet.displayName}`,
     });
+    setClusterSetRefinementMode("common");
     setProjectTab("cluster-sets");
     showFeedback(
       "info",
@@ -3157,10 +3552,16 @@ function App() {
         `/api/projects/${currentProject.id}/cluster-sets/${clusterSet.id}/clusters`,
         { token: session.token },
       );
-      const sourceClusterIds = apiClusters
+      const sourceClusters = apiClusters
         .map(toCluster)
         .filter((cluster) => !clusterIsExcluded(cluster))
-        .map((cluster) => cluster.id);
+        .map((cluster) => ({
+          id: cluster.id,
+          title: cluster.effectiveTitle,
+          label: clusterCategory(cluster),
+          isOutlier: cluster.isOutlier,
+        }));
+      const sourceClusterIds = sourceClusters.map((cluster) => cluster.id);
       if (sourceClusterIds.length === 0) {
         showFeedback(
           "error",
@@ -3170,10 +3571,13 @@ function App() {
       }
       setClusterSetRefinementDraft({
         parentClusterSetId: clusterSet.id,
+        parentClusterSetName: clusterSet.displayName,
         indexingRunId: clusterSet.indexingRunId,
         sourceClusterIds,
+        sources: sourceClusters,
         description: `${sourceClusterIds.length} eingeschlossene Cluster aus ${clusterSet.displayName}`,
       });
+      setClusterSetRefinementMode("common");
       setProjectTab("cluster-sets");
       showFeedback(
         "info",
@@ -3572,38 +3976,103 @@ function App() {
     (cluster) => !clusterIsExcluded(cluster),
   );
   const visibleExcludedClusters = visibleClusters.filter(clusterIsExcluded);
-  const includedClusterGroups = clusterGroupByCategory
+  const explorerClusterSummary = summarizeExplorerClusters(clusters);
+  const hasPerParentOriginGrouping = visibleIncludedClusters.some(
+    (cluster) => clusterOrigin(cluster) !== null,
+  );
+  const includedClusterGroups = hasPerParentOriginGrouping
     ? Array.from(
-        visibleIncludedClusters.reduce((groups, cluster) => {
-          const category = clusterCategory(cluster);
-          groups.set(category, [...(groups.get(category) ?? []), cluster]);
-          return groups;
-        }, new Map<string, Cluster[]>()),
+        visibleIncludedClusters
+          .reduce((groups, cluster) => {
+            const origin = clusterOrigin(cluster);
+            const key =
+              origin === null
+                ? "origin-missing"
+                : `origin-${origin.batchGroupIndex}-${origin.sourceParentClusterId}`;
+            const existing = groups.get(key) ?? {
+              key,
+              label: clusterOriginGroupLabel(origin),
+              sortIndex:
+                origin === null
+                  ? Number.MAX_SAFE_INTEGER
+                  : origin.batchGroupIndex,
+              clusters: [] as Cluster[],
+            };
+            existing.clusters.push(cluster);
+            groups.set(key, existing);
+            return groups;
+          }, new Map<string, { key: string; label: string; sortIndex: number; clusters: Cluster[] }>())
+          .values(),
       )
-        .sort(([left], [right]) => left.localeCompare(right))
-        .map(([category, groupClusters]) => ({
-          key: category,
-          label: category,
-          clusters: groupClusters,
-        }))
-    : [
-        {
-          key: "all",
-          label: "Eingeschlossene Cluster",
-          clusters: visibleIncludedClusters,
-        },
-      ];
+        .sort(
+          (left, right) =>
+            left.sortIndex - right.sortIndex ||
+            left.label.localeCompare(right.label),
+        )
+        .map(({ key, label, clusters }) => ({ key, label, clusters }))
+    : clusterGroupByCategory
+      ? Array.from(
+          visibleIncludedClusters.reduce((groups, cluster) => {
+            const category = clusterCategory(cluster);
+            groups.set(category, [...(groups.get(category) ?? []), cluster]);
+            return groups;
+          }, new Map<string, Cluster[]>()),
+        )
+          .sort(([left], [right]) => left.localeCompare(right))
+          .map(([category, groupClusters]) => ({
+            key: category,
+            label: category,
+            clusters: groupClusters,
+          }))
+      : [
+          {
+            key: "all",
+            label: "Eingeschlossene Cluster",
+            clusters: visibleIncludedClusters,
+          },
+        ];
   const rootClusterSets = clusterSets.filter(
     (clusterSet) => clusterSet.parentClusterSetId === null,
-  );
-  const completedClusterSets = clusterSets.filter(
-    (clusterSet) =>
-      clusterSet.status === "completed" && clusterSet.deletedAt === null,
   );
   const childClusterSets = (parentId: string) =>
     clusterSets.filter(
       (clusterSet) => clusterSet.parentClusterSetId === parentId,
     );
+  function clusterSetTreeOptions(
+    clusterSet: ClusterSet,
+    depth = 0,
+  ): { clusterSet: ClusterSet; depth: number }[] {
+    return [
+      { clusterSet, depth },
+      ...childClusterSets(clusterSet.id).flatMap((child) =>
+        clusterSetTreeOptions(child, depth + 1),
+      ),
+    ];
+  }
+  const explorerClusterSetOptions = rootClusterSets
+    .flatMap((root) => clusterSetTreeOptions(root))
+    .filter(
+      ({ clusterSet }) =>
+        clusterSet.status === "completed" && clusterSet.deletedAt === null,
+    );
+  useEffect(() => {
+    const visibleIds = new Set(clusterSets.map((clusterSet) => clusterSet.id));
+    setSelectedClusterSetIds((existing) =>
+      existing.filter((id) => visibleIds.has(id)),
+    );
+  }, [clusterSets]);
+  useEffect(() => {
+    if (clusterSetFocusId === null) {
+      return;
+    }
+    const target = clusterSetCardRefs.current.get(clusterSetFocusId);
+    if (target === undefined) {
+      return;
+    }
+    target.scrollIntoView?.({ block: "center", behavior: "smooth" });
+    target.focus({ preventScroll: true });
+    setClusterSetFocusId(null);
+  }, [clusterSetFocusId, clusterSets]);
   function clusterSetPath(clusterSet: ClusterSet): ClusterSet[] {
     const byId = new Map(clusterSets.map((item) => [item.id, item]));
     const path = [clusterSet];
@@ -4081,16 +4550,41 @@ function App() {
     const hasChildren = children.length > 0;
     const isExpanded = !collapsedClusterSetIds.has(clusterSet.id);
     const childRegionId = `cluster-set-children-${clusterSet.id}`;
+    const metadataRegionId = `cluster-set-metadata-${clusterSet.id}`;
     const isDeletedHistoryNode = clusterSet.deletedAt !== null;
     const parameterEntries = clusterSetParameterEntries(clusterSet);
+    const isSelected = selectedClusterSetIds.includes(clusterSet.id);
+    const isMetadataCollapsed = collapsedClusterSetMetadataIds.includes(
+      clusterSet.id,
+    );
     return (
       <article
-        className="user-card cluster-set-node"
+        className={`user-card cluster-set-node ${isSelected ? "selected" : ""}`}
         key={clusterSet.id}
+        ref={(element) => {
+          if (element === null) {
+            clusterSetCardRefs.current.delete(clusterSet.id);
+            return;
+          }
+          clusterSetCardRefs.current.set(clusterSet.id, element);
+        }}
+        tabIndex={-1}
         style={{ marginLeft: depth === 0 ? 0 : "1rem" }}
       >
         <div className="user-heading cluster-set-heading">
           <div className="cluster-set-title">
+            <label className="inline-checkbox">
+              <input
+                type="checkbox"
+                checked={isSelected}
+                disabled={isDeletedHistoryNode}
+                onChange={(event) =>
+                  toggleClusterSetSelection(clusterSet.id, event.target.checked)
+                }
+                aria-label={`${clusterSet.displayName} auswählen`}
+              />
+              <span className="sr-only">Auswählen</span>
+            </label>
             {hasChildren ? (
               <button
                 type="button"
@@ -4115,46 +4609,68 @@ function App() {
         <progress value={clusterSet.progress} max={100}>
           {clusterSet.progress}%
         </progress>
-        <p className="hint">
-          Phase: {clusterSet.phase}; Basis: {clusterSet.vectorBasis};
-          Algorithmus: {clusterSet.algorithm}; Cluster:{" "}
-          {clusterSet.clusterCount}
-        </p>
-        <dl
-          className="parameter-list parameter-list-compact"
-          aria-label={`Parameter von ${clusterSet.displayName}`}
+        <button
+          type="button"
+          className="secondary metadata-toggle"
+          aria-expanded={!isMetadataCollapsed}
+          aria-controls={metadataRegionId}
+          onClick={() =>
+            setCollapsedClusterSetMetadataIds((existing) =>
+              existing.includes(clusterSet.id)
+                ? existing.filter((id) => id !== clusterSet.id)
+                : [...existing, clusterSet.id],
+            )
+          }
         >
-          {parameterEntries.map((entry) => (
-            <div key={entry.key}>
-              <dt>{entry.label}</dt>
-              <dd>{entry.value}</dd>
-            </div>
-          ))}
-        </dl>
-        <p className="hint">
-          Indizierung: {clusterSet.indexingRunId}; Datensatz:{" "}
-          {clusterSet.datasetDisplayName ?? "-"}
-        </p>
-        {clusterSet.parentClusterSetId !== null && (
-          <p className="hint">Parent: {clusterSet.parentClusterSetId}</p>
-        )}
-        {isDeletedHistoryNode && (
-          <p className="status warning" role="status">
-            Gelöschter Historienknoten. Nicht ladbar, bleibt aber als Parent
-            sichtbar.
+          {isMetadataCollapsed ? "Metadaten anzeigen" : "Metadaten ausblenden"}
+        </button>
+        <div
+          id={metadataRegionId}
+          className="cluster-set-metadata"
+          hidden={isMetadataCollapsed}
+        >
+          <p className="hint">
+            Phase: {clusterSet.phase}; Basis: {clusterSet.vectorBasis};
+            Algorithmus: {clusterSet.algorithm}; Cluster:{" "}
+            {clusterSet.clusterCount}; aktiv: {clusterSet.activeClusterCount};
+            aktive Nachrichtenpaare: {clusterSet.activeMessagePairCount}
           </p>
-        )}
-        {clusterSet.indexingDeletedAt !== null && (
-          <p className="status warning">
-            Basis-Indizierung gelöscht: {clusterSet.indexingDeletedAt}
+          <dl
+            className="parameter-list parameter-list-compact"
+            aria-label={`Parameter von ${clusterSet.displayName}`}
+          >
+            {parameterEntries.map((entry) => (
+              <div key={entry.key}>
+                <dt>{entry.label}</dt>
+                <dd>{entry.value}</dd>
+              </div>
+            ))}
+          </dl>
+          <p className="hint">
+            Indizierung: {clusterSet.indexingRunId}; Datensatz:{" "}
+            {clusterSet.datasetDisplayName ?? "-"}
           </p>
-        )}
-        <p className="hint">
-          LLM:{" "}
-          {clusterSet.llmProvider
-            ? `${clusterSet.llmProviderDisplayName ?? clusterSet.llmProvider}/${clusterSet.llmModel}`
-            : "deaktiviert"}
-        </p>
+          {clusterSet.parentClusterSetId !== null && (
+            <p className="hint">Parent: {clusterSet.parentClusterSetId}</p>
+          )}
+          {isDeletedHistoryNode && (
+            <p className="status warning" role="status">
+              Gelöschter Historienknoten. Nicht ladbar, bleibt aber als Parent
+              sichtbar.
+            </p>
+          )}
+          {clusterSet.indexingDeletedAt !== null && (
+            <p className="status warning">
+              Basis-Indizierung gelöscht: {clusterSet.indexingDeletedAt}
+            </p>
+          )}
+          <p className="hint">
+            LLM:{" "}
+            {clusterSet.llmProvider
+              ? `${clusterSet.llmProviderDisplayName ?? clusterSet.llmProvider}/${clusterSet.llmModel}`
+              : "deaktiviert"}
+          </p>
+        </div>
         {clusterSet.errorCode !== null && (
           <p className="error" role="alert">
             {clusterSet.errorMessage ??
@@ -4193,6 +4709,20 @@ function App() {
             disabled={
               clusterSet.status !== "completed" ||
               isDeletedHistoryNode ||
+              clusterSetDuplicateRequestId === clusterSet.id
+            }
+            onClick={() => void duplicateClusterSet(clusterSet.id)}
+          >
+            {clusterSetDuplicateRequestId === clusterSet.id
+              ? "Duplikat wird erstellt"
+              : "Duplizieren"}
+          </button>
+          <button
+            type="button"
+            className="secondary"
+            disabled={
+              clusterSet.status !== "completed" ||
+              isDeletedHistoryNode ||
               clusterSetSummaryRequestId === clusterSet.id
             }
             onClick={(event) => {
@@ -4224,6 +4754,11 @@ function App() {
             Löschen
           </button>
         </div>
+        {clusterSetDuplicateErrors[clusterSet.id] !== undefined && (
+          <p className="error" role="alert">
+            {clusterSetDuplicateErrors[clusterSet.id]}
+          </p>
+        )}
         {hasChildren && isExpanded && (
           <div
             id={childRegionId}
@@ -5028,7 +5563,10 @@ function App() {
                           </p>
                         )}
                         {indexingRuns.map((run) => (
-                          <article className="user-card" key={run.id}>
+                          <article
+                            className="user-card indexing-card"
+                            key={run.id}
+                          >
                             <div className="user-heading">
                               <strong>{run.status}</strong>
                               <span>{run.progress}%</span>
@@ -5059,7 +5597,7 @@ function App() {
                             {run.errorMessage && (
                               <p className="error">{run.errorMessage}</p>
                             )}
-                            <p className="hint">
+                            <p className="hint diagnostics-text">
                               Diagnose: {JSON.stringify(run.diagnostics)}
                             </p>
                             <div className="form-actions">
@@ -5105,19 +5643,61 @@ function App() {
                       {clusterSetRefinementDraft !== null ? (
                         <section className="status info" role="status">
                           <strong>Verfeinerung vorausgefüllt</strong>
+                          <p>{clusterSetRefinementDraft.description}.</p>
                           <p>
-                            {clusterSetRefinementDraft.description}. Parent:{" "}
+                            <strong>Zu verfeinerndes Cluster-Set:</strong>{" "}
+                            {clusterSetRefinementDraft.parentClusterSetName}
+                          </p>
+                          <p className="hint">
+                            Parent-ID:{" "}
                             {clusterSetRefinementDraft.parentClusterSetId}
                           </p>
+                          <p className="hint">Ausgewählte Cluster:</p>
+                          <ul className="compact-list">
+                            {clusterSetRefinementDraft.sources
+                              .slice(0, 5)
+                              .map((source) => (
+                                <li key={source.id}>
+                                  {source.title} · {source.label}
+                                  {source.isOutlier ? " · Ausreißer" : ""}
+                                </li>
+                              ))}
+                          </ul>
+                          {clusterSetRefinementDraft.sources.length > 5 && (
+                            <p className="hint">
+                              +{clusterSetRefinementDraft.sources.length - 5}{" "}
+                              weitere ausgewählte Parent-Cluster.
+                            </p>
+                          )}
                           <input
                             type="hidden"
                             name="indexingRunId"
                             value={clusterSetRefinementDraft.indexingRunId}
                           />
+                          <label>
+                            Verfeinerungsmodus
+                            <select
+                              name="refinementMode"
+                              value={clusterSetRefinementMode}
+                              onChange={(event) =>
+                                setClusterSetRefinementMode(event.target.value)
+                              }
+                            >
+                              <option value="common">
+                                Gemeinsam neu clustern
+                              </option>
+                              <option value="per_parent">
+                                Separat je Parent-Cluster
+                              </option>
+                            </select>
+                          </label>
                           <button
                             type="button"
                             className="secondary"
-                            onClick={() => setClusterSetRefinementDraft(null)}
+                            onClick={() => {
+                              setClusterSetRefinementDraft(null);
+                              setClusterSetRefinementMode("common");
+                            }}
                           >
                             Verfeinerung zurücksetzen
                           </button>
@@ -5185,108 +5765,186 @@ function App() {
                           </label>
                         </div>
                       )}
-                      <div className="inline-form">
-                        <label>
-                          HDBSCAN min_cluster_size
-                          <input
-                            name="minClusterSize"
-                            type="number"
-                            min="2"
-                            defaultValue="2"
-                          />
-                        </label>
-                        <label>
-                          min_samples optional
-                          <input name="minSamples" type="number" min="1" />
-                        </label>
-                        <label>
-                          selection_epsilon
-                          <input
-                            name="clusterSelectionEpsilon"
-                            type="number"
-                            min="0"
-                            step="0.01"
-                            defaultValue="0"
-                          />
-                        </label>
-                        <label>
-                          Outlier-Schwelle optional
-                          <input
-                            name="outlierThreshold"
-                            type="number"
-                            min="0"
-                            max="1"
-                            step="0.01"
-                          />
-                        </label>
-                      </div>
-                      <div className="inline-form">
-                        <label>
-                          Dimensionsreduzierung
-                          <select
-                            name="reductionMethod"
-                            value={clusterSetReductionMethod}
-                            onChange={(event) =>
-                              setClusterSetReductionMethod(event.target.value)
-                            }
-                          >
-                            <option value="none">Keine</option>
-                            <option value="pca">PCA vor HDBSCAN</option>
-                            <option value="umap">UMAP vor HDBSCAN</option>
-                          </select>
-                        </label>
-                        <label>
-                          Ziel-Dimensionen
-                          <input
-                            name="reductionDimensions"
-                            type="number"
-                            min="2"
-                            max="512"
-                            defaultValue="10"
-                            disabled={clusterSetReductionMethod === "none"}
-                          />
-                        </label>
-                        <label>
-                          Backend
-                          <select
-                            name="executionBackend"
-                            value={clusterSetExecutionBackend}
-                            onChange={(event) =>
-                              setClusterSetExecutionBackend(event.target.value)
-                            }
-                          >
-                            <option value="auto">
-                              Auto (cuML wenn verfügbar)
-                            </option>
-                            <option value="cpu">CPU/sklearn</option>
-                            <option value="cuml">GPU/cuML erzwingen</option>
-                          </select>
-                        </label>
-                      </div>
-                      {clusterSetReductionMethod === "umap" && (
-                        <div className="inline-form">
-                          <label>
-                            UMAP n_neighbors
-                            <input
-                              name="umapNeighbors"
-                              type="number"
-                              min="2"
-                              max="512"
-                              defaultValue="15"
-                            />
-                          </label>
-                          <label>
-                            UMAP min_dist
-                            <input
-                              name="umapMinDist"
-                              type="number"
-                              min="0"
-                              max="0.99"
-                              step="0.01"
-                              defaultValue="0"
-                            />
-                          </label>
-                        </div>
+                      <label>
+                        Algorithmus
+                        <select
+                          name="clusterAlgorithm"
+                          value={clusterSetAlgorithm}
+                          onChange={(event) =>
+                            setClusterSetAlgorithm(event.target.value)
+                          }
+                        >
+                          <option value="hdbscan">HDBSCAN</option>
+                          <option value="agglomerative">Agglomerative</option>
+                        </select>
+                      </label>
+                      {clusterSetAlgorithm === "hdbscan" ? (
+                        <>
+                          <div className="inline-form">
+                            <label>
+                              HDBSCAN min_cluster_size
+                              <input
+                                name="minClusterSize"
+                                type="number"
+                                min="2"
+                                defaultValue="2"
+                              />
+                            </label>
+                            <label>
+                              min_samples optional
+                              <input name="minSamples" type="number" min="1" />
+                            </label>
+                            <label>
+                              selection_epsilon
+                              <input
+                                name="clusterSelectionEpsilon"
+                                type="number"
+                                min="0"
+                                step="0.01"
+                                defaultValue="0"
+                              />
+                            </label>
+                            <label>
+                              Outlier-Schwelle optional
+                              <input
+                                name="outlierThreshold"
+                                type="number"
+                                min="0"
+                                max="1"
+                                step="0.01"
+                              />
+                            </label>
+                          </div>
+                          <div className="inline-form">
+                            <label>
+                              Dimensionsreduzierung
+                              <select
+                                name="reductionMethod"
+                                value={clusterSetReductionMethod}
+                                onChange={(event) =>
+                                  setClusterSetReductionMethod(
+                                    event.target.value,
+                                  )
+                                }
+                              >
+                                <option value="none">Keine</option>
+                                <option value="pca">PCA vor HDBSCAN</option>
+                                <option value="umap">UMAP vor HDBSCAN</option>
+                              </select>
+                            </label>
+                            <label>
+                              Ziel-Dimensionen
+                              <input
+                                name="reductionDimensions"
+                                type="number"
+                                min="2"
+                                max="512"
+                                defaultValue="10"
+                                disabled={clusterSetReductionMethod === "none"}
+                              />
+                            </label>
+                            <label>
+                              Backend
+                              <select
+                                name="executionBackend"
+                                value={clusterSetExecutionBackend}
+                                onChange={(event) =>
+                                  setClusterSetExecutionBackend(
+                                    event.target.value,
+                                  )
+                                }
+                              >
+                                <option value="auto">
+                                  Auto (cuML wenn verfügbar)
+                                </option>
+                                <option value="cpu">CPU/sklearn</option>
+                                <option value="cuml">GPU/cuML erzwingen</option>
+                              </select>
+                            </label>
+                          </div>
+                          {clusterSetReductionMethod === "umap" && (
+                            <div className="inline-form">
+                              <label>
+                                UMAP n_neighbors
+                                <input
+                                  name="umapNeighbors"
+                                  type="number"
+                                  min="2"
+                                  max="512"
+                                  defaultValue="15"
+                                />
+                              </label>
+                              <label>
+                                UMAP min_dist
+                                <input
+                                  name="umapMinDist"
+                                  type="number"
+                                  min="0"
+                                  max="0.99"
+                                  step="0.01"
+                                  defaultValue="0"
+                                />
+                              </label>
+                            </div>
+                          )}
+                        </>
+                      ) : (
+                        <>
+                          <div className="inline-form">
+                            <label>
+                              Agglomerative Schnittregel
+                              <select
+                                name="agglomerativeSplitRule"
+                                value={clusterSetAgglomerativeSplitRule}
+                                onChange={(event) =>
+                                  setClusterSetAgglomerativeSplitRule(
+                                    event.target.value,
+                                  )
+                                }
+                              >
+                                <option value="n_clusters">
+                                  Feste Clusteranzahl
+                                </option>
+                                <option value="distance_threshold">
+                                  Distanzschwelle
+                                </option>
+                              </select>
+                            </label>
+                            {clusterSetAgglomerativeSplitRule ===
+                            "distance_threshold" ? (
+                              <label>
+                                distance_threshold
+                                <input
+                                  name="distanceThreshold"
+                                  type="number"
+                                  min="0"
+                                  step="0.01"
+                                  required
+                                />
+                              </label>
+                            ) : (
+                              <label>
+                                n_clusters
+                                <input
+                                  name="nClusters"
+                                  type="number"
+                                  min="1"
+                                  defaultValue="2"
+                                  required
+                                />
+                              </label>
+                            )}
+                            <label>
+                              Linkage
+                              <select name="linkage" defaultValue="ward">
+                                <option value="ward">ward</option>
+                                <option value="complete">complete</option>
+                                <option value="average">average</option>
+                                <option value="single">single</option>
+                              </select>
+                            </label>
+                          </div>
+                        </>
                       )}
                       <label>
                         LLM-Zusammenfassung
@@ -5395,6 +6053,35 @@ function App() {
 
                     <section className="panel" aria-label="Cluster-Sets">
                       <h2>Gespeicherte Cluster-Sets</h2>
+                      <div
+                        className="batch-toolbar"
+                        aria-label="Cluster-Set Batch-Aktionen"
+                      >
+                        <span>{selectedClusterSetIds.length} ausgewählt</span>
+                        <label className="cluster-set-actions-select">
+                          Aktionen
+                          <select
+                            aria-label="Aktionen"
+                            value=""
+                            disabled={
+                              selectedClusterSetIds.length === 0 ||
+                              clusterSetBatchDeleteInProgress
+                            }
+                            onChange={(event) => {
+                              if (event.target.value === "delete") {
+                                void batchDeleteClusterSets();
+                              }
+                            }}
+                          >
+                            <option value="">
+                              {clusterSetBatchDeleteInProgress
+                                ? "Löschen läuft"
+                                : "Aktion wählen"}
+                            </option>
+                            <option value="delete">Löschen</option>
+                          </select>
+                        </label>
+                      </div>
                       <div className="user-list">
                         {clusterSets.length === 0 && (
                           <p className="hint">
@@ -5420,13 +6107,6 @@ function App() {
                           <p className="eyebrow">Explorer</p>
                           <h2>Cluster Explorer</h2>
                         </div>
-                        <button
-                          type="button"
-                          className="secondary"
-                          onClick={() => setProjectTab("cluster-sets")}
-                        >
-                          Cluster-Set auswählen
-                        </button>
                       </div>
 
                       {loadedClusterSet === null ? (
@@ -5508,14 +6188,17 @@ function App() {
                                       );
                                     }}
                                   >
-                                    {completedClusterSets.map((clusterSet) => (
-                                      <option
-                                        key={clusterSet.id}
-                                        value={clusterSet.id}
-                                      >
-                                        {clusterSet.displayName}
-                                      </option>
-                                    ))}
+                                    {explorerClusterSetOptions.map(
+                                      ({ clusterSet, depth }) => (
+                                        <option
+                                          key={clusterSet.id}
+                                          value={clusterSet.id}
+                                        >
+                                          {"— ".repeat(depth)}
+                                          {clusterSet.displayName}
+                                        </option>
+                                      ),
+                                    )}
                                   </select>
                                 </label>
                                 <button
@@ -5866,6 +6549,62 @@ function App() {
                                   </div>
                                 ))}
                               </dl>
+                              <section
+                                className="cluster-set-summary-block"
+                                aria-label="Cluster-Set Statistik"
+                              >
+                                <span className="field-caption">
+                                  Cluster-Set Statistik
+                                </span>
+                                <dl className="parameter-list parameter-list-compact">
+                                  <div>
+                                    <dt>Gesamt</dt>
+                                    <dd>
+                                      {formatClusterAndPairCount(
+                                        explorerClusterSummary.totalClusters,
+                                        explorerClusterSummary.totalMessagePairCount,
+                                      )}
+                                    </dd>
+                                  </div>
+                                  <div>
+                                    <dt>Nicht rejected</dt>
+                                    <dd>
+                                      {formatClusterAndPairCount(
+                                        explorerClusterSummary.activeClusters,
+                                        explorerClusterSummary.activeMessagePairCount,
+                                      )}
+                                    </dd>
+                                  </div>
+                                  <div>
+                                    <dt>Rejected</dt>
+                                    <dd>
+                                      {formatClusterAndPairCount(
+                                        explorerClusterSummary.rejectedClusters,
+                                        explorerClusterSummary.rejectedMessagePairCount,
+                                      )}
+                                    </dd>
+                                  </div>
+                                  {explorerClusterSummary.statusEntries.map(
+                                    (entry) => (
+                                      <div key={entry.status}>
+                                        <dt>Status: {entry.label}</dt>
+                                        <dd>
+                                          {formatClusterAndPairCount(
+                                            entry.clusterCount,
+                                            entry.messagePairCount,
+                                          )}
+                                        </dd>
+                                      </div>
+                                    ),
+                                  )}
+                                </dl>
+                                {explorerClusterSummary.statusEntries.length ===
+                                  0 && (
+                                  <p className="hint">
+                                    Keine Statuswerte vorhanden.
+                                  </p>
+                                )}
+                              </section>
                             </section>
 
                             {clusters.length > 0 &&
@@ -5913,7 +6652,8 @@ function App() {
                                 <tbody>
                                   {includedClusterGroups.map((group) => (
                                     <Fragment key={group.key}>
-                                      {clusterGroupByCategory && (
+                                      {(clusterGroupByCategory ||
+                                        hasPerParentOriginGrouping) && (
                                         <tr className="group-row">
                                           <td colSpan={9}>{group.label}</td>
                                         </tr>

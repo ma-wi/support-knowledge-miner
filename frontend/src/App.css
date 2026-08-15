@@ -79,6 +79,18 @@ button:focus-visible {
   outline-offset: 3px;
 }
 
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 button:disabled {
   cursor: not-allowed;
   opacity: 0.5;
@@ -628,6 +640,11 @@ h2 {
   margin-top: 1rem;
 }
 
+.compact-list {
+  margin: 0.5rem 0;
+  padding-left: 1.25rem;
+}
+
 .user-card {
   display: grid;
   gap: 0.8rem;
@@ -850,6 +867,63 @@ h2 {
   border-radius: 16px;
   padding: 1rem;
   background: var(--panel-strong);
+  min-width: 0;
+}
+
+.metric-grid > div {
+  display: grid;
+  align-content: start;
+  gap: 0.25rem;
+}
+
+.cluster-set-node.selected {
+  border-color: var(--line-strong);
+  box-shadow: 0 0 0 3px rgba(8, 145, 178, 0.12);
+}
+
+.cluster-set-node:focus {
+  outline: 3px solid rgba(8, 145, 178, 0.35);
+  outline-offset: 3px;
+}
+
+.inline-checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.batch-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin: 1rem 0;
+  padding: 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--panel-strong);
+}
+
+.cluster-set-actions-select {
+  display: inline-grid;
+  gap: 0.35rem;
+  min-width: 11rem;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.cluster-set-actions-select select {
+  text-transform: none;
+}
+
+.cluster-set-summary-block {
+  display: grid;
+  gap: 0.25rem;
+  margin-top: 1rem;
 }
 
 .parameter-list {
@@ -867,6 +941,7 @@ h2 {
   display: grid;
   gap: 0.15rem;
   min-width: 0;
+  max-width: 100%;
 }
 
 .parameter-list dt {
@@ -875,6 +950,7 @@ h2 {
   font-weight: 800;
   letter-spacing: 0.05em;
   text-transform: uppercase;
+  overflow-wrap: anywhere;
 }
 
 .parameter-list dd {
@@ -895,6 +971,34 @@ h2 {
   gap: 0.55rem;
   align-items: center;
   min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.metadata-toggle {
+  margin-top: 0.65rem;
+}
+
+.cluster-set-metadata {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.cluster-set-node progress,
+.indexing-card progress {
+  width: 100%;
+  max-width: 100%;
+}
+
+.indexing-card {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.diagnostics-text {
+  max-width: 100%;
+  overflow: auto;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
 }
 
 .tree-toggle {

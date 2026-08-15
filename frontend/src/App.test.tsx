@@ -206,6 +206,8 @@ const clusterSet = {
   created_at: "2026-07-22T00:00:00Z",
   updated_at: "2026-07-22T00:00:00Z",
   cluster_count: 0,
+  active_cluster_count: 0,
+  active_message_pair_count: 0,
 };
 const updatedCluster = {
   ...cluster,
@@ -2244,9 +2246,24 @@ test("configures providers and starts a project indexing run", async () => {
     within(clusterSets).getByRole("button", { name: "Cluster verfeinern" }),
   ).toBeEnabled();
   expect(within(clusterSets).getByText("min_samples")).toBeInTheDocument();
+  expect(
+    within(clusterSets).getByText("selection_epsilon"),
+  ).toBeInTheDocument();
+  expect(
+    within(clusterSets).queryByText("cluster_selection_epsilon"),
+  ).not.toBeInTheDocument();
   expect(within(clusterSets).getByText("Ziel-Dimensionen")).toBeInTheDocument();
   expect(within(clusterSets).getByText("100")).toBeInTheDocument();
   expect(within(clusterSets).getByText("UMAP n_neighbors")).toBeInTheDocument();
+  expect(within(clusterSets).getByText("LLM-Provider")).toBeInTheDocument();
+  expect(within(clusterSets).getByText("LLM-Modell")).toBeInTheDocument();
+  expect(within(clusterSets).getByText("LLM-Strategie")).toBeInTheDocument();
+  expect(within(clusterSets).getByText("LLM-Samples")).toBeInTheDocument();
+  expect(within(clusterSets).getByText("LLM-Seed")).toBeInTheDocument();
+  expect(within(clusterSets).getAllByText("Ollama").length).toBeGreaterThan(0);
+  expect(within(clusterSets).getAllByText("llama3.1").length).toBeGreaterThan(
+    0,
+  );
   expect(
     within(clusterSets).getAllByText("nicht aktiv").length,
   ).toBeGreaterThan(0);
@@ -2259,6 +2276,15 @@ test("configures providers and starts a project indexing run", async () => {
   expect(
     within(directRefinementForm).getByText("Verfeinerung vorausgefüllt"),
   ).toBeInTheDocument();
+  expect(
+    within(directRefinementForm).getByText("Zu verfeinerndes Cluster-Set:"),
+  ).toBeVisible();
+  expect(
+    within(directRefinementForm).getAllByText("Antworten fein").length,
+  ).toBeGreaterThan(0);
+  expect(
+    within(directRefinementForm).getByText("Cluster H · hdbscan"),
+  ).toBeVisible();
   expect(
     within(directRefinementForm).getByText(/1 eingeschlossene Cluster/),
   ).toBeInTheDocument();
@@ -2289,9 +2315,22 @@ test("configures providers and starts a project indexing run", async () => {
   expect(within(explorerParameters).getByText("min_samples")).toBeVisible();
   expect(within(explorerParameters).getByText("12")).toBeVisible();
   expect(
+    within(explorerParameters).getByText("selection_epsilon"),
+  ).toBeVisible();
+  expect(
+    within(explorerParameters).queryByText("cluster_selection_epsilon"),
+  ).not.toBeInTheDocument();
+  expect(
     within(explorerParameters).getByText("Ziel-Dimensionen"),
   ).toBeVisible();
   expect(within(explorerParameters).getByText("100")).toBeVisible();
+  expect(within(explorerParameters).getByText("LLM-Provider")).toBeVisible();
+  expect(within(explorerParameters).getByText("LLM-Modell")).toBeVisible();
+  expect(within(explorerParameters).getByText("LLM-Strategie")).toBeVisible();
+  expect(within(explorerParameters).getByText("LLM-Samples")).toBeVisible();
+  expect(within(explorerParameters).getByText("LLM-Seed")).toBeVisible();
+  expect(within(explorerParameters).getByText("Ollama")).toBeVisible();
+  expect(within(explorerParameters).getByText("llama3.1")).toBeVisible();
 
   const searchInput = within(clusterExplorer).getByPlaceholderText(
     "Titel, Kategorie, Summary oder Status",
@@ -2419,6 +2458,15 @@ test("configures providers and starts a project indexing run", async () => {
   expect(
     within(refinementForm).getByText("Verfeinerung vorausgefüllt"),
   ).toBeInTheDocument();
+  expect(
+    within(refinementForm).getByText("Zu verfeinerndes Cluster-Set:"),
+  ).toBeVisible();
+  expect(
+    within(refinementForm).getAllByText("Antworten fein").length,
+  ).toBeGreaterThan(0);
+  expect(
+    within(refinementForm).getByText("Reset workflow · Account"),
+  ).toBeVisible();
   expect(
     within(refinementForm).getByText(/1 sichtbare eingeschlossene Cluster/),
   ).toBeInTheDocument();
@@ -2635,6 +2683,105 @@ test("supports Explorer rail collapse and scroll-to-top controls", async () => {
       value: originalWindowScrollTo,
     });
   }
+});
+
+test("shows Explorer cluster and message-pair statistics by status", async () => {
+  const user = userEvent.setup();
+  const reviewedCluster = {
+    ...cluster,
+    id: "cluster-reviewed",
+    auto_title: "Reviewed",
+    effective_title: "Reviewed",
+    auto_status: "reviewed",
+    effective_status: "reviewed",
+    member_count: 3,
+  };
+  const rejectedCluster = {
+    ...cluster,
+    id: "cluster-rejected",
+    auto_title: "Rejected",
+    effective_title: "Rejected",
+    auto_status: "rejected",
+    effective_status: "rejected",
+    member_count: 1,
+  };
+  const inProgressCluster = {
+    ...cluster,
+    id: "cluster-in-progress",
+    auto_title: "In Bearbeitung",
+    effective_title: "In Bearbeitung",
+    auto_status: "in_progress",
+    effective_status: "in_progress",
+    member_count: 2,
+  };
+  mockProjectFetch((path, method) => {
+    if (
+      path === "/api/projects/project-alpha/cluster-sets" &&
+      method === "GET"
+    ) {
+      return jsonResponse([
+        {
+          ...clusterSet,
+          status: "completed",
+          progress: 100,
+          phase: "completed",
+        },
+      ]);
+    }
+    if (
+      path ===
+        "/api/projects/project-alpha/cluster-sets/cluster-set-1/clusters" &&
+      method === "GET"
+    ) {
+      return jsonResponse([
+        reviewedCluster,
+        rejectedCluster,
+        inProgressCluster,
+      ]);
+    }
+    return undefined;
+  });
+  render(<App />);
+
+  await signIn(user);
+  const projectList = await screen.findByRole("region", {
+    name: "Bestehende Projekte",
+  });
+  await user.click(getProjectRow(projectList, "Alpha"));
+  await openProjectTab(user, "Cluster-Sets");
+  const clusterSets = await screen.findByRole("region", {
+    name: "Cluster-Sets",
+  });
+  await user.click(
+    within(clusterSets).getByRole("button", { name: "Im Explorer laden" }),
+  );
+
+  const clusterExplorer = await screen.findByRole("region", {
+    name: "Cluster Explorer",
+  });
+  expect(
+    within(clusterExplorer).queryByRole("button", {
+      name: "Cluster-Set auswählen",
+    }),
+  ).not.toBeInTheDocument();
+  const statistics = await within(clusterExplorer).findByRole("region", {
+    name: "Cluster-Set Statistik",
+  });
+  expect(within(statistics).getByText("Gesamt")).toBeVisible();
+  expect(
+    within(statistics).getByText("3 Cluster / 6 Nachrichtenpaare"),
+  ).toBeVisible();
+  expect(within(statistics).getByText("Nicht rejected")).toBeVisible();
+  expect(
+    within(statistics).getByText("2 Cluster / 5 Nachrichtenpaare"),
+  ).toBeVisible();
+  expect(within(statistics).getByText("Rejected")).toBeVisible();
+  expect(
+    within(statistics).getAllByText("1 Cluster / 1 Nachrichtenpaar").length,
+  ).toBeGreaterThan(0);
+  expect(within(statistics).getByText("Status: reviewed")).toBeVisible();
+  expect(within(statistics).getByText("Status: rejected")).toBeVisible();
+  expect(within(statistics).getByText("Status: in_progress")).toBeVisible();
 });
 
 test("sorts Explorer cluster table with tri-state accessible headers", async () => {
@@ -3302,6 +3449,791 @@ test("lets analysts collapse and reopen Cluster-Set tree branches", async () => 
   ).toBeVisible();
 });
 
+test("lets analysts collapse and reopen Cluster-Set metadata without hiding actions", async () => {
+  const user = userEvent.setup();
+  mockProjectFetch((path, method) => {
+    if (
+      path === "/api/projects/project-alpha/indexing-runs" &&
+      method === "GET"
+    ) {
+      return jsonResponse([completedAnalysisRun]);
+    }
+    if (
+      path === "/api/projects/project-alpha/cluster-sets" &&
+      method === "GET"
+    ) {
+      return jsonResponse([
+        {
+          ...clusterSet,
+          status: "completed",
+          progress: 100,
+          phase: "completed",
+          cluster_count: 2,
+          llm_sample_strategy: {
+            strategy: "random",
+            requested: "all",
+            seed: 7,
+          },
+        },
+      ]);
+    }
+    return undefined;
+  });
+  render(<App />);
+
+  await signIn(user);
+  const projectList = await screen.findByRole("region", {
+    name: "Bestehende Projekte",
+  });
+  await user.click(getProjectRow(projectList, "Alpha"));
+  await openProjectTab(user, "Cluster-Sets");
+
+  const clusterSets = await screen.findByRole("region", {
+    name: "Cluster-Sets",
+  });
+  const metadataToggle = within(clusterSets).getByRole("button", {
+    name: "Metadaten ausblenden",
+  });
+  expect(metadataToggle).toHaveAttribute("aria-expanded", "true");
+  expect(within(clusterSets).getByText("selection_epsilon")).toBeVisible();
+  expect(within(clusterSets).getByText("alle Beispiele")).toBeVisible();
+  expect(
+    within(clusterSets).getByRole("button", { name: "Im Explorer laden" }),
+  ).toBeVisible();
+
+  await user.click(metadataToggle);
+  expect(metadataToggle).toHaveAttribute("aria-expanded", "false");
+  expect(metadataToggle).toHaveTextContent("Metadaten anzeigen");
+  expect(within(clusterSets).getByText("selection_epsilon")).not.toBeVisible();
+  expect(within(clusterSets).getByText("alle Beispiele")).not.toBeVisible();
+  expect(
+    within(clusterSets).getByRole("button", { name: "Im Explorer laden" }),
+  ).toBeVisible();
+
+  await user.click(metadataToggle);
+  expect(within(clusterSets).getByText("selection_epsilon")).toBeVisible();
+});
+
+test("shows completed Explorer Cluster-Set options as a tree", async () => {
+  const user = userEvent.setup();
+  mockProjectFetch((path, method) => {
+    if (
+      path === "/api/projects/project-alpha/indexing-runs" &&
+      method === "GET"
+    ) {
+      return jsonResponse([completedAnalysisRun]);
+    }
+    if (
+      path === "/api/projects/project-alpha/cluster-sets" &&
+      method === "GET"
+    ) {
+      return jsonResponse([
+        {
+          ...clusterSet,
+          status: "completed",
+          progress: 100,
+          phase: "completed",
+          cluster_count: 2,
+        },
+        {
+          ...clusterSet,
+          id: "cluster-set-child-1",
+          parent_cluster_set_id: "cluster-set-1",
+          display_name: "Antworten fein — Retouren",
+          status: "completed",
+          derivation_type: "refinement",
+          vector_basis: "answer",
+          cluster_count: 1,
+        },
+        {
+          ...clusterSet,
+          id: "cluster-set-grandchild-1",
+          parent_cluster_set_id: "cluster-set-child-1",
+          display_name: "Antworten fein — Retouren — Login",
+          status: "completed",
+          derivation_type: "refinement",
+          vector_basis: "message",
+          cluster_count: 1,
+        },
+      ]);
+    }
+    if (
+      path ===
+        "/api/projects/project-alpha/cluster-sets/cluster-set-1/clusters" &&
+      method === "GET"
+    ) {
+      return jsonResponse([cluster]);
+    }
+    return undefined;
+  });
+  render(<App />);
+
+  await signIn(user);
+  const projectList = await screen.findByRole("region", {
+    name: "Bestehende Projekte",
+  });
+  await user.click(getProjectRow(projectList, "Alpha"));
+  await openProjectTab(user, "Cluster-Sets");
+
+  const clusterSets = await screen.findByRole("region", {
+    name: "Cluster-Sets",
+  });
+  await user.click(
+    within(clusterSets).getAllByRole("button", {
+      name: "Im Explorer laden",
+    })[0],
+  );
+
+  const clusterExplorer = await screen.findByRole("region", {
+    name: "Cluster Explorer",
+  });
+  const setSelector = within(clusterExplorer).getByLabelText("Geladenes Set");
+  const labels = Array.from((setSelector as HTMLSelectElement).options).map(
+    (option) => option.textContent,
+  );
+  expect(labels).toEqual([
+    "Antworten fein",
+    "— Antworten fein — Retouren",
+    "— — Antworten fein — Retouren — Login",
+  ]);
+});
+
+test("shows active Cluster-Set counts and focuses a duplicated Cluster-Set", async () => {
+  const user = userEvent.setup();
+  const scrollIntoView = vi.fn();
+  Object.defineProperty(window.HTMLElement.prototype, "scrollIntoView", {
+    configurable: true,
+    value: scrollIntoView,
+  });
+  mockProjectFetch((path, method) => {
+    if (
+      path === "/api/projects/project-alpha/indexing-runs" &&
+      method === "GET"
+    ) {
+      return jsonResponse([completedAnalysisRun]);
+    }
+    if (
+      path === "/api/projects/project-alpha/cluster-sets" &&
+      method === "GET"
+    ) {
+      return jsonResponse([
+        {
+          ...clusterSet,
+          status: "completed",
+          progress: 100,
+          phase: "completed",
+          cluster_count: 3,
+          active_cluster_count: 2,
+          active_message_pair_count: 5,
+        },
+      ]);
+    }
+    if (
+      path ===
+        "/api/projects/project-alpha/cluster-sets/cluster-set-1/duplicate" &&
+      method === "POST"
+    ) {
+      return jsonResponse(
+        {
+          ...clusterSet,
+          id: "cluster-set-copy",
+          display_name: "Antworten fein (Kopie)",
+          status: "completed",
+          progress: 100,
+          phase: "completed",
+          cluster_count: 3,
+          active_cluster_count: 2,
+          active_message_pair_count: 5,
+        },
+        { status: 201 },
+      );
+    }
+    return undefined;
+  });
+  render(<App />);
+
+  await signIn(user);
+  const projectList = await screen.findByRole("region", {
+    name: "Bestehende Projekte",
+  });
+  await user.click(getProjectRow(projectList, "Alpha"));
+  await openProjectTab(user, "Cluster-Sets");
+
+  const clusterSets = await screen.findByRole("region", {
+    name: "Cluster-Sets",
+  });
+  expect(
+    within(clusterSets).getByText(
+      /Cluster: 3; aktiv: 2; aktive Nachrichtenpaare: 5/,
+    ),
+  ).toBeVisible();
+  await user.click(
+    within(clusterSets).getByRole("button", { name: "Duplizieren" }),
+  );
+
+  expect(
+    await screen.findByText("Cluster-Set dupliziert."),
+  ).toBeInTheDocument();
+  const duplicatedTitle = within(clusterSets).getByText(
+    "Antworten fein (Kopie)",
+  );
+  const duplicatedCard = duplicatedTitle.closest("article");
+  expect(duplicatedCard).not.toBeNull();
+  await waitFor(() => expect(scrollIntoView).toHaveBeenCalled());
+  expect(document.activeElement).toBe(duplicatedCard);
+});
+
+test("disables duplication for a running Cluster-Set", async () => {
+  const user = userEvent.setup();
+  mockProjectFetch((path, method) => {
+    if (
+      path === "/api/projects/project-alpha/indexing-runs" &&
+      method === "GET"
+    ) {
+      return jsonResponse([completedAnalysisRun]);
+    }
+    if (
+      path === "/api/projects/project-alpha/cluster-sets" &&
+      method === "GET"
+    ) {
+      return jsonResponse([
+        {
+          ...clusterSet,
+          status: "running",
+          progress: 50,
+          phase: "clustering",
+        },
+      ]);
+    }
+    return undefined;
+  });
+  render(<App />);
+
+  await signIn(user);
+  const projectList = await screen.findByRole("region", {
+    name: "Bestehende Projekte",
+  });
+  await user.click(getProjectRow(projectList, "Alpha"));
+  await openProjectTab(user, "Cluster-Sets");
+
+  const clusterSets = await screen.findByRole("region", {
+    name: "Cluster-Sets",
+  });
+  expect(
+    within(clusterSets).getByRole("button", { name: "Duplizieren" }),
+  ).toBeDisabled();
+});
+
+test("batch deletes selected Cluster-Sets and refreshes the overview", async () => {
+  const user = userEvent.setup();
+  const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+  mockProjectFetch((path, method, init) => {
+    if (
+      path === "/api/projects/project-alpha/indexing-runs" &&
+      method === "GET"
+    ) {
+      return jsonResponse([completedAnalysisRun]);
+    }
+    if (
+      path === "/api/projects/project-alpha/cluster-sets" &&
+      method === "GET"
+    ) {
+      return jsonResponse([
+        {
+          ...clusterSet,
+          status: "completed",
+          progress: 100,
+          phase: "completed",
+        },
+        {
+          ...clusterSet,
+          id: "cluster-set-2",
+          display_name: "Antworten grob",
+          status: "completed",
+          progress: 100,
+          phase: "completed",
+        },
+      ]);
+    }
+    if (
+      path === "/api/projects/project-alpha/cluster-sets/batch-delete" &&
+      method === "POST"
+    ) {
+      expect(JSON.parse(String(init?.body))).toEqual({
+        cluster_set_ids: ["cluster-set-1", "cluster-set-2"],
+      });
+      return jsonResponse({
+        deleted_cluster_set_ids: ["cluster-set-1", "cluster-set-2"],
+        cluster_sets: [],
+      });
+    }
+    return undefined;
+  });
+  render(<App />);
+
+  await signIn(user);
+  const projectList = await screen.findByRole("region", {
+    name: "Bestehende Projekte",
+  });
+  await user.click(getProjectRow(projectList, "Alpha"));
+  await openProjectTab(user, "Cluster-Sets");
+
+  const clusterSets = await screen.findByRole("region", {
+    name: "Cluster-Sets",
+  });
+  await user.click(
+    within(clusterSets).getByLabelText("Antworten fein auswählen"),
+  );
+  await user.click(
+    within(clusterSets).getByLabelText("Antworten grob auswählen"),
+  );
+  expect(within(clusterSets).getByText("2 ausgewählt")).toBeVisible();
+  await user.selectOptions(
+    within(clusterSets).getByRole("combobox", { name: "Aktionen" }),
+    "delete",
+  );
+
+  await screen.findByText("Ausgewählte Cluster-Sets gelöscht.");
+  expect(confirm).toHaveBeenCalledWith(
+    "2 Cluster-Sets löschen? Die Aktion löscht nur, wenn alle ausgewählten Sets noch verfügbar sind.",
+  );
+  expect(within(clusterSets).getByText("0 ausgewählt")).toBeVisible();
+  expect(
+    within(clusterSets).queryByText("Antworten fein"),
+  ).not.toBeInTheDocument();
+  expect(
+    within(clusterSets).queryByText("Antworten grob"),
+  ).not.toBeInTheDocument();
+});
+
+test("preserves Cluster-Set selection when batch delete fails", async () => {
+  const user = userEvent.setup();
+  vi.spyOn(window, "confirm").mockReturnValue(true);
+  mockProjectFetch((path, method) => {
+    if (
+      path === "/api/projects/project-alpha/indexing-runs" &&
+      method === "GET"
+    ) {
+      return jsonResponse([completedAnalysisRun]);
+    }
+    if (
+      path === "/api/projects/project-alpha/cluster-sets" &&
+      method === "GET"
+    ) {
+      return jsonResponse([
+        {
+          ...clusterSet,
+          status: "completed",
+          progress: 100,
+          phase: "completed",
+        },
+      ]);
+    }
+    if (
+      path === "/api/projects/project-alpha/cluster-sets/batch-delete" &&
+      method === "POST"
+    ) {
+      return jsonResponse(
+        {
+          type: "urn:skm:error:CLUSTER_SET_BATCH_DELETE_FAILED",
+          title: "Cluster-Sets konnten nicht gelöscht werden.",
+          status: 409,
+          detail:
+            "Die ausgewählten Cluster-Sets konnten nicht vollständig gelöscht werden.",
+          code: "CLUSTER_SET_BATCH_DELETE_FAILED",
+          correlationId: null,
+          retryable: true,
+          suggestedAction: "reload",
+          fieldErrors: [],
+        },
+        { status: 409 },
+      );
+    }
+    return undefined;
+  });
+  render(<App />);
+
+  await signIn(user);
+  const projectList = await screen.findByRole("region", {
+    name: "Bestehende Projekte",
+  });
+  await user.click(getProjectRow(projectList, "Alpha"));
+  await openProjectTab(user, "Cluster-Sets");
+
+  const clusterSets = await screen.findByRole("region", {
+    name: "Cluster-Sets",
+  });
+  const checkbox = within(clusterSets).getByLabelText(
+    "Antworten fein auswählen",
+  );
+  await user.click(checkbox);
+  await user.selectOptions(
+    within(clusterSets).getByRole("combobox", { name: "Aktionen" }),
+    "delete",
+  );
+
+  expect(
+    await screen.findByText(
+      "Die ausgewählten Cluster-Sets konnten nicht vollständig gelöscht werden.",
+    ),
+  ).toBeInTheDocument();
+  expect(checkbox).toBeChecked();
+  expect(
+    screen.queryByText("Ausgewählte Cluster-Sets gelöscht."),
+  ).not.toBeInTheDocument();
+});
+
+test("shows duplicate failures on the Cluster-Set card and preserves selection", async () => {
+  const user = userEvent.setup();
+  mockProjectFetch((path, method) => {
+    if (
+      path === "/api/projects/project-alpha/indexing-runs" &&
+      method === "GET"
+    ) {
+      return jsonResponse([completedAnalysisRun]);
+    }
+    if (
+      path === "/api/projects/project-alpha/cluster-sets" &&
+      method === "GET"
+    ) {
+      return jsonResponse([
+        {
+          ...clusterSet,
+          status: "completed",
+          progress: 100,
+          phase: "completed",
+        },
+      ]);
+    }
+    if (
+      path ===
+        "/api/projects/project-alpha/cluster-sets/cluster-set-1/duplicate" &&
+      method === "POST"
+    ) {
+      return jsonResponse(
+        {
+          type: "urn:skm:error:CLUSTER_SET_DUPLICATE_UNAVAILABLE",
+          title: "Das Cluster-Set kann nicht dupliziert werden.",
+          status: 409,
+          detail:
+            "Das ausgewählte Cluster-Set ist nicht mehr für eine Duplikation verfügbar.",
+          code: "CLUSTER_SET_DUPLICATE_UNAVAILABLE",
+          correlationId: null,
+          retryable: true,
+          suggestedAction: "reload",
+          fieldErrors: [],
+        },
+        { status: 409 },
+      );
+    }
+    return undefined;
+  });
+  render(<App />);
+
+  await signIn(user);
+  const projectList = await screen.findByRole("region", {
+    name: "Bestehende Projekte",
+  });
+  await user.click(getProjectRow(projectList, "Alpha"));
+  await openProjectTab(user, "Cluster-Sets");
+
+  const clusterSets = await screen.findByRole("region", {
+    name: "Cluster-Sets",
+  });
+  const checkbox = within(clusterSets).getByLabelText(
+    "Antworten fein auswählen",
+  );
+  await user.click(checkbox);
+  await user.click(
+    within(clusterSets).getByRole("button", { name: "Duplizieren" }),
+  );
+
+  const card = within(clusterSets)
+    .getByText("Antworten fein")
+    .closest("article");
+  expect(card).not.toBeNull();
+  expect(
+    await within(card as HTMLElement).findByRole("alert"),
+  ).toHaveTextContent(
+    "Das ausgewählte Cluster-Set ist nicht mehr für eine Duplikation verfügbar.",
+  );
+  expect(checkbox).toBeChecked();
+  expect(screen.queryByText("Cluster-Set dupliziert.")).not.toBeInTheDocument();
+});
+
+test("uses the safe fallback for unknown duplicate failure codes", async () => {
+  const user = userEvent.setup();
+  mockProjectFetch((path, method) => {
+    if (
+      path === "/api/projects/project-alpha/indexing-runs" &&
+      method === "GET"
+    ) {
+      return jsonResponse([completedAnalysisRun]);
+    }
+    if (
+      path === "/api/projects/project-alpha/cluster-sets" &&
+      method === "GET"
+    ) {
+      return jsonResponse([
+        {
+          ...clusterSet,
+          status: "completed",
+          progress: 100,
+          phase: "completed",
+        },
+      ]);
+    }
+    if (
+      path ===
+        "/api/projects/project-alpha/cluster-sets/cluster-set-1/duplicate" &&
+      method === "POST"
+    ) {
+      return jsonResponse(
+        {
+          type: "urn:skm:error:NEW_CLUSTER_DUPLICATE_FAILURE",
+          title: "Internal duplicate detail",
+          status: 500,
+          detail: "Internal duplicate detail",
+          code: "NEW_CLUSTER_DUPLICATE_FAILURE",
+          correlationId: null,
+          retryable: true,
+          suggestedAction: "retry",
+          fieldErrors: [],
+        },
+        { status: 500 },
+      );
+    }
+    return undefined;
+  });
+  render(<App />);
+
+  await signIn(user);
+  const projectList = await screen.findByRole("region", {
+    name: "Bestehende Projekte",
+  });
+  await user.click(getProjectRow(projectList, "Alpha"));
+  await openProjectTab(user, "Cluster-Sets");
+
+  const clusterSets = await screen.findByRole("region", {
+    name: "Cluster-Sets",
+  });
+  await user.click(
+    within(clusterSets).getByRole("button", { name: "Duplizieren" }),
+  );
+
+  const card = within(clusterSets)
+    .getByText("Antworten fein")
+    .closest("article");
+  expect(card).not.toBeNull();
+  expect(
+    await within(card as HTMLElement).findByRole("alert"),
+  ).toHaveTextContent(
+    "Die Aktion konnte nicht abgeschlossen werden. Bitte erneut versuchen oder den aktuellen Stand neu laden.",
+  );
+  expect(
+    screen.queryByText("Internal duplicate detail"),
+  ).not.toBeInTheDocument();
+  expect(screen.queryByText("Cluster-Set dupliziert.")).not.toBeInTheDocument();
+});
+
+test("creates a per-parent refinement with visible parent cluster context", async () => {
+  const user = userEvent.setup();
+  let receivedBody: Record<string, unknown> | null = null;
+  const parentClusters = [
+    {
+      ...cluster,
+      id: "cluster-parent-a",
+      auto_title: "Retouren",
+      effective_title: "Retouren",
+      auto_category: "Logistik",
+      effective_category: "Logistik",
+    },
+    {
+      ...cluster,
+      id: "cluster-parent-b",
+      auto_title: "Zahlungen",
+      effective_title: "Zahlungen",
+      auto_category: "Billing",
+      effective_category: "Billing",
+    },
+  ];
+  mockProjectFetch((path, method, init) => {
+    if (
+      path === "/api/projects/project-alpha/indexing-runs" &&
+      method === "GET"
+    ) {
+      return jsonResponse([completedAnalysisRun]);
+    }
+    if (
+      path === "/api/projects/project-alpha/cluster-sets" &&
+      method === "GET"
+    ) {
+      return jsonResponse([
+        {
+          ...clusterSet,
+          status: "completed",
+          progress: 100,
+          phase: "completed",
+          cluster_count: 2,
+        },
+      ]);
+    }
+    if (
+      path ===
+        "/api/projects/project-alpha/cluster-sets/cluster-set-1/clusters" &&
+      method === "GET"
+    ) {
+      return jsonResponse(parentClusters);
+    }
+    if (
+      path === "/api/projects/project-alpha/cluster-sets" &&
+      method === "POST"
+    ) {
+      receivedBody = JSON.parse(String(init?.body));
+      return jsonResponse(
+        {
+          ...clusterSet,
+          id: "cluster-set-refined",
+          parent_cluster_set_id: "cluster-set-1",
+          derivation_type: "refinement",
+          status: "queued",
+          progress: 0,
+          phase: "queued",
+        },
+        { status: 201 },
+      );
+    }
+    return undefined;
+  });
+  render(<App />);
+
+  await signIn(user);
+  const projectList = await screen.findByRole("region", {
+    name: "Bestehende Projekte",
+  });
+  await user.click(getProjectRow(projectList, "Alpha"));
+  await openProjectTab(user, "Cluster-Sets");
+
+  const clusterSets = await screen.findByRole("region", {
+    name: "Cluster-Sets",
+  });
+  await user.click(
+    within(clusterSets).getByRole("button", { name: "Cluster verfeinern" }),
+  );
+
+  const form = await screen.findByRole("form", {
+    name: "Cluster-Set erstellen",
+  });
+  expect(within(form).getByText(/2 eingeschlossene Cluster/)).toBeVisible();
+  expect(within(form).getByText("Zu verfeinerndes Cluster-Set:")).toBeVisible();
+  expect(within(form).getAllByText("Antworten fein").length).toBeGreaterThan(0);
+  expect(within(form).getByText("Retouren · Logistik")).toBeVisible();
+  expect(within(form).getByText("Zahlungen · Billing")).toBeVisible();
+  await user.selectOptions(
+    within(form).getByLabelText("Verfeinerungsmodus"),
+    "per_parent",
+  );
+  await user.click(
+    within(form).getByRole("button", { name: "Verfeinerung erstellen" }),
+  );
+
+  await screen.findByText("Cluster-Set angelegt. Status wird aktualisiert.");
+  expect(receivedBody).toMatchObject({
+    indexing_run_id: "run-completed",
+    parent_cluster_set_id: "cluster-set-1",
+    derivation_type: "refinement",
+    refinement_mode: "per_parent",
+    source_cluster_ids: ["cluster-parent-a", "cluster-parent-b"],
+  });
+});
+
+test("groups per-parent refinement clusters by their stored parent origin", async () => {
+  const user = userEvent.setup();
+  const perParentClusters = [
+    {
+      ...cluster,
+      id: "cluster-child-a",
+      auto_title: "Retouren · Cluster 1",
+      effective_title: "Retouren · Cluster 1",
+      metadata: {
+        refinement: {
+          mode: "per_parent",
+          source_parent_cluster_id: "cluster-parent-a",
+          source_parent_cluster_title: "Retouren",
+          source_parent_cluster_label: 0,
+          source_parent_cluster_is_outlier: false,
+          batch_group_index: 0,
+          local_cluster_label: 0,
+        },
+      },
+    },
+    {
+      ...cluster,
+      id: "cluster-child-b",
+      auto_title: "Zahlungen · Cluster 1",
+      effective_title: "Zahlungen · Cluster 1",
+      metadata: {
+        refinement: {
+          mode: "per_parent",
+          source_parent_cluster_id: "cluster-parent-b",
+          source_parent_cluster_title: "Zahlungen",
+          source_parent_cluster_label: 1,
+          source_parent_cluster_is_outlier: false,
+          batch_group_index: 1,
+          local_cluster_label: 0,
+        },
+      },
+    },
+  ];
+  mockProjectFetch((path, method) => {
+    if (
+      path === "/api/projects/project-alpha/cluster-sets" &&
+      method === "GET"
+    ) {
+      return jsonResponse([
+        {
+          ...clusterSet,
+          status: "completed",
+          progress: 100,
+          phase: "completed",
+        },
+      ]);
+    }
+    if (
+      path ===
+        "/api/projects/project-alpha/cluster-sets/cluster-set-1/clusters" &&
+      method === "GET"
+    ) {
+      return jsonResponse(perParentClusters);
+    }
+    return undefined;
+  });
+  render(<App />);
+
+  await signIn(user);
+  const projectList = await screen.findByRole("region", {
+    name: "Bestehende Projekte",
+  });
+  await user.click(getProjectRow(projectList, "Alpha"));
+  await openProjectTab(user, "Explorer");
+
+  const clusterExplorer = await screen.findByRole("region", {
+    name: "Cluster Explorer",
+  });
+  expect(
+    within(clusterExplorer).getByText("Parent: Retouren · Label 0"),
+  ).toBeVisible();
+  expect(
+    within(clusterExplorer).getByText("Parent: Zahlungen · Label 1"),
+  ).toBeVisible();
+  expect(
+    within(clusterExplorer).getByText("Retouren · Cluster 1"),
+  ).toBeVisible();
+  expect(
+    within(clusterExplorer).getByText("Zahlungen · Cluster 1"),
+  ).toBeVisible();
+});
+
 test("shows and guards Cluster-Set creation while the request is pending", async () => {
   const user = userEvent.setup();
   let createRequests = 0;
@@ -3459,6 +4391,304 @@ test("creates a Cluster-Set with vector basis and bounded LLM sampling", async (
     within(clusterSetsRegion).getByText("Outlier-Schwelle"),
   ).toBeInTheDocument();
   expect(within(clusterSetsRegion).getByText("0.72")).toBeInTheDocument();
+});
+
+test("creates an Agglomerative Cluster-Set without HDBSCAN-only parameters", async () => {
+  const user = userEvent.setup();
+  let receivedBody: Record<string, unknown> | null = null;
+  mockProjectFetch((path, method, init) => {
+    if (
+      path === "/api/projects/project-alpha/indexing-runs" &&
+      method === "GET"
+    ) {
+      return jsonResponse([completedAnalysisRun]);
+    }
+    if (
+      path === "/api/projects/project-alpha/cluster-sets" &&
+      method === "GET"
+    ) {
+      return jsonResponse([]);
+    }
+    if (
+      path === "/api/projects/project-alpha/cluster-sets" &&
+      method === "POST"
+    ) {
+      receivedBody = JSON.parse(String(init?.body));
+      return jsonResponse(
+        {
+          ...clusterSet,
+          algorithm: "agglomerative",
+          parameters: { n_clusters: 4, linkage: "average" },
+        },
+        { status: 201 },
+      );
+    }
+    return undefined;
+  });
+  render(<App />);
+
+  await signIn(user);
+  const projectList = await screen.findByRole("region", {
+    name: "Bestehende Projekte",
+  });
+  await user.click(getProjectRow(projectList, "Alpha"));
+  await openProjectTab(user, "Cluster-Sets");
+
+  const form = await screen.findByRole("form", {
+    name: "Cluster-Set erstellen",
+  });
+  await user.selectOptions(
+    within(form).getByLabelText("Algorithmus"),
+    "agglomerative",
+  );
+  expect(
+    within(form).queryByLabelText("HDBSCAN min_cluster_size"),
+  ).not.toBeInTheDocument();
+  expect(
+    within(form).queryByLabelText("Dimensionsreduzierung"),
+  ).not.toBeInTheDocument();
+  await user.clear(within(form).getByLabelText("n_clusters"));
+  await user.type(within(form).getByLabelText("n_clusters"), "4");
+  await user.selectOptions(within(form).getByLabelText("Linkage"), "average");
+  await user.click(
+    within(form).getByRole("button", { name: "Cluster-Set erstellen" }),
+  );
+
+  await screen.findByText("Cluster-Set angelegt. Status wird aktualisiert.");
+  expect(receivedBody).toMatchObject({
+    indexing_run_id: "run-completed",
+    algorithm_settings: {
+      algorithm: "agglomerative",
+      n_clusters: 4,
+      linkage: "average",
+    },
+  });
+  const settings =
+    (receivedBody as { algorithm_settings?: Record<string, unknown> } | null)
+      ?.algorithm_settings ?? {};
+  expect(settings.min_cluster_size).toBeUndefined();
+  expect(settings.reduction_method).toBeUndefined();
+  expect(settings.execution_backend).toBeUndefined();
+  expect(settings.distance_threshold).toBeUndefined();
+});
+
+test("creates an Agglomerative Cluster-Set with distance threshold only", async () => {
+  const user = userEvent.setup();
+  let receivedBody: Record<string, unknown> | null = null;
+  mockProjectFetch((path, method, init) => {
+    if (
+      path === "/api/projects/project-alpha/indexing-runs" &&
+      method === "GET"
+    ) {
+      return jsonResponse([completedAnalysisRun]);
+    }
+    if (
+      path === "/api/projects/project-alpha/cluster-sets" &&
+      method === "GET"
+    ) {
+      return jsonResponse([]);
+    }
+    if (
+      path === "/api/projects/project-alpha/cluster-sets" &&
+      method === "POST"
+    ) {
+      receivedBody = JSON.parse(String(init?.body));
+      return jsonResponse(
+        {
+          ...clusterSet,
+          algorithm: "agglomerative",
+          parameters: { distance_threshold: 0.35, linkage: "complete" },
+        },
+        { status: 201 },
+      );
+    }
+    return undefined;
+  });
+  render(<App />);
+
+  await signIn(user);
+  const projectList = await screen.findByRole("region", {
+    name: "Bestehende Projekte",
+  });
+  await user.click(getProjectRow(projectList, "Alpha"));
+  await openProjectTab(user, "Cluster-Sets");
+
+  const form = await screen.findByRole("form", {
+    name: "Cluster-Set erstellen",
+  });
+  await user.selectOptions(
+    within(form).getByLabelText("Algorithmus"),
+    "agglomerative",
+  );
+  await user.selectOptions(
+    within(form).getByLabelText("Agglomerative Schnittregel"),
+    "distance_threshold",
+  );
+  await user.type(within(form).getByLabelText("distance_threshold"), "0.35");
+  await user.selectOptions(within(form).getByLabelText("Linkage"), "complete");
+  await user.click(
+    within(form).getByRole("button", { name: "Cluster-Set erstellen" }),
+  );
+
+  await screen.findByText("Cluster-Set angelegt. Status wird aktualisiert.");
+  const settings =
+    (receivedBody as { algorithm_settings?: Record<string, unknown> } | null)
+      ?.algorithm_settings ?? {};
+  expect(settings).toMatchObject({
+    algorithm: "agglomerative",
+    distance_threshold: 0.35,
+    linkage: "complete",
+  });
+  expect(settings.n_clusters).toBeUndefined();
+  expect(settings.min_cluster_size).toBeUndefined();
+});
+
+test("shows safe algorithm parameter failures and preserves the selected form", async () => {
+  const user = userEvent.setup();
+  let postCount = 0;
+  mockProjectFetch((path, method) => {
+    if (
+      path === "/api/projects/project-alpha/indexing-runs" &&
+      method === "GET"
+    ) {
+      return jsonResponse([completedAnalysisRun]);
+    }
+    if (
+      path === "/api/projects/project-alpha/cluster-sets" &&
+      method === "GET"
+    ) {
+      return jsonResponse([]);
+    }
+    if (
+      path === "/api/projects/project-alpha/cluster-sets" &&
+      method === "POST"
+    ) {
+      postCount += 1;
+      return jsonResponse(
+        {
+          type: "urn:skm:error:CLUSTER_ALGORITHM_PARAMETERS_INVALID",
+          title: "Die Cluster-Parameter sind ungültig.",
+          status: 422,
+          detail:
+            "Die Parameter passen nicht zum gewählten Algorithmus oder Verfeinerungsmodus.",
+          code: "CLUSTER_ALGORITHM_PARAMETERS_INVALID",
+          correlationId: null,
+          retryable: true,
+          suggestedAction: "correct-input",
+          fieldErrors: [
+            {
+              field: "n_clusters",
+              message: "n_clusters must be an integer >= 1",
+            },
+          ],
+        },
+        { status: 422 },
+      );
+    }
+    return undefined;
+  });
+  render(<App />);
+
+  await signIn(user);
+  const projectList = await screen.findByRole("region", {
+    name: "Bestehende Projekte",
+  });
+  await user.click(getProjectRow(projectList, "Alpha"));
+  await openProjectTab(user, "Cluster-Sets");
+
+  const form = await screen.findByRole("form", {
+    name: "Cluster-Set erstellen",
+  });
+  await user.selectOptions(
+    within(form).getByLabelText("Algorithmus"),
+    "agglomerative",
+  );
+  await user.clear(within(form).getByLabelText("n_clusters"));
+  await user.type(within(form).getByLabelText("n_clusters"), "999");
+  await user.click(
+    within(form).getByRole("button", { name: "Cluster-Set erstellen" }),
+  );
+
+  expect(
+    await screen.findByText(
+      "Die Cluster-Parameter passen nicht zum gewählten Algorithmus oder Verfeinerungsmodus.",
+    ),
+  ).toBeInTheDocument();
+  expect(postCount).toBe(1);
+  expect(within(form).getByLabelText("Algorithmus")).toHaveValue(
+    "agglomerative",
+  );
+  expect(within(form).getByLabelText("n_clusters")).toHaveValue(999);
+  expect(
+    screen.queryByText("Cluster-Set angelegt. Status wird aktualisiert."),
+  ).not.toBeInTheDocument();
+});
+
+test("shows safe cluster budget failures and preserves the selected form", async () => {
+  const user = userEvent.setup();
+  let postCount = 0;
+  mockProjectFetch((path, method) => {
+    if (
+      path === "/api/projects/project-alpha/indexing-runs" &&
+      method === "GET"
+    ) {
+      return jsonResponse([completedAnalysisRun]);
+    }
+    if (
+      path === "/api/projects/project-alpha/cluster-sets" &&
+      method === "GET"
+    ) {
+      return jsonResponse([]);
+    }
+    if (
+      path === "/api/projects/project-alpha/cluster-sets" &&
+      method === "POST"
+    ) {
+      postCount += 1;
+      return jsonResponse(
+        {
+          type: "urn:skm:error:CLUSTER_BUDGET_EXCEEDED",
+          title: "Die Clusterung ist zu groß.",
+          status: 422,
+          detail: "stale server detail must not be shown",
+          code: "CLUSTER_BUDGET_EXCEEDED",
+          correlationId: null,
+          retryable: true,
+          suggestedAction: "reduce-scope",
+          fieldErrors: [],
+        },
+        { status: 422 },
+      );
+    }
+    return undefined;
+  });
+  render(<App />);
+
+  await signIn(user);
+  const projectList = await screen.findByRole("region", {
+    name: "Bestehende Projekte",
+  });
+  await user.click(getProjectRow(projectList, "Alpha"));
+  await openProjectTab(user, "Cluster-Sets");
+
+  const form = await screen.findByRole("form", {
+    name: "Cluster-Set erstellen",
+  });
+  await user.type(within(form).getByLabelText("Anzeigename"), "Großes Set");
+  await user.click(
+    within(form).getByRole("button", { name: "Cluster-Set erstellen" }),
+  );
+
+  expect(
+    await screen.findByText(
+      "Die aktuelle Datenmenge, Dimension oder Zusammenfassung überschreitet das Clusterbudget. Bitte Datenmenge, Dimensionen oder Beispiele reduzieren.",
+    ),
+  ).toBeInTheDocument();
+  expect(postCount).toBe(1);
+  expect(within(form).getByLabelText("Anzeigename")).toHaveValue("Großes Set");
+  expect(
+    screen.queryByText("Cluster-Set angelegt. Status wird aktualisiert."),
+  ).not.toBeInTheDocument();
 });
 
 test("rejects non-integer Cluster-Set LLM sample counts before submitting", async () => {
@@ -4626,6 +5856,47 @@ test("polls visible runs immediately and every two seconds without overlap and r
   ).toBeInTheDocument();
   expect(runRequests).toBe(4);
 }, 15000);
+
+test("keeps long indexing diagnostics inside the run card", async () => {
+  const user = userEvent.setup();
+  const longDiagnosticsRun = {
+    ...completedAnalysisRun,
+    diagnostics: {
+      very_long_diagnostic_parameter_name_that_must_wrap_inside_the_card:
+        "x".repeat(180),
+    },
+  };
+  mockProjectFetch((path, method) => {
+    if (
+      path === "/api/projects/project-alpha/indexing-runs" &&
+      method === "GET"
+    ) {
+      return jsonResponse([longDiagnosticsRun]);
+    }
+    return undefined;
+  });
+  render(<App />);
+
+  await signIn(user);
+  const projectList = await screen.findByRole("region", {
+    name: "Bestehende Projekte",
+  });
+  await user.click(getProjectRow(projectList, "Alpha"));
+  await openProjectTab(user, "Indizieren");
+
+  const runsRegion = await screen.findByRole("region", {
+    name: "Indizierungen",
+  });
+  const diagnostics = await within(runsRegion).findByText(
+    /very_long_diagnostic_parameter_name_that_must_wrap_inside_the_card/,
+  );
+  expect(diagnostics).toHaveClass("diagnostics-text");
+  const runCard = diagnostics.closest("article");
+  if (runCard === null) {
+    throw new Error("indexing run card missing");
+  }
+  expect(runCard).toHaveClass("indexing-card");
+});
 
 test("pauses indexing polling while hidden or outside the Indizieren tab and refreshes immediately when visible", async () => {
   const user = userEvent.setup();

@@ -196,9 +196,15 @@ If the Cluster-Set form uses Backend `auto`, the service attempts cuML when it i
 importable and falls back to CPU otherwise. Backend `GPU/cuML erzwingen` fails
 with a safe accelerator-unavailable error when RAPIDS/cuML is not usable.
 
-For a small, coarse initial Cluster-Set, prefer Agglomerative when you need an exact target count and set `n_clusters` to roughly 8-20.
-HDBSCAN cannot guarantee an exact cluster count; for a coarse first pass use Backend `auto`, optional PCA reduction with about 10 dimensions, `min_cluster_size` around 5% of the dataset, `min_samples` around 20, and `cluster_selection_epsilon` around 0.1.
-If HDBSCAN still creates too many clusters, double `min_cluster_size` first and then try `cluster_selection_epsilon` around 0.2.
+For a small, coarse initial Cluster-Set, prefer Agglomerative when you need an
+exact target count and set `n_clusters` to roughly 8-20. For per-parent
+refinement, Agglomerative uses either `n_clusters je Parent` or
+`distance_threshold je Parent`; the two split rules are mutually exclusive.
+HDBSCAN cannot guarantee an exact cluster count; for a coarse first pass use
+Backend `auto`, optional PCA reduction with about 10 dimensions,
+`min_cluster_size` around 5% of the dataset, `min_samples` around 20, and the UI
+label `selection_epsilon` around 0.1. If HDBSCAN still creates too many clusters,
+double `min_cluster_size` first and then try `selection_epsilon` around 0.2.
 
 In another terminal, verify the backend with:
 
@@ -242,8 +248,10 @@ The local backend runs indexing and Cluster-Set work through bounded background
 queues. Additional starts are admitted while earlier jobs are queued/running as
 long as the local worker queues accept them; cancellation remains available per
 active job. Clustering rejects an estimated working set over
-512 MiB before loading vectors or writing clusters. Pgvector values are decoded
+5 GiB before loading vectors or writing clusters. Pgvector values are decoded
 natively in bounded server-cursor batches into one preallocated contiguous matrix;
+per-parent refinement applies the working-set preflight and vector loading to each
+parent group separately.
 the estimate includes the native matrix, estimator matrices, bounded fetch batch,
 bounded nearest-neighbor workspace, linkage-specific graph/intermediate structures,
 results, mappings, and conservative per-record overhead. Agglomerative rejects a

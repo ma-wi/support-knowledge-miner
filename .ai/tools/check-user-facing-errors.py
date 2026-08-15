@@ -604,9 +604,15 @@ def validate_design_errors(
             path.read_text(encoding="utf-8")
             for path in sorted((work_dir / "tasks").glob("*.md"))
         )
-        required_states = (
-            (extract_field(tasks, VISUAL_EVIDENCE_FIELDS[1]) or "").strip().lower()
-        )
+        required_states = "\n".join(
+            match.group(1).strip()
+            for match in re.finditer(
+                rf"^-[ \t]*{re.escape(VISUAL_EVIDENCE_FIELDS[1])}:"
+                r"[ \t]*(.*?)[ \t]*$",
+                tasks,
+                re.MULTILINE | re.IGNORECASE,
+            )
+        ).lower()
         if "error" not in required_states and "failure" not in required_states:
             errors.append(
                 "UI error verification requires an error/failure state in task "

@@ -290,12 +290,12 @@ Active codes are declared below or indexed to a capability catalog.
 
 - Status: active
 - Category: business-rule
-- Trigger: Clustering exceeds configured record/dimension/memory budget.
+- Trigger: Clustering exceeds configured record/dimension/memory budget or summary prompt budget.
 - HTTP status: 422
 - Problem type: `urn:skm:error:CLUSTER_BUDGET_EXCEEDED`
 - User-facing title: Die Clusterung ist zu groß.
-- User-facing explanation: Die aktuelle Datenmenge oder Dimension überschreitet das Clusterbudget.
-- Suggested action: Datenmenge oder Parameter reduzieren.
+- User-facing explanation: Die aktuelle Datenmenge, Dimension oder Zusammenfassung überschreitet das Clusterbudget.
+- Suggested action: Datenmenge, Dimensionen oder Beispiele reduzieren.
 - Suggested action code: reduce-scope
 - Retryable: yes
 - UI placement: Cluster-Set-Formular
@@ -582,6 +582,117 @@ Active codes are declared below or indexed to a capability catalog.
   `docs/api/problem-details-contract.yaml`
 - Frontend mapping: `frontend/src/App.tsx` `ERROR_MESSAGES_BY_CODE`
 - Required tests: refinement validation tests
+
+### `CLUSTER_ALGORITHM_PARAMETERS_INVALID`
+
+- Status: active
+- Category: validation
+- Trigger: Cluster-Set creation or refinement receives parameters that are incompatible with the selected algorithm or refinement mode.
+- HTTP status: 422
+- Problem type: `urn:skm:error:CLUSTER_ALGORITHM_PARAMETERS_INVALID`
+- User-facing title: Die Cluster-Parameter sind ungültig.
+- User-facing explanation: Die Parameter passen nicht zum gewählten Algorithmus oder Verfeinerungsmodus.
+- Suggested action: Parameter korrigieren und erneut starten.
+- Suggested action code: correct-input
+- Retryable: yes
+- UI placement: Cluster-Set-Formular
+- Input preservation: Preserve cluster-set form fields and selected refinement sources.
+- Correlation reference: safe request identifier
+- Security considerations: Do not expose estimator internals, stack traces, paths, SQL, embeddings or raw support text.
+- Backend source: `backend/clusters/service.py` algorithm/refinement validation
+- API contract: `backend/api/app.py` Cluster-Set Problem Details mapping
+- Frontend mapping: `frontend/src/App.tsx` `ERROR_MESSAGES_BY_CODE`
+- Required tests: algorithm parameter validation API/service/frontend tests
+
+### `CLUSTER_BATCH_REFINEMENT_EMPTY_GROUP`
+
+- Status: active
+- Category: business-rule
+- Trigger: Per-parent batch refinement contains a selected parent cluster with no usable source pairs.
+- HTTP status: 422
+- Problem type: `urn:skm:error:CLUSTER_BATCH_REFINEMENT_EMPTY_GROUP`
+- User-facing title: Eine Parent-Gruppe hat keine Quellen.
+- User-facing explanation: Mindestens ein ausgewählter Parent-Cluster enthält keine nutzbaren Quellen.
+- Suggested action: Auswahl prüfen oder den leeren Parent-Cluster ausschließen.
+- Suggested action code: select-sources
+- Retryable: yes
+- UI placement: Cluster-Set-Formular und Cluster-Set-Status
+- Input preservation: Preserve selected parent clusters and clustering parameters.
+- Correlation reference: safe request or job identifier
+- Security considerations: Do not expose raw support text or cross-project cluster existence.
+- Backend source: `backend/clusters/service.py` per-parent refinement preflight
+- API contract: `backend/api/app.py` Cluster-Set Problem Details mapping;
+  `docs/api/problem-details-contract.yaml`
+- Frontend mapping: `frontend/src/App.tsx` `ERROR_MESSAGES_BY_CODE`
+- Required tests: per-parent batch empty-group API/service/frontend tests
+
+### `CLUSTER_BATCH_REFINEMENT_GROUP_INVALID`
+
+- Status: active
+- Category: validation
+- Trigger: Per-parent batch refinement has at least one parent group that is too small or otherwise incompatible with the selected algorithm parameters.
+- HTTP status: 422
+- Problem type: `urn:skm:error:CLUSTER_BATCH_REFINEMENT_GROUP_INVALID`
+- User-facing title: Eine Parent-Gruppe kann nicht verfeinert werden.
+- User-facing explanation: Eine Parent-Gruppe ist für die gewählten Cluster-Parameter zu klein oder ungültig.
+- Suggested action: Parameter senken, andere Cluster wählen oder den Parent-Cluster separat prüfen.
+- Suggested action code: adjust-clustering-parameters
+- Retryable: yes
+- UI placement: Cluster-Set-Formular und Cluster-Set-Status
+- Input preservation: Preserve selected parent clusters and clustering parameters.
+- Correlation reference: safe request or job identifier
+- Security considerations: Report safe counts/IDs only for current-project resources; do not expose embeddings or raw support text.
+- Backend source: `backend/clusters/service.py` per-parent group execution
+- API contract: `backend/api/app.py` Cluster-Set Problem Details mapping;
+  `docs/api/problem-details-contract.yaml`
+- Frontend mapping: `frontend/src/App.tsx` `ERROR_MESSAGES_BY_CODE`
+- Required tests: per-parent batch invalid-group API/service/frontend tests
+
+### `CLUSTER_SET_DUPLICATE_UNAVAILABLE`
+
+- Status: active
+- Category: conflict
+- Trigger: Cluster-Set duplicate is requested for a non-completed, missing,
+  deleted, non-project-scoped, or otherwise unavailable source set.
+- HTTP status: 409
+- Problem type: `urn:skm:error:CLUSTER_SET_DUPLICATE_UNAVAILABLE`
+- User-facing title: Das Cluster-Set kann nicht dupliziert werden.
+- User-facing explanation: Das ausgewählte Cluster-Set ist nicht mehr für eine Duplikation verfügbar.
+- Suggested action: Cluster-Set-Liste neu laden und ein verfügbares Set wählen.
+- Suggested action code: reload
+- Retryable: yes
+- UI placement: Cluster-Set-Karte
+- Input preservation: Preserve Cluster-Set list selection where safe.
+- Correlation reference: safe request identifier
+- Security considerations: Do not reveal cross-project existence or raw source data.
+- Backend source: `backend/clusters/service.py` duplicate Cluster-Set action
+- API contract: `backend/api/app.py` duplicate Cluster-Set route;
+  `docs/api/problem-details-contract.yaml`
+- Frontend mapping: `frontend/src/App.tsx` `ERROR_MESSAGES_BY_CODE`
+- Required tests: running cluster-set rejection in service/API/frontend plus
+  duplicate conflict mapping tests
+
+### `CLUSTER_SET_BATCH_DELETE_FAILED`
+
+- Status: active
+- Category: conflict
+- Trigger: Cluster-Set batch delete cannot delete every selected set under all-or-nothing semantics.
+- HTTP status: 409
+- Problem type: `urn:skm:error:CLUSTER_SET_BATCH_DELETE_FAILED`
+- User-facing title: Cluster-Sets konnten nicht gelöscht werden.
+- User-facing explanation: Die ausgewählten Cluster-Sets konnten nicht vollständig gelöscht werden.
+- Suggested action: Auswahl prüfen, Liste neu laden und erneut versuchen.
+- Suggested action code: reload
+- Retryable: yes
+- UI placement: Cluster-Set-Batch-Toolbar
+- Input preservation: Preserve selected Cluster-Set IDs that remain visible and safe.
+- Correlation reference: safe request identifier
+- Security considerations: Do not reveal cross-project existence; do not partially delete after a failed all-or-nothing request.
+- Backend source: `backend/clusters/service.py` batch delete action
+- API contract: `backend/api/app.py` batch delete route;
+  `docs/api/problem-details-contract.yaml`
+- Frontend mapping: `frontend/src/App.tsx` `ERROR_MESSAGES_BY_CODE`
+- Required tests: all-or-nothing cluster-set batch delete API/frontend tests
 
 ### `CLUSTER_SEARCH_NO_RESULTS`
 

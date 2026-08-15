@@ -106,9 +106,10 @@ See `docs/architecture/overview.md` for the durable architecture description.
   clustering record counts are bounded; imports stream through a two-slot 512 MiB
   wire/temp bound, use 4 MiB/1,000-record DB batches, and retain at most 100 skipped
   details; two fixed indexing workers use an
-  eight-entry queue, clustering preflights a conservative 512 MiB working-set
-  budget before native pgvector loading, including the preallocated float32 matrix,
-  estimator matrices, bounded fetch/nearest-neighbor workspaces, linkage-specific
+  eight-entry queue, clustering preflights a conservative 5 GiB working-set
+  budget before native pgvector loading, applying that budget per parent group for
+  per-parent refinement, including the preallocated float32 matrix, estimator
+  matrices, bounded fetch/nearest-neighbor workspaces, linkage-specific
   graph/intermediate structures, results/mappings, and per-record overhead;
   Agglomerative rejects disconnected neighbor graphs before estimator execution.
 - Operational constraints: No production deployment; local volumes own persistence.

@@ -108,7 +108,11 @@ const SYNTHETIC_INDEXING_RUN = {
   parameters: {},
   error_code: null,
   error_message: null,
-  diagnostics: { embeddings_written: 8 },
+  diagnostics: {
+    embeddings_written: 8,
+    very_long_diagnostic_parameter_name_that_must_wrap_inside_the_indexing_card:
+      "local-diagnostic-value-without-sensitive-content-".repeat(8),
+  },
   started_at: "2026-07-22T00:00:00Z",
   completed_at: "2026-07-22T00:00:01Z",
   cancel_requested_at: null,
@@ -133,12 +137,18 @@ const SYNTHETIC_CLUSTER_SET = {
   message_weight: 0.4,
   answer_weight: 0.6,
   algorithm: "hdbscan",
-  parameters: { min_cluster_size: 2, outlier_threshold: 0.72 },
+  parameters: {
+    min_cluster_size: 2,
+    cluster_selection_epsilon: 0.12,
+    outlier_threshold: 0.72,
+    very_long_cluster_set_parameter_name_that_must_wrap_inside_the_metadata_card:
+      "local-parameter-value-without-sensitive-content-".repeat(7),
+  },
   source_snapshot: { type: "all_dataset_pairs", source_pair_count: 4 },
   llm_provider: "ollama",
   llm_model: "llama3.1",
   llm_parameters: { enabled: true },
-  llm_sample_strategy: { strategy: "random", requested: 2, seed: 7 },
+  llm_sample_strategy: { strategy: "random", requested: "all", seed: 7 },
   error_code: null,
   error_message: null,
   diagnostics: {},
@@ -149,6 +159,8 @@ const SYNTHETIC_CLUSTER_SET = {
   created_at: "2026-07-22T00:00:00Z",
   updated_at: "2026-07-22T00:00:03Z",
   cluster_count: 3,
+  active_cluster_count: 2,
+  active_message_pair_count: 3,
 };
 const SYNTHETIC_CHILD_CLUSTER_SET = {
   ...SYNTHETIC_CLUSTER_SET,
@@ -158,8 +170,36 @@ const SYNTHETIC_CHILD_CLUSTER_SET = {
   derivation_type: "refinement",
   vector_basis: "answer",
   cluster_count: 1,
+  active_cluster_count: 1,
+  active_message_pair_count: 2,
   created_at: "2026-07-22T00:05:00Z",
   updated_at: "2026-07-22T00:05:03Z",
+};
+const SYNTHETIC_GRANDCHILD_CLUSTER_SET = {
+  ...SYNTHETIC_CLUSTER_SET,
+  id: "cluster-set-grandchild-1",
+  parent_cluster_set_id: "cluster-set-child-1",
+  display_name: "Antworten fein — Retouren — Login",
+  derivation_type: "refinement",
+  vector_basis: "message",
+  cluster_count: 1,
+  active_cluster_count: 1,
+  active_message_pair_count: 1,
+  created_at: "2026-07-22T00:06:00Z",
+  updated_at: "2026-07-22T00:06:03Z",
+};
+const SYNTHETIC_DUPLICATE_CLUSTER_SET = {
+  ...SYNTHETIC_CLUSTER_SET,
+  id: "cluster-set-copy",
+  display_name: "Antworten fein (Kopie)",
+  status: "completed",
+  progress: 100,
+  phase: "completed",
+  cluster_count: 3,
+  active_cluster_count: 2,
+  active_message_pair_count: 3,
+  created_at: "2026-07-22T00:07:00Z",
+  updated_at: "2026-07-22T00:07:00Z",
 };
 const SYNTHETIC_CLUSTERS = [
   {
@@ -183,7 +223,8 @@ const SYNTHETIC_CLUSTERS = [
     member_count: 2,
     metadata: { qa_mismatch: { average: 0.12, maximum: 0.44 } },
     auto_summary_question: "Wie können Kunden ihr Passwort zurücksetzen?",
-    auto_summary_answer: "Sende den Link zum Zurücksetzen und erkläre die Frist.",
+    auto_summary_answer:
+      "Sende den Link zum Zurücksetzen und erkläre die Frist.",
   },
   {
     id: "cluster-2",
@@ -721,7 +762,13 @@ function requestJson(route) {
   }
 }
 
-async function fulfillSyntheticApi(route, requestUrl, method, apiMode) {
+async function fulfillSyntheticApi(
+  route,
+  requestUrl,
+  method,
+  apiMode,
+  apiState,
+) {
   const path = requestUrl.pathname;
   const pathWithQuery = `${requestUrl.pathname}${requestUrl.search}`;
   if (path === "/api/auth/sign-in" && method === "POST") {
@@ -736,9 +783,13 @@ async function fulfillSyntheticApi(route, requestUrl, method, apiMode) {
     return true;
   }
   if (apiMode !== "signed-in") {
-    await apiJson(route, {
-      detail: "Nicht in diesem UI-Testzustand verfügbar.",
-    }, 404);
+    await apiJson(
+      route,
+      {
+        detail: "Nicht in diesem UI-Testzustand verfügbar.",
+      },
+      404,
+    );
     return true;
   }
   if (path === "/api/auth/sign-out" && method === "POST") {
@@ -816,7 +867,10 @@ async function fulfillSyntheticApi(route, requestUrl, method, apiMode) {
     await apiJson(route, []);
     return true;
   }
-  if (path === "/api/projects/project-alpha/indexing-runs" && method === "GET") {
+  if (
+    path === "/api/projects/project-alpha/indexing-runs" &&
+    method === "GET"
+  ) {
     await apiJson(route, [SYNTHETIC_INDEXING_RUN]);
     return true;
   }
@@ -828,7 +882,44 @@ async function fulfillSyntheticApi(route, requestUrl, method, apiMode) {
     return true;
   }
   if (path === "/api/projects/project-alpha/cluster-sets" && method === "GET") {
-    await apiJson(route, [SYNTHETIC_CLUSTER_SET, SYNTHETIC_CHILD_CLUSTER_SET]);
+    await apiJson(route, apiState.clusterSets);
+    return true;
+  }
+  if (
+    path === "/api/projects/project-alpha/cluster-sets/batch-delete" &&
+    method === "POST"
+  ) {
+    await apiJson(
+      route,
+      {
+        type: "urn:skm:error:CLUSTER_SET_BATCH_DELETE_FAILED",
+        title: "Cluster-Sets konnten nicht gelöscht werden.",
+        status: 409,
+        detail:
+          "Die ausgewählten Cluster-Sets konnten nicht vollständig gelöscht werden.",
+        code: "CLUSTER_SET_BATCH_DELETE_FAILED",
+        correlationId: null,
+        retryable: true,
+        suggestedAction: "reload",
+        fieldErrors: [],
+      },
+      409,
+    );
+    return true;
+  }
+  if (
+    path ===
+      "/api/projects/project-alpha/cluster-sets/cluster-set-1/duplicate" &&
+    method === "POST"
+  ) {
+    if (
+      !apiState.clusterSets.some(
+        (clusterSet) => clusterSet.id === SYNTHETIC_DUPLICATE_CLUSTER_SET.id,
+      )
+    ) {
+      apiState.clusterSets.unshift(SYNTHETIC_DUPLICATE_CLUSTER_SET);
+    }
+    await apiJson(route, SYNTHETIC_DUPLICATE_CLUSTER_SET, 201);
     return true;
   }
   if (path === "/api/projects/project-empty/cluster-sets" && method === "GET") {
@@ -836,7 +927,11 @@ async function fulfillSyntheticApi(route, requestUrl, method, apiMode) {
     return true;
   }
   if (
-    path === "/api/projects/project-alpha/cluster-sets/cluster-set-1/clusters" &&
+    [
+      "/api/projects/project-alpha/cluster-sets/cluster-set-1/clusters",
+      "/api/projects/project-alpha/cluster-sets/cluster-set-child-1/clusters",
+      "/api/projects/project-alpha/cluster-sets/cluster-set-grandchild-1/clusters",
+    ].includes(path) &&
     method === "GET"
   ) {
     await apiJson(route, SYNTHETIC_CLUSTERS);
@@ -899,6 +994,13 @@ async function configureScenarioPage(
     serviceWorkers: "block",
   });
   const blockedRequests = [];
+  const apiState = {
+    clusterSets: [
+      SYNTHETIC_CLUSTER_SET,
+      SYNTHETIC_CHILD_CLUSTER_SET,
+      SYNTHETIC_GRANDCHILD_CLUSTER_SET,
+    ],
+  };
   await context.addInitScript(() => {
     window.sessionStorage.clear();
     window.localStorage.clear();
@@ -913,7 +1015,13 @@ async function configureScenarioPage(
     const requestUrl = new URL(request.url());
     if (requestUrl.pathname.startsWith("/api/")) {
       if (
-        await fulfillSyntheticApi(route, requestUrl, request.method(), apiMode)
+        await fulfillSyntheticApi(
+          route,
+          requestUrl,
+          request.method(),
+          apiMode,
+          apiState,
+        )
       ) {
         return;
       }
@@ -950,7 +1058,7 @@ async function configureScenarioPage(
   });
   await page.addStyleTag({
     content:
-      "*,*::before,*::after{animation:none!important;transition:none!important;caret-color:transparent!important}",
+      "*,*::before,*::after{animation:none!important;transition:none!important;caret-color:transparent!important;scrollbar-width:none!important}*::-webkit-scrollbar{display:none!important}",
   });
   await page.evaluate(async () => {
     await document.fonts.ready;
@@ -972,6 +1080,22 @@ async function signInToSyntheticApp(page) {
   await page
     .getByRole("heading", { name: "Projekte & Analysen" })
     .waitFor({ state: "visible", timeout: 10_000 });
+}
+
+async function dismissFeedback(page) {
+  const closeButton = page.getByRole("button", { name: "Meldung schließen" });
+  if ((await closeButton.count()) === 0) {
+    return;
+  }
+  await closeButton.first().click();
+  await closeButton.first().waitFor({ state: "hidden", timeout: 10_000 });
+}
+
+function enabledButtonByText(page, text) {
+  return page
+    .locator("button:not(:disabled)")
+    .filter({ hasText: text })
+    .first();
 }
 
 async function openProjectList(page) {
@@ -1054,34 +1178,39 @@ async function assertSourceDialogKeyboardBehavior(page) {
 }
 
 async function assertClusterSetTreeDisclosure(page) {
-  const collapseButton = page.getByRole("button", {
-    name: "Ast einklappen",
-    exact: true,
-  });
+  const collapseButton = page
+    .getByRole("button", {
+      name: "Ast einklappen",
+      exact: true,
+    })
+    .first();
   await collapseButton.waitFor({ state: "visible", timeout: 10_000 });
   const expandedBefore = await collapseButton.getAttribute("aria-expanded");
   if (expandedBefore !== "true") {
     fail("cluster-set tree branch did not expose expanded state");
   }
-  await page.getByText("Antworten fein — Retouren").waitFor({
+  await page.getByText("Antworten fein — Retouren", { exact: true }).waitFor({
     state: "visible",
     timeout: 10_000,
   });
   await collapseButton.click();
-  await page.getByText("Antworten fein — Retouren").waitFor({
+  await page.getByText("Antworten fein — Retouren", { exact: true }).waitFor({
     state: "hidden",
     timeout: 10_000,
   });
-  const expandButton = page.getByRole("button", {
-    name: "Ast ausklappen",
-    exact: true,
-  });
-  const expandedAfterCollapse = await expandButton.getAttribute("aria-expanded");
+  const expandButton = page
+    .getByRole("button", {
+      name: "Ast ausklappen",
+      exact: true,
+    })
+    .first();
+  const expandedAfterCollapse =
+    await expandButton.getAttribute("aria-expanded");
   if (expandedAfterCollapse !== "false") {
     fail("cluster-set tree branch did not expose collapsed state");
   }
   await expandButton.click();
-  await page.getByText("Antworten fein — Retouren").waitFor({
+  await page.getByText("Antworten fein — Retouren", { exact: true }).waitFor({
     state: "visible",
     timeout: 10_000,
   });
@@ -1141,9 +1270,9 @@ async function captureProjectSettingsStates(
   const settingsForm = page.getByRole("form", {
     name: "Projekteinstellungen speichern",
   });
-  await settingsForm.getByLabel("Ticket-Link-Vorlage").fill(
-    "ftp://tickets.example.test/<ticket_id>",
-  );
+  await settingsForm
+    .getByLabel("Ticket-Link-Vorlage")
+    .fill("ftp://tickets.example.test/<ticket_id>");
   await settingsForm
     .getByRole("button", { name: "Einstellungen speichern" })
     .click();
@@ -1196,13 +1325,11 @@ async function captureExplorerInteractionStates(
     name: /Hinweise \/ Score sortieren/,
   });
   await sortButton.click();
-  await page
-    .locator("th", { has: sortButton })
-    .evaluate((cell) => {
-      if (cell.getAttribute("aria-sort") !== "ascending") {
-        throw new Error("score sort did not expose ascending state");
-      }
-    });
+  await page.locator("th", { has: sortButton }).evaluate((cell) => {
+    if (cell.getAttribute("aria-sort") !== "ascending") {
+      throw new Error("score sort did not expose ascending state");
+    }
+  });
   await captureState(
     captures,
     page,
@@ -1214,13 +1341,11 @@ async function captureExplorerInteractionStates(
   );
 
   await sortButton.click();
-  await page
-    .locator("th", { has: sortButton })
-    .evaluate((cell) => {
-      if (cell.getAttribute("aria-sort") !== "descending") {
-        throw new Error("score sort did not expose descending state");
-      }
-    });
+  await page.locator("th", { has: sortButton }).evaluate((cell) => {
+    if (cell.getAttribute("aria-sort") !== "descending") {
+      throw new Error("score sort did not expose descending state");
+    }
+  });
   await captureState(
     captures,
     page,
@@ -1232,13 +1357,11 @@ async function captureExplorerInteractionStates(
   );
 
   await sortButton.click();
-  await page
-    .locator("th", { has: sortButton })
-    .evaluate((cell) => {
-      if (cell.getAttribute("aria-sort") !== "none") {
-        throw new Error("score sort did not return to unsorted state");
-      }
-    });
+  await page.locator("th", { has: sortButton }).evaluate((cell) => {
+    if (cell.getAttribute("aria-sort") !== "none") {
+      throw new Error("score sort did not return to unsorted state");
+    }
+  });
   await captureState(
     captures,
     page,
@@ -1249,9 +1372,7 @@ async function captureExplorerInteractionStates(
     onState,
   );
 
-  await page
-    .getByRole("button", { name: "Kontrollleiste einklappen" })
-    .click();
+  await page.getByRole("button", { name: "Kontrollleiste einklappen" }).click();
   await page
     .getByRole("button", { name: "Kontrollleiste ausklappen" })
     .waitFor({ state: "visible", timeout: 10_000 });
@@ -1264,9 +1385,7 @@ async function captureExplorerInteractionStates(
     "project",
     onState,
   );
-  await page
-    .getByRole("button", { name: "Kontrollleiste ausklappen" })
-    .click();
+  await page.getByRole("button", { name: "Kontrollleiste ausklappen" }).click();
   await page
     .getByRole("button", { name: "Kontrollleiste einklappen" })
     .waitFor({ state: "visible", timeout: 10_000 });
@@ -1281,6 +1400,7 @@ async function captureExplorerInteractionStates(
       (document.querySelector(".explorer-table-workspace")?.scrollTop ?? 0) ===
       0,
   );
+  await workspace.focus();
   await captureState(
     captures,
     page,
@@ -1293,6 +1413,14 @@ async function captureExplorerInteractionStates(
 }
 
 async function captureScreenshot(page) {
+  await page.evaluate(() => {
+    window.scrollTo({ top: 0, left: 0, behavior: "instant" });
+    document.documentElement.scrollLeft = 0;
+    document.body.scrollLeft = 0;
+  });
+  await page.waitForFunction(
+    () => window.scrollX === 0 && window.scrollY === 0,
+  );
   const image = await page.screenshot({
     type: "png",
     fullPage: true,
@@ -1381,9 +1509,7 @@ async function captureProjectScenarios(
       const { page } = configured;
       await signInToSyntheticApp(page);
       await openSyntheticProject(page, "Leeres Projekt");
-      await page
-        .getByRole("tab", { name: "Explorer", exact: true })
-        .click();
+      await page.getByRole("tab", { name: "Explorer", exact: true }).click();
       await page
         .getByText(/Noch kein abgeschlossenes Cluster-Set geladen/)
         .waitFor({ state: "visible", timeout: 10_000 });
@@ -1399,6 +1525,22 @@ async function captureProjectScenarios(
 
       await openProjectList(page);
       await openSyntheticProject(page);
+
+      await page.getByRole("tab", { name: "Indizieren", exact: true }).click();
+      await page
+        .getByText(
+          /very_long_diagnostic_parameter_name_that_must_wrap_inside_the_indexing_card/,
+        )
+        .waitFor({ state: "visible", timeout: 10_000 });
+      await captureState(
+        captures,
+        page,
+        viewport,
+        outputRoot,
+        "indexing-long-diagnostics",
+        "project",
+        onState,
+      );
 
       await page
         .getByRole("tab", { name: "Cluster-Sets", exact: true })
@@ -1416,15 +1558,109 @@ async function captureProjectScenarios(
         "project",
         onState,
       );
+      await captureState(
+        captures,
+        page,
+        viewport,
+        outputRoot,
+        "cluster-sets-no-selection",
+        "project",
+        onState,
+      );
+      await page.getByLabel("Antworten fein auswählen").check();
+      await page.getByLabel("Antworten fein — Retouren auswählen").check();
+      await page.getByText("2 ausgewählt").waitFor({
+        state: "visible",
+        timeout: 10_000,
+      });
+      await captureState(
+        captures,
+        page,
+        viewport,
+        outputRoot,
+        "cluster-sets-multi-selection",
+        "project",
+        onState,
+      );
+      page.once("dialog", async (dialog) => {
+        await dialog.accept();
+      });
+      await page
+        .getByRole("combobox", { name: "Aktionen" })
+        .selectOption("delete");
+      await page
+        .getByText(
+          "Die ausgewählten Cluster-Sets konnten nicht vollständig gelöscht werden.",
+        )
+        .waitFor({ state: "visible", timeout: 10_000 });
+      await captureState(
+        captures,
+        page,
+        viewport,
+        outputRoot,
+        "cluster-sets-batch-delete-failure",
+        "project",
+        onState,
+      );
+      await page.getByRole("button", { name: "Duplizieren" }).first().click();
+      await page
+        .getByText("Antworten fein (Kopie)")
+        .waitFor({ state: "visible", timeout: 10_000 });
+      const duplicatedClusterSetCard = page
+        .getByText("Antworten fein (Kopie)", { exact: true })
+        .locator("xpath=ancestor::article[1]");
+      const duplicateReceivedFocus = await duplicatedClusterSetCard.evaluate(
+        (element) => element === document.activeElement,
+      );
+      if (!duplicateReceivedFocus) {
+        fail("duplicated Cluster-Set did not receive focus");
+      }
+      await dismissFeedback(page);
+      await duplicatedClusterSetCard.focus();
+      await captureState(
+        captures,
+        page,
+        viewport,
+        outputRoot,
+        "cluster-sets-duplicate-success-focus",
+        "project",
+        onState,
+      );
+      await captureState(
+        captures,
+        page,
+        viewport,
+        outputRoot,
+        "cluster-sets-metadata-expanded",
+        "project",
+        onState,
+      );
+      await page
+        .getByRole("button", { name: "Metadaten ausblenden" })
+        .first()
+        .click();
+      await captureState(
+        captures,
+        page,
+        viewport,
+        outputRoot,
+        "cluster-sets-metadata-collapsed",
+        "project",
+        onState,
+      );
       await assertClusterSetTreeDisclosure(page);
 
-      await page
+      const originalClusterSetCard = page
+        .getByLabel("Antworten fein auswählen")
+        .locator("xpath=ancestor::article[1]");
+      await originalClusterSetCard
         .getByRole("button", { name: "Cluster verfeinern" })
         .first()
         .click();
       await page
         .getByText("Verfeinerung vorausgefüllt")
         .waitFor({ state: "visible", timeout: 10_000 });
+      await dismissFeedback(page);
       await captureState(
         captures,
         page,
@@ -1438,11 +1674,7 @@ async function captureProjectScenarios(
         .getByRole("button", { name: "Verfeinerung zurücksetzen" })
         .click();
 
-      await page
-        .getByRole("tab", { name: "Explorer", exact: true })
-        .click();
-      await page.getByRole("button", { name: "Cluster-Set auswählen" }).click();
-      await page
+      await originalClusterSetCard
         .getByRole("button", { name: "Im Explorer laden" })
         .first()
         .click();
@@ -1453,6 +1685,7 @@ async function captureProjectScenarios(
         .getByRole("row", { name: /Passwort zurücksetzen/ })
         .first()
         .waitFor({ state: "visible", timeout: 10_000 });
+      await dismissFeedback(page);
       await captureState(
         captures,
         page,
@@ -1462,6 +1695,29 @@ async function captureProjectScenarios(
         "project",
         onState,
       );
+      const explorerClusterSetSelect = page.getByRole("combobox", {
+        name: "Geladenes Set",
+      });
+      await explorerClusterSetSelect.selectOption("cluster-set-child-1");
+      await page
+        .getByLabel("Explorer Kennzahlen")
+        .getByText("Antworten fein — Retouren", { exact: true })
+        .waitFor({ state: "visible", timeout: 10_000 });
+      await explorerClusterSetSelect.focus();
+      await captureState(
+        captures,
+        page,
+        viewport,
+        outputRoot,
+        "explorer-tree-selector",
+        "project",
+        onState,
+      );
+      await explorerClusterSetSelect.selectOption("cluster-set-1");
+      await page
+        .getByLabel("Explorer Kennzahlen")
+        .getByText("Antworten fein", { exact: true })
+        .waitFor({ state: "visible", timeout: 10_000 });
       await captureExplorerInteractionStates(
         captures,
         page,
@@ -1474,7 +1730,9 @@ async function captureProjectScenarios(
         .getByPlaceholder("Titel, Kategorie, Summary oder Status")
         .fill("keine Treffer");
       await page
-        .getByText("Keine Cluster entsprechen der aktuellen Textsuche oder dem Filter.")
+        .getByText(
+          "Keine Cluster entsprechen der aktuellen Textsuche oder dem Filter.",
+        )
         .waitFor({ state: "visible", timeout: 10_000 });
       await captureState(
         captures,
@@ -1529,9 +1787,7 @@ async function captureProjectScenarios(
         outputRoot,
         onState,
       );
-      await page
-        .getByRole("tab", { name: "Explorer", exact: true })
-        .click();
+      await page.getByRole("tab", { name: "Explorer", exact: true }).click();
       await page
         .getByRole("row", { name: /Passwort zurücksetzen/ })
         .first()
@@ -1561,6 +1817,7 @@ async function captureProjectScenarios(
       await page
         .getByText(/Explorer-Export erstellt/)
         .waitFor({ state: "visible", timeout: 10_000 });
+      await dismissFeedback(page);
       await captureState(
         captures,
         page,
@@ -1577,6 +1834,7 @@ async function captureProjectScenarios(
       await page
         .getByText("Verfeinerung vorausgefüllt")
         .waitFor({ state: "visible", timeout: 10_000 });
+      await dismissFeedback(page);
       await captureState(
         captures,
         page,
@@ -1709,13 +1967,7 @@ async function runAccessibility(configuration, activeWork) {
     const audits = [];
     const onState = async (capture) =>
       analyzeAccessibilityState(AxeBuilder, audits, capture);
-    await captureScenarios(
-      browser,
-      configuration,
-      null,
-      "signed-out",
-      onState,
-    );
+    await captureScenarios(browser, configuration, null, "signed-out", onState);
     await captureProjectScenarios(browser, configuration, null, onState);
     const violations = audits.flatMap((audit) =>
       audit.violations.map((violation) => ({

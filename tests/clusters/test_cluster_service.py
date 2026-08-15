@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import cast
+from typing import Any, cast
 from uuid import UUID
 
 import numpy as np
@@ -21,8 +21,11 @@ from backend.clusters.service import (
     HDBSCAN_FIXED_BYTES_PER_RECORD,
     HDBSCAN_NEIGHBOR_BYTES_PER_CELL,
     MAX_CLUSTER_WORKING_SET_BYTES,
+    MAX_PER_PARENT_REFINEMENT_GROUPS,
     NATIVE_FETCH_BYTES_PER_VALUE,
     NATIVE_VECTOR_FETCH_BATCH_SIZE,
+    BatchRefinementGroup,
+    ClusterOrigin,
     ClusterSetBasisBudget,
     ClusterSetInput,
     ClusterSetSummaryInput,
@@ -159,12 +162,14 @@ class SourcePairResolutionConnection:
     ) -> None:
         self._parent_pair_ids = parent_pair_ids
         self._cluster_pair_ids = cluster_pair_ids or {}
+        self.queries: list[str] = []
 
     def execute(
         self, query: str, params: tuple[object, ...] | None = None
     ) -> FakeResult:
         assert params is not None
         normalized = " ".join(query.split())
+        self.queries.append(normalized)
         if normalized.startswith(
             "SELECT DISTINCT c.id AS cluster_id, cm.message_pair_id"
         ):
@@ -264,6 +269,7 @@ class ClusterStartConnectionWithoutGlobalGuard(ParentStatusConnection):
             return FakeResult([{"record_count": 4}])
         if normalized.startswith("INSERT INTO cluster_sets"):
             assert params is not None
+            assert query.count("%s") == len(params)
             return FakeResult(
                 [
                     {
@@ -295,7 +301,7 @@ class ClusterStartConnectionWithoutGlobalGuard(ParentStatusConnection):
                         "error_message": None,
                         "diagnostics": {},
                         "started_at": None,
-                        "completed_at": None,
+                        "completed_at": NOW,
                         "cancel_requested_at": None,
                         "deleted_at": None,
                         "created_at": NOW,
@@ -309,6 +315,65 @@ class ClusterStartConnectionWithoutGlobalGuard(ParentStatusConnection):
         if normalized.startswith("INSERT INTO audit_events"):
             return FakeResult()
         return super().execute(query, params)
+
+
+class ClusterSetListCountsConnection:
+    def __init__(self) -> None:
+        self.query: str | None = None
+
+    def __enter__(self) -> ClusterSetListCountsConnection:
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        return None
+
+    def execute(
+        self, query: str, params: tuple[object, ...] | None = None
+    ) -> FakeResult:
+        self.query = " ".join(query.split())
+        assert params == (PROJECT_ID,)
+        return FakeResult(
+            [
+                {
+                    "id": PARENT_CLUSTER_SET_ID,
+                    "project_id": PROJECT_ID,
+                    "indexing_run_id": RUN_ID,
+                    "dataset_version_id": DATASET_ID,
+                    "dataset_display_name": "Fixture dataset",
+                    "indexing_deleted_at": None,
+                    "parent_cluster_set_id": None,
+                    "display_name": "Counted Cluster-Set",
+                    "status": "completed",
+                    "progress": 100,
+                    "phase": "completed",
+                    "derivation_type": "root",
+                    "vector_basis": "message",
+                    "message_weight": 1.0,
+                    "answer_weight": 0.0,
+                    "algorithm": "hdbscan",
+                    "parameters": {"min_cluster_size": 2},
+                    "source_snapshot": {"type": "all_dataset_pairs"},
+                    "llm_provider": None,
+                    "llm_provider_configuration_id": None,
+                    "llm_provider_display_name": None,
+                    "llm_model": None,
+                    "llm_parameters": {},
+                    "llm_sample_strategy": {},
+                    "error_code": None,
+                    "error_message": None,
+                    "diagnostics": {},
+                    "started_at": NOW,
+                    "completed_at": NOW,
+                    "cancel_requested_at": None,
+                    "deleted_at": None,
+                    "created_at": NOW,
+                    "updated_at": NOW,
+                    "cluster_count": 3,
+                    "active_cluster_count": 2,
+                    "active_message_pair_count": 5,
+                }
+            ]
+        )
 
 
 class ClusterConnection:
@@ -411,22 +476,41 @@ class ClusterConnection:
             )
         if normalized.startswith("INSERT INTO clusters"):
             assert params is not None
+            if len(params) == 12:
+                cluster_set_id = params[4]
+                title = params[5]
+                category = params[6]
+                status = params[7]
+                score = params[8]
+                is_outlier = params[9]
+                algorithm = params[10]
+                metadata = params[11]
+            else:
+                cluster_set_id = None
+                title = params[4]
+                category = params[5]
+                status = params[6]
+                score = params[7]
+                is_outlier = params[8]
+                algorithm = params[9]
+                metadata = params[10]
             self.clusters.append(
                 {
                     "id": params[0],
                     "project_id": params[1],
                     "analysis_run_id": params[2],
                     "dataset_version_id": params[3],
-                    "auto_title": params[4],
+                    "cluster_set_id": cluster_set_id,
+                    "auto_title": title,
                     "manual_title": None,
-                    "auto_category": params[5],
+                    "auto_category": category,
                     "manual_category": None,
-                    "auto_status": params[6],
+                    "auto_status": status,
                     "manual_status": None,
-                    "score": params[7],
-                    "is_outlier": params[8],
-                    "algorithm": params[9],
-                    "metadata": unwrap_json(params[10]),
+                    "score": score,
+                    "is_outlier": is_outlier,
+                    "algorithm": algorithm,
+                    "metadata": unwrap_json(metadata),
                     "created_at": NOW,
                     "updated_at": NOW,
                 }
@@ -434,12 +518,20 @@ class ClusterConnection:
             return FakeResult()
         if normalized.startswith("INSERT INTO cluster_memberships"):
             assert params is not None
+            if len(params) == 9:
+                message_pair_id = params[5]
+                membership_score = params[6]
+                is_outlier = params[7]
+            else:
+                message_pair_id = params[4]
+                membership_score = params[5]
+                is_outlier = params[6]
             self.memberships.append(
                 {
                     "cluster_id": params[2],
-                    "message_pair_id": params[4],
-                    "membership_score": params[5],
-                    "is_outlier": params[6],
+                    "message_pair_id": message_pair_id,
+                    "membership_score": membership_score,
+                    "is_outlier": is_outlier,
                 }
             )
             return FakeResult()
@@ -585,7 +677,11 @@ def test_generate_for_run_clusters_persisted_vectors_with_transitional_hdbscan_d
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     fake_connection = ClusterConnection(
-        algorithm_settings={"algorithm": "agglomerative", "linkage": "ward"}
+        algorithm_settings={
+            "algorithm": "agglomerative",
+            "n_clusters": 2,
+            "linkage": "ward",
+        }
     )
     monkeypatch.setattr(
         cluster_service_module,
@@ -784,12 +880,13 @@ def test_refinement_source_cluster_ids_must_all_belong_to_parent_set() -> None:
 
 def test_refinement_source_cluster_ids_from_parent_are_accepted() -> None:
     service = ClusterService()
+    connection = SourcePairResolutionConnection(
+        {PAIR_A, PAIR_B},
+        cluster_pair_ids={CLUSTER_A: {PAIR_A}, CLUSTER_B: {PAIR_B}},
+    )
 
     selected = service._resolve_source_pair_ids(
-        SourcePairResolutionConnection(
-            {PAIR_A, PAIR_B},
-            cluster_pair_ids={CLUSTER_A: {PAIR_A}, CLUSTER_B: {PAIR_B}},
-        ),
+        connection,
         project_id=PROJECT_ID,
         dataset_version_id=DATASET_ID,
         parent_cluster_set_id=PARENT_CLUSTER_SET_ID,
@@ -798,6 +895,318 @@ def test_refinement_source_cluster_ids_from_parent_are_accepted() -> None:
     )
 
     assert selected == sorted([PAIR_A, PAIR_B], key=str)
+    assert any(
+        "COALESCE(c.manual_status, c.auto_status) <> 'rejected'" in query
+        for query in connection.queries
+    )
+
+
+def test_refinement_source_cluster_ids_reject_filtered_out_parent_clusters() -> None:
+    service = ClusterService()
+
+    with pytest.raises(ClusterError) as error:
+        service._resolve_source_pair_ids(
+            SourcePairResolutionConnection(
+                {PAIR_A, PAIR_B},
+                cluster_pair_ids={CLUSTER_A: {PAIR_A}},
+            ),
+            project_id=PROJECT_ID,
+            dataset_version_id=DATASET_ID,
+            parent_cluster_set_id=PARENT_CLUSTER_SET_ID,
+            source_cluster_ids=[CLUSTER_A, CLUSTER_B],
+            source_pair_ids=[],
+        )
+
+    assert error.value.code == "CLUSTER_REFINEMENT_EMPTY_SOURCE"
+    assert error.value.field_errors == {
+        "source_cluster_ids": "source clusters must belong to the parent Cluster-Set"
+    }
+
+
+def test_refinement_source_pair_ids_use_non_rejected_parent_memberships() -> None:
+    service = ClusterService()
+    connection = SourcePairResolutionConnection({PAIR_A, PAIR_B})
+
+    selected = service._resolve_source_pair_ids(
+        connection,
+        project_id=PROJECT_ID,
+        dataset_version_id=DATASET_ID,
+        parent_cluster_set_id=PARENT_CLUSTER_SET_ID,
+        source_cluster_ids=[],
+        source_pair_ids=[PAIR_A, PAIR_B],
+    )
+
+    assert selected == sorted([PAIR_A, PAIR_B], key=str)
+    assert any(
+        "JOIN clusters c ON c.id = cm.cluster_id" in query
+        and "COALESCE(c.manual_status, c.auto_status) <> 'rejected'" in query
+        for query in connection.queries
+    )
+
+
+def test_per_parent_refinement_rejects_too_many_parent_clusters_before_database() -> (
+    None
+):
+    service = ClusterService()
+    too_many_cluster_ids = [
+        UUID(int=index + 1) for index in range(MAX_PER_PARENT_REFINEMENT_GROUPS + 1)
+    ]
+
+    with pytest.raises(ClusterError) as error:
+        service.start_cluster_set(
+            PROJECT_ID,
+            ClusterSetInput(
+                indexing_run_id=RUN_ID,
+                parent_cluster_set_id=PARENT_CLUSTER_SET_ID,
+                derivation_type="refinement",
+                refinement_mode="per_parent",
+                source_cluster_ids=too_many_cluster_ids,
+            ),
+            actor_user_id=ACTOR_ID,
+        )
+
+    assert error.value.code == "CLUSTER_BATCH_REFINEMENT_EMPTY_GROUP"
+    assert error.value.status_code == 422
+    assert error.value.field_errors == {
+        "source_cluster_ids": ("per-parent refinement selects too many parent clusters")
+    }
+
+
+class PerParentRefinementGroupConnection:
+    def __init__(self, rows: list[dict[str, object]]) -> None:
+        self.rows = rows
+        self.query: str | None = None
+        self.params: tuple[object, ...] | None = None
+
+    def execute(
+        self, query: str, params: tuple[object, ...] | None = None
+    ) -> FakeResult:
+        self.query = " ".join(query.split())
+        self.params = params
+        return FakeResult(self.rows)
+
+
+def test_per_parent_refinement_groups_preserve_parent_order_and_metadata() -> None:
+    connection = PerParentRefinementGroupConnection(
+        [
+            {
+                "cluster_id": CLUSTER_B,
+                "title": "Parent B",
+                "metadata": {"label": 7},
+                "is_outlier": False,
+                "message_pair_id": PAIR_B,
+            },
+            {
+                "cluster_id": CLUSTER_A,
+                "title": "Parent A",
+                "metadata": {"label": 3},
+                "is_outlier": False,
+                "message_pair_id": PAIR_A,
+            },
+            {
+                "cluster_id": CLUSTER_A,
+                "title": "Parent A",
+                "metadata": {"label": 3},
+                "is_outlier": False,
+                "message_pair_id": PAIR_A,
+            },
+        ]
+    )
+
+    groups = ClusterService()._per_parent_refinement_groups(
+        connection,
+        project_id=PROJECT_ID,
+        parent_cluster_set_id=PARENT_CLUSTER_SET_ID,
+        dataset_version_id=DATASET_ID,
+        source_cluster_ids=[CLUSTER_A, CLUSTER_B],
+    )
+
+    assert connection.params == (
+        PROJECT_ID,
+        PARENT_CLUSTER_SET_ID,
+        [CLUSTER_A, CLUSTER_B],
+        DATASET_ID,
+        [CLUSTER_A, CLUSTER_B],
+    )
+    assert "c.project_id = %s" in (connection.query or "")
+    assert "c.cluster_set_id = %s" in (connection.query or "")
+    assert "COALESCE(c.manual_status, c.auto_status) <> 'rejected'" in (
+        connection.query or ""
+    )
+    assert [(group.cluster_id, group.label, group.pair_ids) for group in groups] == [
+        (CLUSTER_A, 3, [PAIR_A]),
+        (CLUSTER_B, 7, [PAIR_B]),
+    ]
+
+
+def test_per_parent_refinement_groups_reject_too_many_parent_clusters() -> None:
+    too_many_cluster_ids = [
+        UUID(int=index + 1) for index in range(MAX_PER_PARENT_REFINEMENT_GROUPS + 1)
+    ]
+
+    with pytest.raises(ClusterError) as error:
+        ClusterService()._per_parent_refinement_groups(
+            PerParentRefinementGroupConnection([]),
+            project_id=PROJECT_ID,
+            parent_cluster_set_id=PARENT_CLUSTER_SET_ID,
+            dataset_version_id=DATASET_ID,
+            source_cluster_ids=too_many_cluster_ids,
+        )
+
+    assert error.value.code == "CLUSTER_BATCH_REFINEMENT_EMPTY_GROUP"
+    assert error.value.status_code == 422
+    assert error.value.field_errors == {
+        "source_cluster_ids": ("per-parent refinement selects too many parent clusters")
+    }
+
+
+def test_per_parent_refinement_group_rejects_empty_parent_cluster() -> None:
+    connection = PerParentRefinementGroupConnection(
+        [
+            {
+                "cluster_id": CLUSTER_A,
+                "title": "Parent A",
+                "metadata": {"label": 3},
+                "is_outlier": False,
+                "message_pair_id": PAIR_A,
+            },
+            {
+                "cluster_id": CLUSTER_B,
+                "title": "Parent B",
+                "metadata": {"label": 7},
+                "is_outlier": False,
+                "message_pair_id": None,
+            },
+        ]
+    )
+
+    with pytest.raises(ClusterError) as error:
+        ClusterService()._per_parent_refinement_groups(
+            connection,
+            project_id=PROJECT_ID,
+            parent_cluster_set_id=PARENT_CLUSTER_SET_ID,
+            dataset_version_id=DATASET_ID,
+            source_cluster_ids=[CLUSTER_A, CLUSTER_B],
+        )
+
+    assert error.value.code == "CLUSTER_BATCH_REFINEMENT_EMPTY_GROUP"
+    assert error.value.status_code == 422
+    assert error.value.field_errors == {
+        "source_cluster_ids": "selected parent cluster contains no usable rows"
+    }
+
+
+class ClusterInsertCaptureConnection:
+    def __init__(self) -> None:
+        self.cluster_rows: list[dict[str, object]] = []
+        self.membership_rows: list[dict[str, object]] = []
+
+    def execute(
+        self, query: str, params: tuple[object, ...] | None = None
+    ) -> FakeResult:
+        normalized = " ".join(query.split())
+        assert params is not None
+        if normalized.startswith("INSERT INTO clusters"):
+            self.cluster_rows.append(
+                {
+                    "id": params[0],
+                    "title": params[5],
+                    "category": params[6],
+                    "status": params[7],
+                    "is_outlier": params[9],
+                    "metadata": unwrap_json(params[11]),
+                }
+            )
+            return FakeResult()
+        if normalized.startswith("INSERT INTO cluster_memberships"):
+            self.membership_rows.append(
+                {
+                    "cluster_id": params[2],
+                    "message_pair_id": params[5],
+                    "is_outlier": params[7],
+                }
+            )
+            return FakeResult()
+        raise AssertionError(f"unexpected query: {normalized}")
+
+
+def test_insert_cluster_set_clusters_stores_per_parent_origin_metadata() -> None:
+    connection = ClusterInsertCaptureConnection()
+    config = validate_algorithm_settings(
+        {"algorithm": "agglomerative", "n_clusters": 2, "linkage": "ward"}
+    )
+    origin_by_pair_id: dict[object, ClusterOrigin] = {
+        PAIR_A: ClusterOrigin(
+            source_parent_cluster_id=CLUSTER_A,
+            source_parent_cluster_title="Parent A",
+            source_parent_cluster_label=3,
+            source_parent_cluster_is_outlier=False,
+            batch_group_index=0,
+            local_cluster_label=0,
+        ),
+        PAIR_B: ClusterOrigin(
+            source_parent_cluster_id=CLUSTER_B,
+            source_parent_cluster_title="Parent B",
+            source_parent_cluster_label=7,
+            source_parent_cluster_is_outlier=False,
+            batch_group_index=1,
+            local_cluster_label=0,
+        ),
+    }
+
+    ClusterService()._insert_cluster_set_clusters(
+        connection,
+        project_id=PROJECT_ID,
+        cluster_set_id=PARENT_CLUSTER_SET_ID,
+        indexing_run_id=RUN_ID,
+        dataset_version_id=DATASET_ID,
+        embedding_provider="ollama",
+        embedding_model="local-embed",
+        config=config,
+        pair_ids=[PAIR_A, PAIR_B],
+        labels=[0, 100_000],
+        probabilities=[0.8, 0.9],
+        mismatch_scores={PAIR_A: 0.1, PAIR_B: 0.2},
+        expected_dimensions=2,
+        vector_basis="message",
+        message_weight=1.0,
+        answer_weight=0.0,
+        origin_by_pair_id=origin_by_pair_id,
+    )
+
+    assert [row["title"] for row in connection.cluster_rows] == [
+        "Parent A · Cluster 1",
+        "Parent B · Cluster 1",
+    ]
+    assert len({row["id"] for row in connection.cluster_rows}) == 2
+    metadata_by_title = {
+        str(row["title"]): cast(dict[str, object], row["metadata"])
+        for row in connection.cluster_rows
+    }
+    assert metadata_by_title["Parent A · Cluster 1"]["label"] == 0
+    assert metadata_by_title["Parent B · Cluster 1"]["label"] == 100_000
+    assert metadata_by_title["Parent A · Cluster 1"]["refinement"] == {
+        "mode": "per_parent",
+        "source_parent_cluster_id": str(CLUSTER_A),
+        "source_parent_cluster_title": "Parent A",
+        "source_parent_cluster_label": 3,
+        "source_parent_cluster_is_outlier": False,
+        "batch_group_index": 0,
+        "local_cluster_label": 0,
+    }
+    assert metadata_by_title["Parent B · Cluster 1"]["refinement"] == {
+        "mode": "per_parent",
+        "source_parent_cluster_id": str(CLUSTER_B),
+        "source_parent_cluster_title": "Parent B",
+        "source_parent_cluster_label": 7,
+        "source_parent_cluster_is_outlier": False,
+        "batch_group_index": 1,
+        "local_cluster_label": 0,
+    }
+    assert {row["message_pair_id"] for row in connection.membership_rows} == {
+        PAIR_A,
+        PAIR_B,
+    }
 
 
 def test_active_cluster_set_does_not_block_second_start(
@@ -816,7 +1225,399 @@ def test_active_cluster_set_does_not_block_second_start(
     )
 
     assert cluster_set.status == "queued"
+    assert cluster_set.progress == 0
     assert cluster_set.phase == "queued"
+    assert cluster_set.error_code is None
+    assert cluster_set.error_message is None
+    assert cluster_set.diagnostics == {}
+
+
+class ClusterSetDuplicateConnection:
+    def __init__(
+        self, *, source_available: bool = True, source_status: str = "completed"
+    ) -> None:
+        self.source_available = source_available
+        self.source_status = source_status
+        self.insert_params: tuple[object, ...] | None = None
+        self.cluster_insert_params: list[tuple[object, ...]] = []
+        self.membership_insert_params: list[tuple[object, ...]] = []
+        self.event_metadata: dict[str, object] | None = None
+
+    def __enter__(self) -> ClusterSetDuplicateConnection:
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        return None
+
+    def transaction(self) -> FakeTransaction:
+        return FakeTransaction()
+
+    def execute(
+        self, query: str, params: tuple[object, ...] | None = None
+    ) -> FakeResult:
+        normalized = " ".join(query.split())
+        if normalized.startswith("SELECT cs.id, cs.indexing_run_id"):
+            if not self.source_available:
+                return FakeResult()
+            return FakeResult(
+                [
+                    {
+                        "id": PARENT_CLUSTER_SET_ID,
+                        "indexing_run_id": RUN_ID,
+                        "dataset_version_id": DATASET_ID,
+                        "parent_cluster_set_id": CLUSTER_A,
+                        "display_name": "Parent Set",
+                        "status": self.source_status,
+                        "progress": 100,
+                        "phase": "completed",
+                        "derivation_type": "refinement",
+                        "vector_basis": "combined",
+                        "message_weight": 0.4,
+                        "answer_weight": 0.6,
+                        "algorithm": "hdbscan",
+                        "parameters": {"min_cluster_size": 2},
+                        "source_snapshot": {
+                            "type": "selected_pairs",
+                            "source_pair_ids": [str(PAIR_A)],
+                        },
+                        "llm_provider": "ollama",
+                        "llm_provider_configuration_id": PARENT_CLUSTER_SET_ID,
+                        "llm_provider_display_name": "Ollama",
+                        "llm_model": "llama3.1",
+                        "llm_parameters": {"enabled": True},
+                        "llm_sample_strategy": {"requested": 2},
+                        "error_code": None,
+                        "error_message": None,
+                        "diagnostics": {"copied": True},
+                        "started_at": NOW,
+                        "completed_at": NOW,
+                        "cancel_requested_at": None,
+                        "indexing_status": "completed",
+                        "indexing_deleted_at": None,
+                        "dataset_deleted_at": None,
+                    }
+                ]
+            )
+        if normalized.startswith("INSERT INTO cluster_sets"):
+            assert params is not None
+            self.insert_params = params
+            return FakeResult()
+        if normalized.startswith("SELECT id, analysis_run_id"):
+            return FakeResult(
+                [
+                    {
+                        "id": CLUSTER_A,
+                        "analysis_run_id": RUN_ID,
+                        "dataset_version_id": DATASET_ID,
+                        "auto_title": "Auto title",
+                        "manual_title": "Manual title",
+                        "auto_category": "Auto category",
+                        "manual_category": "Manual category",
+                        "auto_status": "unreviewed",
+                        "manual_status": "reviewed",
+                        "score": 0.9,
+                        "is_outlier": False,
+                        "algorithm": "hdbscan",
+                        "metadata": {"label": 3},
+                        "auto_summary_question": "Question?",
+                        "auto_summary_answer": "Answer.",
+                    }
+                ]
+            )
+        if normalized.startswith("INSERT INTO clusters"):
+            assert params is not None
+            self.cluster_insert_params.append(params)
+            return FakeResult()
+        if normalized.startswith("SELECT id, cluster_id"):
+            return FakeResult(
+                [
+                    {
+                        "id": UUID("12121212-1212-1212-1212-121212121212"),
+                        "cluster_id": CLUSTER_A,
+                        "analysis_run_id": RUN_ID,
+                        "message_pair_id": PAIR_A,
+                        "membership_score": 0.8,
+                        "is_outlier": False,
+                        "assignment_type": "manual",
+                        "metadata": {"rank": 1},
+                    }
+                ]
+            )
+        if normalized.startswith("INSERT INTO cluster_memberships"):
+            assert params is not None
+            self.membership_insert_params.append(params)
+            return FakeResult()
+        if normalized.startswith("INSERT INTO cluster_set_events"):
+            assert params is not None
+            self.event_metadata = cast(dict[str, object], unwrap_json(params[5]))
+            return FakeResult()
+        if normalized.startswith("INSERT INTO audit_events"):
+            return FakeResult()
+        if normalized.startswith("SELECT cs.id, cs.project_id"):
+            assert self.insert_params is not None
+            return FakeResult(
+                [
+                    {
+                        "id": self.insert_params[0],
+                        "project_id": PROJECT_ID,
+                        "indexing_run_id": RUN_ID,
+                        "dataset_version_id": DATASET_ID,
+                        "dataset_display_name": "Fixture dataset",
+                        "indexing_deleted_at": None,
+                        "parent_cluster_set_id": CLUSTER_A,
+                        "display_name": "Parent Set (Kopie)",
+                        "status": "completed",
+                        "progress": 100,
+                        "phase": "completed",
+                        "derivation_type": "refinement",
+                        "vector_basis": "combined",
+                        "message_weight": 0.4,
+                        "answer_weight": 0.6,
+                        "algorithm": "hdbscan",
+                        "parameters": {"min_cluster_size": 2},
+                        "source_snapshot": {
+                            "type": "selected_pairs",
+                            "source_pair_ids": [str(PAIR_A)],
+                        },
+                        "llm_provider": "ollama",
+                        "llm_provider_configuration_id": PARENT_CLUSTER_SET_ID,
+                        "llm_provider_display_name": "Ollama",
+                        "llm_model": "llama3.1",
+                        "llm_parameters": {"enabled": True},
+                        "llm_sample_strategy": {"requested": 2},
+                        "error_code": None,
+                        "error_message": None,
+                        "diagnostics": {"copied": True},
+                        "started_at": NOW,
+                        "completed_at": None,
+                        "cancel_requested_at": None,
+                        "deleted_at": None,
+                        "created_at": NOW,
+                        "updated_at": NOW,
+                        "cluster_count": 1,
+                        "active_cluster_count": 1,
+                        "active_message_pair_count": 1,
+                    }
+                ]
+            )
+        raise AssertionError(f"unexpected query: {normalized}")
+
+
+def test_duplicate_cluster_set_copies_parameters_without_children(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection = ClusterSetDuplicateConnection()
+    monkeypatch.setattr(
+        cluster_service_module,
+        "open_database_connection",
+        lambda _: connection,
+    )
+
+    duplicate = ClusterService().duplicate_cluster_set(
+        PROJECT_ID, PARENT_CLUSTER_SET_ID, actor_user_id=ACTOR_ID
+    )
+
+    assert duplicate.display_name == "Parent Set (Kopie)"
+    assert duplicate.parent_cluster_set_id == CLUSTER_A
+    assert duplicate.status == "completed"
+    assert duplicate.progress == 100
+    assert duplicate.phase == "completed"
+    assert duplicate.cluster_count == 1
+    assert connection.insert_params is not None
+    assert connection.insert_params[4] == CLUSTER_A
+    assert connection.insert_params[6:14] == (
+        "completed",
+        100,
+        "completed",
+        "refinement",
+        "combined",
+        0.4,
+        0.6,
+        "hdbscan",
+    )
+    assert unwrap_json(connection.insert_params[14]) == {"min_cluster_size": 2}
+    assert unwrap_json(connection.insert_params[24]) == {"copied": True}
+    assert len(connection.cluster_insert_params) == 1
+    cluster_params = connection.cluster_insert_params[0]
+    assert cluster_params[4:14] == (
+        duplicate.id,
+        "Auto title",
+        "Manual title",
+        "Auto category",
+        "Manual category",
+        "unreviewed",
+        "reviewed",
+        0.9,
+        False,
+        "hdbscan",
+    )
+    assert unwrap_json(cluster_params[14]) == {"label": 3}
+    assert len(connection.membership_insert_params) == 1
+    assert connection.membership_insert_params[0][4:9] == (
+        PAIR_A,
+        0.8,
+        False,
+        "manual",
+        duplicate.id,
+    )
+    assert unwrap_json(connection.membership_insert_params[0][9]) == {"rank": 1}
+    assert connection.event_metadata == {
+        "source_cluster_set_id": str(PARENT_CLUSTER_SET_ID)
+    }
+
+
+def test_duplicate_cluster_set_rejects_unavailable_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection = ClusterSetDuplicateConnection(source_available=False)
+    monkeypatch.setattr(
+        cluster_service_module,
+        "open_database_connection",
+        lambda _: connection,
+    )
+
+    with pytest.raises(ClusterError) as error:
+        ClusterService().duplicate_cluster_set(
+            PROJECT_ID, PARENT_CLUSTER_SET_ID, actor_user_id=ACTOR_ID
+        )
+
+    assert error.value.code == "CLUSTER_SET_DUPLICATE_UNAVAILABLE"
+    assert error.value.status_code == 409
+    assert connection.insert_params is None
+
+
+def test_duplicate_cluster_set_rejects_running_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection = ClusterSetDuplicateConnection(source_status="running")
+    monkeypatch.setattr(
+        cluster_service_module,
+        "open_database_connection",
+        lambda _: connection,
+    )
+
+    with pytest.raises(ClusterError) as error:
+        ClusterService().duplicate_cluster_set(
+            PROJECT_ID, PARENT_CLUSTER_SET_ID, actor_user_id=ACTOR_ID
+        )
+
+    assert error.value.code == "CLUSTER_SET_DUPLICATE_UNAVAILABLE"
+    assert error.value.status_code == 409
+    assert connection.insert_params is None
+
+
+class ClusterSetBatchDeleteConnection:
+    def __init__(self, available_ids: list[UUID]) -> None:
+        self.available_ids = available_ids
+        self.update_called = False
+        self.event_count = 0
+        self.audit_metadata: dict[str, object] | None = None
+
+    def __enter__(self) -> ClusterSetBatchDeleteConnection:
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        return None
+
+    def transaction(self) -> FakeTransaction:
+        return FakeTransaction()
+
+    def execute(
+        self, query: str, params: tuple[object, ...] | None = None
+    ) -> FakeResult:
+        normalized = " ".join(query.split())
+        if normalized.startswith("SELECT id FROM cluster_sets"):
+            assert params is not None
+            assert params[0] == PROJECT_ID
+            return FakeResult(
+                [{"id": cluster_set_id} for cluster_set_id in self.available_ids]
+            )
+        if normalized.startswith("UPDATE cluster_sets"):
+            assert params is not None
+            self.update_called = True
+            return FakeResult(
+                [
+                    {"id": cluster_set_id}
+                    for cluster_set_id in cast(list[UUID], params[2])
+                ]
+            )
+        if normalized.startswith("INSERT INTO cluster_set_events"):
+            self.event_count += 1
+            return FakeResult()
+        if normalized.startswith("INSERT INTO audit_events"):
+            assert params is not None
+            self.audit_metadata = cast(dict[str, object], unwrap_json(params[5]))
+            return FakeResult()
+        raise AssertionError(f"unexpected query: {normalized}")
+
+
+def test_batch_delete_cluster_sets_deletes_all_selected_sets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    selected_ids = [PARENT_CLUSTER_SET_ID, CLUSTER_A]
+    connection = ClusterSetBatchDeleteConnection(selected_ids)
+    monkeypatch.setattr(
+        cluster_service_module,
+        "open_database_connection",
+        lambda _: connection,
+    )
+
+    deleted_ids = ClusterService().batch_delete_cluster_sets(
+        PROJECT_ID, selected_ids, actor_user_id=ACTOR_ID
+    )
+
+    assert deleted_ids == selected_ids
+    assert connection.update_called is True
+    assert connection.event_count == 2
+    assert connection.audit_metadata == {
+        "project_id": str(PROJECT_ID),
+        "cluster_set_count": 2,
+    }
+
+
+def test_batch_delete_cluster_sets_rejects_stale_selection_without_update(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection = ClusterSetBatchDeleteConnection([PARENT_CLUSTER_SET_ID])
+    monkeypatch.setattr(
+        cluster_service_module,
+        "open_database_connection",
+        lambda _: connection,
+    )
+
+    with pytest.raises(ClusterError) as error:
+        ClusterService().batch_delete_cluster_sets(
+            PROJECT_ID,
+            [PARENT_CLUSTER_SET_ID, CLUSTER_A],
+            actor_user_id=ACTOR_ID,
+        )
+
+    assert error.value.code == "CLUSTER_SET_BATCH_DELETE_FAILED"
+    assert error.value.status_code == 409
+    assert connection.update_called is False
+
+
+def test_list_cluster_sets_exposes_active_counts_with_rejected_excluded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_connection = ClusterSetListCountsConnection()
+    monkeypatch.setattr(
+        cluster_service_module,
+        "open_database_connection",
+        lambda _: fake_connection,
+    )
+
+    cluster_sets = ClusterService().list_cluster_sets(PROJECT_ID)
+
+    assert len(cluster_sets) == 1
+    assert cluster_sets[0].cluster_count == 3
+    assert cluster_sets[0].active_cluster_count == 2
+    assert cluster_sets[0].active_message_pair_count == 5
+    assert fake_connection.query is not None
+    assert "COALESCE(c.manual_status, c.auto_status) <> 'rejected'" in (
+        fake_connection.query
+    )
+    assert "COUNT(DISTINCT cm.message_pair_id) FILTER" in fake_connection.query
 
 
 def test_cancel_queued_summary_regeneration_keeps_cluster_set_completed(
@@ -1245,6 +2046,27 @@ def test_cluster_set_parent_requires_non_root_derivation_type(
     }
 
 
+@pytest.mark.parametrize("refinement_mode", ["unknown", "per-parent"])
+def test_cluster_set_refinement_mode_requires_refinement_derivation(
+    refinement_mode: str,
+) -> None:
+    service = ClusterService()
+
+    with pytest.raises(ClusterError) as error:
+        service.start_cluster_set(
+            PROJECT_ID,
+            ClusterSetInput(
+                indexing_run_id=RUN_ID,
+                refinement_mode=refinement_mode,
+            ),
+            actor_user_id=ACTOR_ID,
+        )
+
+    assert error.value.code == "CLUSTER_ALGORITHM_PARAMETERS_INVALID"
+    assert error.value.status_code == 422
+    assert "refinement_mode" in error.value.field_errors
+
+
 def test_cluster_set_refinement_requires_source_selection(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1669,6 +2491,346 @@ def test_execute_hdbscan_with_reduction_publishes_clustering_after_reducing(
     }
 
 
+def test_per_parent_batch_refinement_group_failure_writes_no_partial_clusters(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class PerParentExecutionConnection:
+        def __init__(self) -> None:
+            self.failed_params: tuple[object, ...] | None = None
+
+        def __enter__(self) -> PerParentExecutionConnection:
+            return self
+
+        def __exit__(self, *_: object) -> None:
+            return None
+
+        def transaction(self) -> FakeTransaction:
+            return FakeTransaction()
+
+        def execute(
+            self, query: str, params: tuple[object, ...] | None = None
+        ) -> FakeResult:
+            normalized = " ".join(query.split())
+            if normalized.startswith("UPDATE cluster_sets cs SET status = 'running'"):
+                return FakeResult(
+                    [
+                        {
+                            "id": PARENT_CLUSTER_SET_ID,
+                            "project_id": PROJECT_ID,
+                            "indexing_run_id": RUN_ID,
+                            "dataset_version_id": DATASET_ID,
+                            "vector_basis": "message",
+                            "message_weight": 1.0,
+                            "answer_weight": 0.0,
+                            "algorithm": "hdbscan",
+                            "parameters": {"min_cluster_size": 2},
+                            "source_snapshot": {
+                                "type": "selected_pairs",
+                                "refinement_mode": "per_parent",
+                                "parent_cluster_set_id": str(PARENT_CLUSTER_SET_ID),
+                                "source_cluster_ids": [str(CLUSTER_A), str(CLUSTER_B)],
+                                "source_pair_ids": [
+                                    str(PAIR_A),
+                                    str(PAIR_B),
+                                    str(PAIR_C),
+                                ],
+                            },
+                            "llm_provider": None,
+                            "llm_provider_configuration_id": None,
+                            "llm_provider_display_name": None,
+                            "llm_model": None,
+                            "llm_sample_strategy": {},
+                            "provider": "ollama",
+                            "model": "local-embed",
+                        }
+                    ]
+                )
+            if normalized.startswith("UPDATE cluster_sets SET status = 'failed'"):
+                assert params is not None
+                self.failed_params = params
+                return FakeResult()
+            return FakeResult()
+
+    fake_connection = PerParentExecutionConnection()
+    monkeypatch.setattr(
+        cluster_service_module,
+        "open_database_connection",
+        lambda _: fake_connection,
+    )
+    service = ClusterService()
+    insert_called = False
+    cluster_calls = 0
+    progress_phases: list[str] = []
+    summary_source_pair_ids: list[list[UUID] | None] = []
+
+    monkeypatch.setattr(service, "_raise_if_cluster_set_cancelled", lambda *_: None)
+    monkeypatch.setattr(
+        service,
+        "_per_parent_refinement_groups",
+        lambda *_args, **_kwargs: [
+            BatchRefinementGroup(
+                cluster_id=CLUSTER_A,
+                title="Parent A",
+                label=0,
+                is_outlier=False,
+                pair_ids=[PAIR_A, PAIR_B],
+            ),
+            BatchRefinementGroup(
+                cluster_id=CLUSTER_B,
+                title="Parent B",
+                label=1,
+                is_outlier=False,
+                pair_ids=[PAIR_C],
+            ),
+        ],
+    )
+
+    def fake_input_summary(
+        *_args: object,
+        source_pair_ids: list[UUID] | None,
+        **_kwargs: object,
+    ) -> dict[str, object]:
+        summary_source_pair_ids.append(source_pair_ids)
+        if source_pair_ids == [PAIR_A, PAIR_B, PAIR_C]:
+            raise AssertionError(
+                "per-parent refinement must not preflight the aggregate source"
+            )
+        return {"record_count": len(source_pair_ids or [])}
+
+    monkeypatch.setattr(service, "_cluster_set_input_summary", fake_input_summary)
+    monkeypatch.setattr(
+        service,
+        "_validate_cluster_set_basis_budget",
+        lambda *_args, **_kwargs: ClusterSetBasisBudget(
+            output_dimensions=2,
+            message_dimensions=2,
+            answer_dimensions=None,
+        ),
+    )
+
+    def fake_load_matrix(
+        *_args: object,
+        source_pair_ids: list[UUID] | None,
+        **_kwargs: object,
+    ) -> tuple[list[UUID], np.ndarray, dict[UUID, float]]:
+        selected_pair_ids = source_pair_ids or [PAIR_A, PAIR_B, PAIR_C]
+        return (
+            selected_pair_ids,
+            np.ones((len(selected_pair_ids), 2), dtype=np.float32),
+            {pair_id: 0.0 for pair_id in selected_pair_ids},
+        )
+
+    def fake_cluster_vectors(
+        _config: object, vectors: np.ndarray
+    ) -> tuple[list[int], list[float]]:
+        nonlocal cluster_calls
+        cluster_calls += 1
+        if cluster_calls == 2:
+            raise ClusterError(
+                "group too small",
+                code="CLUSTER_REFINEMENT_EMPTY_SOURCE",
+                status_code=422,
+            )
+        return [0 for _ in range(len(vectors))], [0.9 for _ in range(len(vectors))]
+
+    def fail_insert(*_args: object, **_kwargs: object) -> None:
+        nonlocal insert_called
+        insert_called = True
+
+    monkeypatch.setattr(service, "_load_cluster_set_embedding_matrix", fake_load_matrix)
+    monkeypatch.setattr(service, "_cluster_vectors", fake_cluster_vectors)
+    monkeypatch.setattr(service, "_insert_cluster_set_clusters", fail_insert)
+    monkeypatch.setattr(
+        service,
+        "_publish_cluster_set_progress",
+        lambda _cluster_set_id, _progress, phase: progress_phases.append(phase),
+    )
+
+    service.execute_queued_cluster_set(PARENT_CLUSTER_SET_ID)
+
+    assert insert_called is False
+    assert cluster_calls == 2
+    assert progress_phases == [
+        "loading",
+        "clustering_group_1",
+        "clustering_group_2",
+    ]
+    assert summary_source_pair_ids == [[PAIR_A, PAIR_B], [PAIR_C]]
+    assert fake_connection.failed_params is not None
+    assert fake_connection.failed_params[:2] == (
+        "CLUSTER_BATCH_REFINEMENT_GROUP_INVALID",
+        "group too small",
+    )
+    assert unwrap_json(fake_connection.failed_params[2]) == {
+        "failure_type": "ClusterError",
+        "retryable": True,
+    }
+
+
+def test_per_parent_batch_refinement_does_not_materialize_aggregate_vectors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class PerParentSuccessConnection:
+        def __init__(self) -> None:
+            self.completed_params: tuple[object, ...] | None = None
+
+        def __enter__(self) -> PerParentSuccessConnection:
+            return self
+
+        def __exit__(self, *_: object) -> None:
+            return None
+
+        def transaction(self) -> FakeTransaction:
+            return FakeTransaction()
+
+        def execute(
+            self, query: str, params: tuple[object, ...] | None = None
+        ) -> FakeResult:
+            normalized = " ".join(query.split())
+            if normalized.startswith("UPDATE cluster_sets cs SET status = 'running'"):
+                return FakeResult(
+                    [
+                        {
+                            "id": PARENT_CLUSTER_SET_ID,
+                            "project_id": PROJECT_ID,
+                            "indexing_run_id": RUN_ID,
+                            "dataset_version_id": DATASET_ID,
+                            "vector_basis": "message",
+                            "message_weight": 1.0,
+                            "answer_weight": 0.0,
+                            "algorithm": "hdbscan",
+                            "parameters": {"min_cluster_size": 2},
+                            "source_snapshot": {
+                                "type": "selected_pairs",
+                                "refinement_mode": "per_parent",
+                                "parent_cluster_set_id": str(PARENT_CLUSTER_SET_ID),
+                                "source_cluster_ids": [str(CLUSTER_A), str(CLUSTER_B)],
+                                "source_pair_ids": [
+                                    str(PAIR_A),
+                                    str(PAIR_B),
+                                    str(PAIR_C),
+                                ],
+                            },
+                            "llm_provider": None,
+                            "llm_provider_configuration_id": None,
+                            "llm_provider_display_name": None,
+                            "llm_model": None,
+                            "llm_sample_strategy": {},
+                            "provider": "ollama",
+                            "model": "local-embed",
+                        }
+                    ]
+                )
+            if normalized.startswith("UPDATE cluster_sets SET status = 'completed'"):
+                assert params is not None
+                self.completed_params = params
+                return FakeResult()
+            return FakeResult()
+
+    fake_connection = PerParentSuccessConnection()
+    monkeypatch.setattr(
+        cluster_service_module,
+        "open_database_connection",
+        lambda _: fake_connection,
+    )
+    service = ClusterService()
+    summary_source_pair_ids: list[list[UUID] | None] = []
+    inserted_pair_ids: list[object] = []
+    inserted_labels: list[int] = []
+    original_asarray = np.asarray
+
+    monkeypatch.setattr(service, "_raise_if_cluster_set_cancelled", lambda *_: None)
+    monkeypatch.setattr(
+        service,
+        "_per_parent_refinement_groups",
+        lambda *_args, **_kwargs: [
+            BatchRefinementGroup(
+                cluster_id=CLUSTER_A,
+                title="Parent A",
+                label=0,
+                is_outlier=False,
+                pair_ids=[PAIR_A, PAIR_B],
+            ),
+            BatchRefinementGroup(
+                cluster_id=CLUSTER_B,
+                title="Parent B",
+                label=1,
+                is_outlier=False,
+                pair_ids=[PAIR_C],
+            ),
+        ],
+    )
+
+    def fake_input_summary(
+        *_args: object,
+        source_pair_ids: list[UUID] | None,
+        **_kwargs: object,
+    ) -> dict[str, object]:
+        summary_source_pair_ids.append(source_pair_ids)
+        if source_pair_ids == [PAIR_A, PAIR_B, PAIR_C]:
+            raise AssertionError(
+                "per-parent refinement must not preflight the aggregate source"
+            )
+        return {"record_count": len(source_pair_ids or [])}
+
+    def fake_load_matrix(
+        *_args: object,
+        source_pair_ids: list[UUID] | None,
+        **_kwargs: object,
+    ) -> tuple[list[UUID], np.ndarray, dict[UUID, float]]:
+        assert source_pair_ids is not None
+        return (
+            source_pair_ids,
+            np.ones((len(source_pair_ids), 2), dtype=np.float32),
+            {pair_id: 0.0 for pair_id in source_pair_ids},
+        )
+
+    def fake_insert(
+        *_args: object,
+        pair_ids: list[object],
+        labels: list[int],
+        **_kwargs: object,
+    ) -> None:
+        inserted_pair_ids.extend(pair_ids)
+        inserted_labels.extend(labels)
+
+    def guarded_asarray(value: object, *args: Any, **kwargs: Any) -> object:
+        if isinstance(value, list) and value and isinstance(value[0], np.ndarray):
+            raise AssertionError("per-parent refinement materialized aggregate vectors")
+        return original_asarray(value, *args, **kwargs)
+
+    monkeypatch.setattr(service, "_cluster_set_input_summary", fake_input_summary)
+    monkeypatch.setattr(
+        service,
+        "_validate_cluster_set_basis_budget",
+        lambda *_args, **_kwargs: ClusterSetBasisBudget(
+            output_dimensions=2,
+            message_dimensions=2,
+            answer_dimensions=None,
+        ),
+    )
+    monkeypatch.setattr(service, "_load_cluster_set_embedding_matrix", fake_load_matrix)
+    monkeypatch.setattr(
+        service,
+        "_cluster_vectors",
+        lambda _config, vectors: (
+            [0 for _ in range(len(vectors))],
+            [0.9] * len(vectors),
+        ),
+    )
+    monkeypatch.setattr(service, "_insert_cluster_set_clusters", fake_insert)
+    monkeypatch.setattr(service, "_record_cluster_set_event", lambda *_, **__: None)
+    monkeypatch.setattr(service, "_publish_cluster_set_progress", lambda *_, **__: None)
+    monkeypatch.setattr(cluster_service_module.np, "asarray", guarded_asarray)
+
+    service.execute_queued_cluster_set(PARENT_CLUSTER_SET_ID)
+
+    assert summary_source_pair_ids == [[PAIR_A, PAIR_B], [PAIR_C]]
+    assert inserted_pair_ids == [PAIR_A, PAIR_B, PAIR_C]
+    assert inserted_labels == [0, 0, 100_000]
+    assert fake_connection.completed_params is not None
+
+
 def test_algorithm_settings_accepts_hdbscan_reduction_and_backend_parameters() -> None:
     config = validate_algorithm_settings(
         {
@@ -1864,27 +3026,86 @@ def test_cluster_summary_provider_error_uses_extractive_fallback() -> None:
 
 
 @pytest.mark.parametrize(
-    "settings",
+    ("settings", "expected_code"),
     [
-        {"algorithm": "other"},
-        {"algorithm": "hdbscan", "min_cluster_size": 1},
-        {"algorithm": "hdbscan", "min_cluster_size": 100_001},
-        {"algorithm": "hdbscan", "min_samples": 100_001},
-        {"algorithm": "hdbscan", "outlier_threshold": 1.1},
-        {"algorithm": "hdbscan", "n_clusters": 2},
-        {
-            "algorithm": "agglomerative",
-            "n_clusters": 2,
-            "distance_threshold": 0.5,
-        },
-        {"algorithm": "agglomerative", "linkage": "invalid"},
+        ({"algorithm": "other"}, "CLUSTER_ALGORITHM_PARAMETERS_INVALID"),
+        (
+            {"algorithm": "hdbscan", "min_cluster_size": 1},
+            "CLUSTER_ALGORITHM_PARAMETERS_INVALID",
+        ),
+        (
+            {"algorithm": "hdbscan", "min_cluster_size": 100_001},
+            "CLUSTER_ALGORITHM_PARAMETERS_INVALID",
+        ),
+        (
+            {"algorithm": "hdbscan", "min_samples": 100_001},
+            "CLUSTER_ALGORITHM_PARAMETERS_INVALID",
+        ),
+        (
+            {"algorithm": "hdbscan", "outlier_threshold": 1.1},
+            "CLUSTER_OUTLIER_EMPTY_RESULT",
+        ),
+        (
+            {"algorithm": "hdbscan", "n_clusters": 2},
+            "CLUSTER_ALGORITHM_PARAMETERS_INVALID",
+        ),
+        ({"algorithm": "agglomerative"}, "CLUSTER_ALGORITHM_PARAMETERS_INVALID"),
+        (
+            {"algorithm": "agglomerative", "n_clusters": None},
+            "CLUSTER_ALGORITHM_PARAMETERS_INVALID",
+        ),
+        (
+            {"algorithm": "agglomerative", "distance_threshold": None},
+            "CLUSTER_ALGORITHM_PARAMETERS_INVALID",
+        ),
+        (
+            {
+                "algorithm": "agglomerative",
+                "n_clusters": 2,
+                "distance_threshold": 0.5,
+            },
+            "CLUSTER_ALGORITHM_PARAMETERS_INVALID",
+        ),
+        (
+            {"algorithm": "agglomerative", "linkage": "invalid"},
+            "CLUSTER_ALGORITHM_PARAMETERS_INVALID",
+        ),
     ],
 )
 def test_algorithm_settings_reject_invalid_contract(
     settings: dict[str, object],
+    expected_code: str,
 ) -> None:
-    with pytest.raises(ClusterError):
+    with pytest.raises(ClusterError) as error:
         validate_algorithm_settings(settings)
+    assert error.value.code == expected_code
+    assert error.value.status_code == 422
+
+
+def test_agglomerative_accepts_active_split_when_inactive_split_is_null() -> None:
+    fixed_clusters = validate_algorithm_settings(
+        {
+            "algorithm": "agglomerative",
+            "n_clusters": 4,
+            "distance_threshold": None,
+            "linkage": "average",
+        }
+    )
+    distance_threshold = validate_algorithm_settings(
+        {
+            "algorithm": "agglomerative",
+            "n_clusters": None,
+            "distance_threshold": 0.35,
+            "linkage": "complete",
+        }
+    )
+
+    assert fixed_clusters.parameters["n_clusters"] == 4
+    assert fixed_clusters.parameters["distance_threshold"] is None
+    assert fixed_clusters.parameters["linkage"] == "average"
+    assert distance_threshold.parameters["n_clusters"] is None
+    assert distance_threshold.parameters["distance_threshold"] == 0.35
+    assert distance_threshold.parameters["linkage"] == "complete"
 
 
 def _embedding_rows(count: int) -> list[dict[str, object]]:
@@ -1899,7 +3120,9 @@ def _embedding_rows(count: int) -> list[dict[str, object]]:
 
 
 def test_agglomerative_rejects_10001_records_before_estimator() -> None:
-    config = validate_algorithm_settings({"algorithm": "agglomerative"})
+    config = validate_algorithm_settings(
+        {"algorithm": "agglomerative", "n_clusters": 2}
+    )
 
     with pytest.raises(ClusterError, match="at most 10000"):
         validate_cluster_input_budget(
@@ -1912,7 +3135,7 @@ def test_agglomerative_rejects_10001_records_before_estimator() -> None:
 
 
 def test_hdbscan_neighbor_budget_accepts_boundary_and_rejects_next_value() -> None:
-    record_count = 10_000
+    record_count = 100_000
     dimensions = 2
     fixed_bytes = (
         record_count * dimensions * HDBSCAN_BYTES_PER_VECTOR_VALUE
@@ -1954,41 +3177,46 @@ def test_hdbscan_budget_uses_min_cluster_size_when_min_samples_is_absent() -> No
     config = validate_algorithm_settings(
         {
             "algorithm": "hdbscan",
-            "min_cluster_size": 10_000,
+            "min_cluster_size": 100_000,
         }
     )
 
     with pytest.raises(ClusterError, match="working set estimate .* exceeds"):
         validate_cluster_input_budget(
             config,
-            record_count=10_000,
-            embedding_count=10_000,
+            record_count=100_000,
+            embedding_count=100_000,
             minimum_dimensions=2,
             maximum_dimensions=2,
         )
 
 
-def test_agglomerative_budget_includes_full_ward_moment_matrix() -> None:
+def test_agglomerative_ward_budget_accepts_max_record_dimension_under_5gib_limit() -> (
+    None
+):
     record_count = 10_000
-    dimensions = 3_000
+    dimensions = 8_192
     assert (
         record_count * dimensions * HDBSCAN_BYTES_PER_VECTOR_VALUE
         < MAX_CLUSTER_WORKING_SET_BYTES
     )
     assert (
         record_count * dimensions * AGGLOMERATIVE_BYTES_PER_VECTOR_VALUE
-        > MAX_CLUSTER_WORKING_SET_BYTES
+        < MAX_CLUSTER_WORKING_SET_BYTES
     )
-    config = validate_algorithm_settings({"algorithm": "agglomerative"})
+    config = validate_algorithm_settings(
+        {"algorithm": "agglomerative", "n_clusters": 2}
+    )
 
-    with pytest.raises(ClusterError, match="working set estimate .* exceeds"):
-        validate_cluster_input_budget(
-            config,
-            record_count=record_count,
-            embedding_count=record_count,
-            minimum_dimensions=dimensions,
-            maximum_dimensions=dimensions,
-        )
+    accepted_dimensions = validate_cluster_input_budget(
+        config,
+        record_count=record_count,
+        embedding_count=record_count,
+        minimum_dimensions=dimensions,
+        maximum_dimensions=dimensions,
+    )
+
+    assert accepted_dimensions == dimensions
 
 
 @pytest.mark.parametrize("linkage", ["complete", "average", "single"])
@@ -1996,12 +3224,12 @@ def test_non_ward_budget_includes_all_edge_dimension_distance_intermediates(
     linkage: str,
 ) -> None:
     record_count = 1_000
-    dimensions = 900
+    dimensions = 8_192
     ward = validate_algorithm_settings(
-        {"algorithm": "agglomerative", "linkage": "ward"}
+        {"algorithm": "agglomerative", "n_clusters": 2, "linkage": "ward"}
     )
     non_ward = validate_algorithm_settings(
-        {"algorithm": "agglomerative", "linkage": linkage}
+        {"algorithm": "agglomerative", "n_clusters": 2, "linkage": linkage}
     )
 
     assert (
@@ -2049,8 +3277,8 @@ def test_total_vector_budget_fails_before_loading_or_cluster_writes(
                 return FakeResult(
                     [
                         {
-                            "record_count": 10_000,
-                            "embedding_count": 10_000,
+                            "record_count": 100_000,
+                            "embedding_count": 100_000,
                             "minimum_dimensions": 8_192,
                             "maximum_dimensions": 8_192,
                         }
@@ -2069,9 +3297,9 @@ def test_total_vector_budget_fails_before_loading_or_cluster_writes(
         ClusterService().generate_for_run(PROJECT_ID, RUN_ID, actor_user_id=ACTOR_ID)
 
     message = str(error.value)
-    assert "10000 records" in message
+    assert "100000 records" in message
     assert "8192 dimensions" in message
-    assert f"{MAX_CLUSTER_WORKING_SET_BYTES}-byte (512 MiB) limit" in message
+    assert f"{MAX_CLUSTER_WORKING_SET_BYTES}-byte (5 GiB) limit" in message
     assert "HDBSCAN min_samples" in message
     assert fake_connection.message_pair_selects == 0
     assert fake_connection.clusters == []
@@ -2082,7 +3310,7 @@ def test_native_pgvector_fixture_that_exceeded_old_text_peak_reaches_estimator(
 ) -> None:
     dimensions = 8_192
     record_count = 600
-    assert record_count * dimensions * 192 > MAX_CLUSTER_WORKING_SET_BYTES
+    assert record_count * dimensions * 192 > 512 * 1024 * 1024
 
     class NativeSummaryConnection(ClusterConnection):
         def execute(
@@ -2155,15 +3383,15 @@ def test_hdbscan_neighbor_budget_fails_before_estimator() -> None:
     config = validate_algorithm_settings(
         {
             "algorithm": "hdbscan",
-            "min_samples": 10_000,
+            "min_samples": 100_000,
         }
     )
 
     with pytest.raises(ClusterError, match="working set estimate .* exceeds"):
         validate_cluster_input_budget(
             config,
-            record_count=10_000,
-            embedding_count=10_000,
+            record_count=100_000,
+            embedding_count=100_000,
             minimum_dimensions=2,
             maximum_dimensions=2,
         )
