@@ -22,6 +22,9 @@ type ApiProjectFixture = {
   created_at: string;
   updated_at: string;
   ticket_url_template: string | null;
+  llm_taxonomy_max_source_clusters: number;
+  llm_taxonomy_max_prompt_characters: number;
+  llm_taxonomy_max_total_keyword_terms: number;
 };
 
 const owner = {
@@ -44,6 +47,9 @@ const alphaProject: ApiProjectFixture = {
   created_at: "2026-07-22T00:00:00Z",
   updated_at: "2026-07-22T00:00:00Z",
   ticket_url_template: null,
+  llm_taxonomy_max_source_clusters: 200,
+  llm_taxonomy_max_prompt_characters: 80_000,
+  llm_taxonomy_max_total_keyword_terms: 250_000,
 };
 const betaProject: ApiProjectFixture = {
   id: "project-beta",
@@ -52,6 +58,9 @@ const betaProject: ApiProjectFixture = {
   created_at: "2026-07-22T00:00:00Z",
   updated_at: "2026-07-22T00:00:00Z",
   ticket_url_template: null,
+  llm_taxonomy_max_source_clusters: 200,
+  llm_taxonomy_max_prompt_characters: 80_000,
+  llm_taxonomy_max_total_keyword_terms: 250_000,
 };
 const importLog = {
   id: "import-log-1",
@@ -158,6 +167,7 @@ const cluster = {
   metadata: { non_quadratic: true, qa_mismatch: { maximum: 0.44 } },
   auto_summary_question: "How do I reset it?",
   auto_summary_answer: "Use the reset link.",
+  keywords: ["passwort", "login problem"],
   created_at: "2026-07-22T00:00:00Z",
   updated_at: "2026-07-22T00:00:00Z",
 };
@@ -208,6 +218,7 @@ const clusterSet = {
   cluster_count: 0,
   active_cluster_count: 0,
   active_message_pair_count: 0,
+  keyword_count: 10,
 };
 const updatedCluster = {
   ...cluster,
@@ -1354,14 +1365,21 @@ test("allows signed-in users to create open rename and delete projects with conf
       return jsonResponse([]);
     }
     if (path === "/api/projects/project-beta" && method === "PATCH") {
-      expect(String(init?.body)).toContain("Beta renamed");
-      expect(String(init?.body)).toContain(
+      const payload = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      expect(payload.name).toBe("Beta renamed");
+      expect(payload.ticket_url_template).toBe(
         "https://tickets.example.test/T-<ticket_id>",
       );
+      expect(payload.llm_taxonomy_max_source_clusters).toBe(350);
+      expect(payload.llm_taxonomy_max_prompt_characters).toBe(240_000);
+      expect(payload.llm_taxonomy_max_total_keyword_terms).toBe(750_000);
       currentBetaProject = {
         ...betaProject,
         name: "Beta renamed",
         ticket_url_template: "https://tickets.example.test/T-<ticket_id>",
+        llm_taxonomy_max_source_clusters: 350,
+        llm_taxonomy_max_prompt_characters: 240_000,
+        llm_taxonomy_max_total_keyword_terms: 750_000,
       };
       return jsonResponse(currentBetaProject);
     }
@@ -1454,6 +1472,24 @@ test("allows signed-in users to create open rename and delete projects with conf
     within(settingsForm).getByLabelText("Ticket-Link-Vorlage"),
     "https://tickets.example.test/T-<ticket_id>",
   );
+  const sourceClusterBudget = within(settingsForm).getByLabelText(
+    "Maximale Quellcluster",
+  );
+  const promptCharacterBudget = within(settingsForm).getByLabelText(
+    "Maximale Promptzeichen",
+  );
+  const keywordTermBudget = within(settingsForm).getByLabelText(
+    "Maximales Keyword-Vokabular",
+  );
+  expect(sourceClusterBudget).toHaveValue(200);
+  expect(promptCharacterBudget).toHaveValue(80_000);
+  expect(keywordTermBudget).toHaveValue(250_000);
+  await user.clear(sourceClusterBudget);
+  await user.type(sourceClusterBudget, "350");
+  await user.clear(promptCharacterBudget);
+  await user.type(promptCharacterBudget, "240000");
+  await user.clear(keywordTermBudget);
+  await user.type(keywordTermBudget, "750000");
   await user.click(
     within(settingsForm).getByRole("button", {
       name: "Einstellungen speichern",
@@ -1482,6 +1518,18 @@ test("allows signed-in users to create open rename and delete projects with conf
     await screen.findByRole("heading", { name: "Beta renamed" }),
   ).toBeInTheDocument();
   await openProjectTab(user, "Einstellungen");
+  const reopenedSettingsForm = screen.getByRole("form", {
+    name: "Projekteinstellungen speichern",
+  });
+  expect(
+    within(reopenedSettingsForm).getByLabelText("Maximale Quellcluster"),
+  ).toHaveValue(350);
+  expect(
+    within(reopenedSettingsForm).getByLabelText("Maximale Promptzeichen"),
+  ).toHaveValue(240_000);
+  expect(
+    within(reopenedSettingsForm).getByLabelText("Maximales Keyword-Vokabular"),
+  ).toHaveValue(750_000);
   const deleteForm = screen.getByRole("form", { name: "Projekt löschen" });
   await user.type(
     within(deleteForm).getByLabelText("Projektname bestätigen"),
@@ -1493,6 +1541,115 @@ test("allows signed-in users to create open rename and delete projects with conf
   await waitFor(() =>
     expect(screen.queryByText("Beta renamed")).not.toBeInTheDocument(),
   );
+});
+
+test("validates project cluster budget hard caps and preserves the entered value", async () => {
+  const user = userEvent.setup();
+  let patchCalls = 0;
+  mockProjectFetch((path, method) => {
+    if (path === "/api/projects/project-alpha" && method === "PATCH") {
+      patchCalls += 1;
+      return jsonResponse(alphaProject);
+    }
+    return undefined;
+  });
+  render(<App />);
+
+  await signIn(user);
+  const projectList = await screen.findByRole("region", {
+    name: "Bestehende Projekte",
+  });
+  await user.click(getProjectRow(projectList, "Alpha"));
+  await screen.findByRole("heading", { name: "Alpha" });
+  await openProjectTab(user, "Einstellungen");
+
+  const settingsForm = screen.getByRole("form", {
+    name: "Projekteinstellungen speichern",
+  });
+  const sourceClusterBudget = within(settingsForm).getByLabelText(
+    "Maximale Quellcluster",
+  );
+  await user.clear(sourceClusterBudget);
+  await user.type(sourceClusterBudget, "501");
+  await user.click(
+    within(settingsForm).getByRole("button", {
+      name: "Einstellungen speichern",
+    }),
+  );
+
+  expect(
+    await within(settingsForm).findByText(
+      "Der Wert muss eine ganze Zahl zwischen 1 und 500 sein.",
+    ),
+  ).toBeInTheDocument();
+  expect(sourceClusterBudget).toHaveValue(501);
+  expect(patchCalls).toBe(0);
+  expect(
+    screen.queryByText("Projekteinstellungen gespeichert."),
+  ).not.toBeInTheDocument();
+});
+
+test("renders server-side cluster budget field errors without losing input", async () => {
+  const user = userEvent.setup();
+  mockProjectFetch((path, method) => {
+    if (path === "/api/projects/project-alpha" && method === "PATCH") {
+      return jsonResponse(
+        {
+          type: "urn:skm:error:VALIDATION_FAILED",
+          title: "Projekteinstellungen sind ungültig.",
+          status: 422,
+          detail:
+            "Die Projekteinstellungen konnten mit diesen Eingaben nicht gespeichert werden.",
+          code: "VALIDATION_FAILED",
+          correlationId: null,
+          retryable: true,
+          suggestedAction: "correct-input",
+          fieldErrors: [
+            {
+              field: "llm_taxonomy_max_prompt_characters",
+              message:
+                "Der Wert muss eine ganze Zahl zwischen 10.000 und 500.000 sein.",
+            },
+          ],
+        },
+        { status: 422 },
+      );
+    }
+    return undefined;
+  });
+  render(<App />);
+
+  await signIn(user);
+  const projectList = await screen.findByRole("region", {
+    name: "Bestehende Projekte",
+  });
+  await user.click(getProjectRow(projectList, "Alpha"));
+  await screen.findByRole("heading", { name: "Alpha" });
+  await openProjectTab(user, "Einstellungen");
+
+  const settingsForm = screen.getByRole("form", {
+    name: "Projekteinstellungen speichern",
+  });
+  const promptBudget = within(settingsForm).getByLabelText(
+    "Maximale Promptzeichen",
+  );
+  await user.clear(promptBudget);
+  await user.type(promptBudget, "240000");
+  await user.click(
+    within(settingsForm).getByRole("button", {
+      name: "Einstellungen speichern",
+    }),
+  );
+
+  expect(
+    await within(settingsForm).findByText(
+      "Der Wert muss eine ganze Zahl zwischen 10.000 und 500.000 sein.",
+    ),
+  ).toBeInTheDocument();
+  expect(promptBudget).toHaveValue(240_000);
+  expect(
+    screen.queryByText("Projekteinstellungen gespeichert."),
+  ).not.toBeInTheDocument();
 });
 
 test("shows ticket template validation in project settings and preserves input", async () => {
@@ -2304,6 +2461,8 @@ test("configures providers and starts a project indexing run", async () => {
     await within(clusterExplorer).findByText("Cluster H"),
   ).toBeInTheDocument();
   expect(within(clusterExplorer).getByText(/Auto: Cluster H/)).toBeVisible();
+  expect(within(clusterExplorer).getByText("passwort")).toBeVisible();
+  expect(within(clusterExplorer).getByText("login problem")).toBeVisible();
   expect(within(clusterExplorer).getByText("How do I reset it?")).toBeVisible();
   expect(
     within(clusterExplorer).getByText("Use the reset link."),
@@ -2335,6 +2494,9 @@ test("configures providers and starts a project indexing run", async () => {
   const searchInput = within(clusterExplorer).getByPlaceholderText(
     "Titel, Kategorie, Summary oder Status",
   );
+  await user.type(searchInput, "passwort");
+  expect(within(clusterExplorer).getByText("Cluster H")).toBeVisible();
+  await user.clear(searchInput);
   await user.type(searchInput, "nicht vorhanden");
   expect(
     within(clusterExplorer).getByText(
@@ -2349,6 +2511,9 @@ test("configures providers and starts a project indexing run", async () => {
   if (clusterRow === null) {
     throw new Error("cluster row missing");
   }
+  expect(
+    within(clusterRow).getByRole("option", { name: "fixiert" }),
+  ).toHaveValue("fixed");
   await user.type(
     within(clusterRow).getByLabelText("Titel für Cluster H"),
     "Reset workflow",
@@ -2574,6 +2739,123 @@ test("renders source dialog ticket labels as safe encoded external links when co
   expect(ticketLink).toHaveAttribute("target", "_blank");
   expect(ticketLink).toHaveAttribute("rel", "noopener noreferrer");
   expect(sources).toHaveTextContent("Ticket T/1 2 · Gruppe G-1");
+});
+
+test("fixes and unfixes a cluster directly from the Explorer action stack", async () => {
+  const user = userEvent.setup();
+  let currentCluster = {
+    ...cluster,
+    manual_status: null as string | null,
+    effective_status: cluster.effective_status as string,
+  };
+  const statusUpdates: Array<string | null> = [];
+  mockProjectFetch((path, method, init) => {
+    if (
+      path === "/api/projects/project-alpha/indexing-runs" &&
+      method === "GET"
+    ) {
+      return jsonResponse([completedAnalysisRun]);
+    }
+    if (
+      path === "/api/projects/project-alpha/cluster-sets" &&
+      method === "GET"
+    ) {
+      return jsonResponse([
+        {
+          ...clusterSet,
+          status: "completed",
+          progress: 100,
+          phase: "completed",
+        },
+      ]);
+    }
+    if (
+      path ===
+        "/api/projects/project-alpha/cluster-sets/cluster-set-1/clusters" &&
+      method === "GET"
+    ) {
+      return jsonResponse([currentCluster]);
+    }
+    if (
+      path === "/api/projects/project-alpha/clusters/cluster-1" &&
+      method === "PATCH"
+    ) {
+      const body = JSON.parse(String(init?.body)) as {
+        manual_status: string | null;
+      };
+      statusUpdates.push(body.manual_status);
+      currentCluster = {
+        ...currentCluster,
+        manual_status: body.manual_status,
+        effective_status: body.manual_status ?? currentCluster.auto_status,
+      };
+      return jsonResponse(currentCluster);
+    }
+    return undefined;
+  });
+  render(<App />);
+
+  await signIn(user);
+  const projectList = await screen.findByRole("region", {
+    name: "Bestehende Projekte",
+  });
+  await user.click(getProjectRow(projectList, "Alpha"));
+  await openProjectTab(user, "Cluster-Sets");
+  const clusterSets = await screen.findByRole("region", {
+    name: "Cluster-Sets",
+  });
+  await user.click(
+    within(clusterSets).getByRole("button", { name: "Im Explorer laden" }),
+  );
+  const clusterExplorer = await screen.findByRole("region", {
+    name: "Cluster Explorer",
+  });
+  let clusterRow = within(clusterExplorer).getByText("Cluster H").closest("tr");
+  if (clusterRow === null) {
+    throw new Error("cluster row missing");
+  }
+
+  expect(
+    within(clusterRow).getByRole("button", { name: "Fixieren" }),
+  ).toBeVisible();
+  await user.click(
+    within(clusterRow).getByRole("button", { name: "Fixieren" }),
+  );
+  expect(await screen.findByText("Cluster fixiert.")).toBeInTheDocument();
+  clusterRow = within(clusterExplorer).getByText("Cluster H").closest("tr");
+  if (clusterRow === null) {
+    throw new Error("fixed cluster row missing");
+  }
+  expect(
+    within(clusterRow).getByText("fixiert", { selector: "span.status-chip" }),
+  ).toBeVisible();
+  expect(within(clusterRow).getByLabelText("Status für Cluster H")).toHaveValue(
+    "fixed",
+  );
+  expect(
+    within(clusterRow).getByRole("button", { name: "Fixierung aufheben" }),
+  ).toBeVisible();
+
+  await user.click(
+    within(clusterRow).getByRole("button", { name: "Fixierung aufheben" }),
+  );
+  expect(await screen.findByText("Fixierung aufgehoben.")).toBeInTheDocument();
+  clusterRow = within(clusterExplorer).getByText("Cluster H").closest("tr");
+  if (clusterRow === null) {
+    throw new Error("unfixed cluster row missing");
+  }
+  expect(
+    within(clusterRow).getByText("unreviewed", {
+      selector: "span.status-chip",
+    }),
+  ).toBeVisible();
+  expect(within(clusterRow).getByLabelText("Status für Cluster H")).toHaveValue(
+    "",
+  );
+  expect(
+    within(clusterRow).getByRole("button", { name: "Fixieren" }),
+  ).toBeVisible();
+  expect(statusUpdates).toEqual(["fixed", null]);
 });
 
 test("supports Explorer rail collapse and scroll-to-top controls", async () => {
@@ -4144,6 +4426,111 @@ test("creates a per-parent refinement with visible parent cluster context", asyn
     derivation_type: "refinement",
     refinement_mode: "per_parent",
     source_cluster_ids: ["cluster-parent-a", "cluster-parent-b"],
+    keyword_count: 10,
+  });
+});
+
+test("creates an LLM taxonomy refinement with provider and compact settings", async () => {
+  const user = userEvent.setup();
+  let receivedBody: Record<string, unknown> | null = null;
+  mockProjectFetch((path, method, init) => {
+    if (path === "/api/providers" && method === "GET") {
+      return jsonResponse([ollamaProvider]);
+    }
+    if (
+      path === "/api/projects/project-alpha/indexing-runs" &&
+      method === "GET"
+    ) {
+      return jsonResponse([completedAnalysisRun]);
+    }
+    if (
+      path === "/api/projects/project-alpha/cluster-sets" &&
+      method === "GET"
+    ) {
+      return jsonResponse([
+        {
+          ...clusterSet,
+          status: "completed",
+          progress: 100,
+          phase: "completed",
+          cluster_count: 1,
+        },
+      ]);
+    }
+    if (
+      path ===
+        "/api/projects/project-alpha/cluster-sets/cluster-set-1/clusters" &&
+      method === "GET"
+    ) {
+      return jsonResponse([cluster]);
+    }
+    if (
+      path === "/api/projects/project-alpha/cluster-sets" &&
+      method === "POST"
+    ) {
+      receivedBody = JSON.parse(String(init?.body));
+      return jsonResponse(
+        {
+          ...clusterSet,
+          id: "cluster-set-taxonomy",
+          parent_cluster_set_id: "cluster-set-1",
+          derivation_type: "refinement",
+          algorithm: "llm_taxonomy",
+          parameters: {},
+          status: "queued",
+        },
+        { status: 201 },
+      );
+    }
+    return undefined;
+  });
+  render(<App />);
+
+  await signIn(user);
+  const projectList = await screen.findByRole("region", {
+    name: "Bestehende Projekte",
+  });
+  await user.click(getProjectRow(projectList, "Alpha"));
+  await openProjectTab(user, "Cluster-Sets");
+  const clusterSets = await screen.findByRole("region", {
+    name: "Cluster-Sets",
+  });
+  await user.click(
+    within(clusterSets).getByRole("button", { name: "Cluster verfeinern" }),
+  );
+  const form = await screen.findByRole("form", {
+    name: "Cluster-Set erstellen",
+  });
+
+  await user.selectOptions(
+    within(form).getByLabelText("Algorithmus"),
+    "llm_taxonomy",
+  );
+  expect(
+    within(form).getByText(/hierarchischen Taxonomie/),
+  ).toBeInTheDocument();
+  expect(
+    within(form).getByRole("option", { name: "Separat je Parent-Cluster" }),
+  ).toBeDisabled();
+  await user.selectOptions(
+    within(form).getByLabelText("LLM für Clustering"),
+    "provider-ollama",
+  );
+  await user.click(
+    within(form).getByRole("button", { name: "Verfeinerung erstellen" }),
+  );
+
+  await screen.findByText("Cluster-Set angelegt. Status wird aktualisiert.");
+  expect(receivedBody).toMatchObject({
+    parent_cluster_set_id: "cluster-set-1",
+    derivation_type: "refinement",
+    refinement_mode: "common",
+    algorithm_settings: { algorithm: "llm_taxonomy" },
+    llm_provider_id: "provider-ollama",
+    llm_model: "llama3.1",
+    llm_sample_count: 10,
+    llm_sample_all: false,
+    keyword_count: 10,
   });
 });
 
@@ -4681,7 +5068,7 @@ test("shows safe cluster budget failures and preserves the selected form", async
 
   expect(
     await screen.findByText(
-      "Die aktuelle Datenmenge, Dimension oder Zusammenfassung überschreitet das Clusterbudget. Bitte Datenmenge, Dimensionen oder Beispiele reduzieren.",
+      "Die aktuelle Datenmenge, Dimension oder Zusammenfassung überschreitet das Clusterbudget. Bitte Datenmenge, Dimensionen oder Beispiele reduzieren oder bei einer LLM-Taxonomie das passende Projektlimit unter Einstellungen erhöhen und ein neues Child starten.",
     ),
   ).toBeInTheDocument();
   expect(postCount).toBe(1);
@@ -4906,6 +5293,7 @@ test("restarts the feedback timeout when the same project error occurs again", a
 test("renders safe error feedback for user, provider, import, indexing, explorer, and export actions", async () => {
   const user = userEvent.setup();
   let indexingRejections = 0;
+  let clusterUpdateRejections = 0;
   mockFetch((input, init) => {
     const path = String(input);
     const method = init?.method ?? "GET";
@@ -4999,6 +5387,7 @@ test("renders safe error feedback for user, provider, import, indexing, explorer
       path === "/api/projects/project-alpha/clusters/cluster-1" &&
       method === "PATCH"
     ) {
+      clusterUpdateRejections += 1;
       return jsonResponse(
         {
           detail: "raw cluster update diagnostic",
@@ -5133,6 +5522,18 @@ test("renders safe error feedback for user, provider, import, indexing, explorer
     "Die Cluster-Änderung ist ungültig und wurde nicht gespeichert.",
     "raw cluster update diagnostic",
   );
+  await user.click(
+    within(clusterRow).getByRole("button", { name: "Fixieren" }),
+  );
+  await waitFor(() => expect(clusterUpdateRejections).toBe(2));
+  await expectErrorFeedback(
+    "Die Cluster-Änderung ist ungültig und wurde nicht gespeichert.",
+    "raw cluster update diagnostic",
+  );
+  expect(
+    within(clusterRow).getByRole("button", { name: "Fixieren" }),
+  ).toBeVisible();
+  expect(screen.queryByText("Cluster fixiert.")).not.toBeInTheDocument();
 
   await user.click(
     within(clusterRow).getByRole("button", { name: "Quellen anzeigen" }),

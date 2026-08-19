@@ -33,9 +33,10 @@ Keep this document compact. It is a map for agents, not a duplicate of the sourc
   a configured embedding provider/model for dataset indexing, persists bounded
   provider embeddings for `message` and `answer` text, creates saved Cluster-Sets
   from completed Indizierungen with selectable vector basis and parameters, can
-  optionally generate bounded LLM summaries, curates Cluster-Set rows in the
-  Explorer, inspects source dialogs, refines child Cluster-Sets, and exports the
-  current Explorer table state as CSV/JSON.
+  optionally generate bounded LLM summaries, persists characteristic keywords,
+  curates or fixes Cluster-Set rows in the Explorer, inspects source dialogs,
+  refines child Cluster-Sets with vector or LLM taxonomy algorithms, and exports
+  the current Explorer table state as CSV/JSON.
 - Trust boundaries: browser to authenticated API, local backend to local
   PostgreSQL, optional explicit per-indexing OpenAI/Ollama embedding provider
   calls, optional per-Cluster-Set OpenAI/Ollama LLM calls, local filesystem/Compose
@@ -54,7 +55,9 @@ Keep this document compact. It is a map for agents, not a duplicate of the sourc
   confirmed-batch run progress, five-minute Ollama batch keep-alive, visible-view
   non-overlapping two-second run polling, bounded parallel indexing/cluster-set
   starts within local worker/resource limits, bounded clustering, curation preservation,
-  cluster-set job progress/cancellation, OpenAI confirmation for LLM summaries,
+  cluster-set job progress/cancellation with a bounded time estimate during the
+  non-streaming LLM-taxonomy wait, OpenAI confirmation for LLM summaries,
+  project-scoped snapshotted LLM-taxonomy soft limits with fixed hard caps,
   LLM prompt/response bounds, redacted provider diagnostics, project-scoped
   source dialogs and Explorer exports that do not implicitly include raw source
   dialog text.
@@ -76,6 +79,10 @@ See `docs/architecture/overview.md` for the durable architecture description.
 - User-facing error policy: `.ai/policies/USER_FACING_ERROR_HANDLING.md`
 - Error catalog: `docs/errors/ERROR_CATALOG.md`
 - Logging and telemetry conventions: MVP uses persisted audit/import/export/run records rather than production telemetry.
+  LLM-taxonomy and assignment runtime logs are restricted to correlation IDs,
+  provider/model identifiers, bounded batch/length/budget metadata, fixed validation
+  reasons and aggregate counts; prompt/response content and complete ID lists are
+  forbidden.
 - Dependency policy: manifests and lockfiles are mandatory; dependency and vulnerability gates run through `./.ai/tools/check-dependencies.sh` and `verify.sh`.
 - Migration policy: migrations are committed SQL files in `backend/db/migrations/` and covered by migration tests.
 
@@ -111,6 +118,16 @@ See `docs/architecture/overview.md` for the durable architecture description.
   per-parent refinement, including the preallocated float32 matrix, estimator
   matrices, bounded fetch/nearest-neighbor workspaces, linkage-specific
   graph/intermediate structures, results/mappings, and per-record overhead;
+  project settings may raise LLM-taxonomy source clusters only to 500, prompt
+  characters to 500,000 and total keyword terms to 1,000,000; each new Cluster-Set
+  snapshots these values while legacy snapshots use the previous safe defaults;
+  keyword terms are limited to 64 characters and taxonomy responses to 1,000,000
+  characters; OpenAI GPT-5 taxonomy and assignment calls may request 128,000 output
+  tokens while other model families and summary defaults retain smaller compatible
+  allowances; taxonomy mappings use one canonical coarse parent category per target,
+  conservatively merge only redundant intents and are normalized to a lossless exact
+  partition before persistence; LLM assignment has no independent total-pair cap and processes the
+  already validated immutable selection sequentially in fixed 20-pair batches;
   Agglomerative rejects disconnected neighbor graphs before estimator execution.
 - Operational constraints: No production deployment; local volumes own persistence.
 - Known technical debt relevant to current work: Clustering quality still depends

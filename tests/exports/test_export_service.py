@@ -140,6 +140,7 @@ def cluster_row(
         "manual_status": manual_status,
         "auto_summary_question": summary_question,
         "auto_summary_answer": "Send the reset link.",
+        "keywords": ["password", "reset link"],
         "score": 0.91,
         "is_outlier": False,
         "algorithm": "hdbscan",
@@ -184,6 +185,7 @@ def test_explorer_csv_export_filters_visible_rows_and_persists_metadata(
     assert row["customer_question_count"] == "3"
     assert row["support_answer_count"] == "3"
     assert row["mismatch_maximum"] == "0.31"
+    assert row["keywords"] == '["password","reset link"]'
     assert result.log.export_type == "explorer_csv"
     assert result.log.cluster_set_id == CLUSTER_SET_ID
     assert result.log.include_original_text is False

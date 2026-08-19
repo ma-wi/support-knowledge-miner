@@ -162,6 +162,9 @@ class ProjectResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     ticket_url_template: str | None = None
+    llm_taxonomy_max_source_clusters: int
+    llm_taxonomy_max_prompt_characters: int
+    llm_taxonomy_max_total_keyword_terms: int
 
 
 class CreateProjectRequest(BaseModel):
@@ -169,8 +172,19 @@ class CreateProjectRequest(BaseModel):
 
 
 class RenameProjectRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     name: str = Field(min_length=1)
     ticket_url_template: str | None = None
+    llm_taxonomy_max_source_clusters: StrictInt | None = Field(
+        default=None, ge=1, le=500
+    )
+    llm_taxonomy_max_prompt_characters: StrictInt | None = Field(
+        default=None, ge=10_000, le=500_000
+    )
+    llm_taxonomy_max_total_keyword_terms: StrictInt | None = Field(
+        default=None, ge=1_000, le=1_000_000
+    )
 
 
 class DeleteProjectRequest(BaseModel):
@@ -356,6 +370,7 @@ class ClusterSetRequest(BaseModel):
     llm_sample_count: StrictInt | None = 10
     llm_sample_all: bool = False
     llm_cloud_use_confirmed: bool = False
+    keyword_count: StrictInt = 10
 
 
 class ClusterSetRenameRequest(BaseModel):
@@ -420,6 +435,7 @@ class ClusterSetResponse(BaseModel):
     cluster_count: int
     active_cluster_count: int
     active_message_pair_count: int
+    keyword_count: int
 
 
 class ClusterSetEventResponse(BaseModel):
@@ -469,6 +485,7 @@ class ClusterResponse(BaseModel):
     updated_at: datetime
     auto_summary_question: str | None = None
     auto_summary_answer: str | None = None
+    keywords: list[str] = Field(default_factory=list)
 
 
 class ClusterUpdateRequest(BaseModel):
@@ -963,7 +980,10 @@ def _cluster_problem_contract(code: str) -> dict[str, str]:
             "title": "Die Clusterung ist zu groß.",
             "detail": (
                 "Die aktuelle Datenmenge, Dimension oder Zusammenfassung "
-                "überschreitet das Clusterbudget."
+                "überschreitet das Clusterbudget. Bitte Datenmenge, Dimensionen "
+                "oder Beispiele reduzieren oder bei einer LLM-Taxonomie das "
+                "passende Projektlimit unter Einstellungen erhöhen und ein neues "
+                "Child starten."
             ),
             "suggested_action": "reduce-scope",
         },
@@ -983,6 +1003,22 @@ def _cluster_problem_contract(code: str) -> dict[str, str]:
                 "Die Clusterbildung ist abgeschlossen, aber die Zusammenfassung ist fehlgeschlagen."
             ),
             "suggested_action": "retry-summary",
+        },
+        "CLUSTER_TAXONOMY_FAILED": {
+            "title": "Die Cluster-Taxonomie konnte nicht erstellt werden.",
+            "detail": (
+                "Die Parent-Summaries sind unvollständig oder das LLM hat keine "
+                "vollständige und eindeutige Taxonomie geliefert."
+            ),
+            "suggested_action": "retry",
+        },
+        "CLUSTER_LLM_ASSIGNMENT_FAILED": {
+            "title": "Die LLM-Zuordnung konnte nicht erstellt werden.",
+            "detail": (
+                "Die Taxonomie ist unvollständig oder das LLM hat nicht alle "
+                "Supportanfragen vollständig und eindeutig zugeordnet."
+            ),
+            "suggested_action": "retry",
         },
         "CLUSTER_SET_CANCEL_NOT_AVAILABLE": {
             "title": "Das Cluster-Set kann nicht abgebrochen werden.",
@@ -1207,6 +1243,16 @@ def _is_cluster_set_create_request(request: Request) -> bool:
     )
 
 
+def _is_project_settings_request(request: Request) -> bool:
+    path_parts = [part for part in request.url.path.split("/") if part]
+    return (
+        request.method == "PATCH"
+        and len(path_parts) == 3
+        and path_parts[0] == "api"
+        and path_parts[1] == "projects"
+    )
+
+
 def _is_cluster_set_summary_request(request: Request) -> bool:
     path_parts = [part for part in request.url.path.split("/") if part]
     return (
@@ -1301,6 +1347,29 @@ def create_app(
     async def request_validation_error_handler(
         request: Request, exc: RequestValidationError
     ) -> Response:
+        project_budget_messages = {
+            "llm_taxonomy_max_source_clusters": (
+                "Der Wert muss eine ganze Zahl zwischen 1 und 500 sein."
+            ),
+            "llm_taxonomy_max_prompt_characters": (
+                "Der Wert muss eine ganze Zahl zwischen 10.000 und 500.000 sein."
+            ),
+            "llm_taxonomy_max_total_keyword_terms": (
+                "Der Wert muss eine ganze Zahl zwischen 1.000 und 1.000.000 sein."
+            ),
+        }
+        invalid_project_budget_fields = {
+            field: message
+            for field, message in project_budget_messages.items()
+            if _validation_error_has_body_field(exc, field)
+        }
+        if _is_project_settings_request(request):
+            return _project_problem_response(
+                ProjectError(
+                    "project settings payload is invalid",
+                    field_errors=invalid_project_budget_fields,
+                )
+            )
         if _is_cluster_set_create_request(request) and (
             _validation_error_has_body_field(exc, "algorithm_settings")
             or _validation_error_has_body_field(exc, "refinement_mode")
@@ -1455,11 +1524,41 @@ def create_app(
         actor: CurrentUser = Depends(current_user),
     ) -> ProjectResponse | JSONResponse:
         try:
-            if "ticket_url_template" in payload.model_fields_set:
+            settings_fields = {
+                "ticket_url_template",
+                "llm_taxonomy_max_source_clusters",
+                "llm_taxonomy_max_prompt_characters",
+                "llm_taxonomy_max_total_keyword_terms",
+            }
+            if payload.model_fields_set & settings_fields:
                 project = project_service.update_project_settings(
                     project_id,
                     name=payload.name,
                     ticket_url_template=payload.ticket_url_template,
+                    ticket_url_template_unchanged=(
+                        "ticket_url_template" not in payload.model_fields_set
+                    ),
+                    llm_taxonomy_max_source_clusters=(
+                        payload.llm_taxonomy_max_source_clusters
+                    ),
+                    llm_taxonomy_max_source_clusters_unchanged=(
+                        "llm_taxonomy_max_source_clusters"
+                        not in payload.model_fields_set
+                    ),
+                    llm_taxonomy_max_prompt_characters=(
+                        payload.llm_taxonomy_max_prompt_characters
+                    ),
+                    llm_taxonomy_max_prompt_characters_unchanged=(
+                        "llm_taxonomy_max_prompt_characters"
+                        not in payload.model_fields_set
+                    ),
+                    llm_taxonomy_max_total_keyword_terms=(
+                        payload.llm_taxonomy_max_total_keyword_terms
+                    ),
+                    llm_taxonomy_max_total_keyword_terms_unchanged=(
+                        "llm_taxonomy_max_total_keyword_terms"
+                        not in payload.model_fields_set
+                    ),
                     actor_user_id=actor.id,
                 )
             else:
@@ -1975,6 +2074,7 @@ def create_app(
                     llm_sample_count=payload.llm_sample_count,
                     llm_sample_all=payload.llm_sample_all,
                     llm_cloud_use_confirmed=payload.llm_cloud_use_confirmed,
+                    keyword_count=payload.keyword_count,
                 ),
                 actor_user_id=actor.id,
             )

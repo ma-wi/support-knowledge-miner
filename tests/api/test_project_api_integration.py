@@ -40,6 +40,9 @@ def project(
     project_id: UUID,
     name: str,
     ticket_url_template: str | None = None,
+    llm_taxonomy_max_source_clusters: int = 200,
+    llm_taxonomy_max_prompt_characters: int = 80_000,
+    llm_taxonomy_max_total_keyword_terms: int = 250_000,
 ) -> PublicProject:
     return PublicProject(
         id=project_id,
@@ -48,6 +51,9 @@ def project(
         created_at=NOW,
         updated_at=NOW,
         ticket_url_template=ticket_url_template,
+        llm_taxonomy_max_source_clusters=llm_taxonomy_max_source_clusters,
+        llm_taxonomy_max_prompt_characters=llm_taxonomy_max_prompt_characters,
+        llm_taxonomy_max_total_keyword_terms=(llm_taxonomy_max_total_keyword_terms),
     )
 
 
@@ -76,6 +82,9 @@ class FakeProjectService:
             name=name,
             ticket_url_template=None,
             ticket_url_template_unchanged=True,
+            llm_taxonomy_max_source_clusters_unchanged=True,
+            llm_taxonomy_max_prompt_characters_unchanged=True,
+            llm_taxonomy_max_total_keyword_terms_unchanged=True,
             actor_user_id=actor_user_id,
         )
 
@@ -86,6 +95,12 @@ class FakeProjectService:
         name: str,
         ticket_url_template: str | None = None,
         ticket_url_template_unchanged: bool = False,
+        llm_taxonomy_max_source_clusters: int | None = None,
+        llm_taxonomy_max_source_clusters_unchanged: bool = True,
+        llm_taxonomy_max_prompt_characters: int | None = None,
+        llm_taxonomy_max_prompt_characters_unchanged: bool = True,
+        llm_taxonomy_max_total_keyword_terms: int | None = None,
+        llm_taxonomy_max_total_keyword_terms_unchanged: bool = True,
         actor_user_id: UUID,
     ) -> PublicProject:
         self.actor_ids.append(actor_user_id)
@@ -101,12 +116,34 @@ class FakeProjectService:
                             )
                         },
                     )
+                if not llm_taxonomy_max_source_clusters_unchanged and (
+                    llm_taxonomy_max_source_clusters is None
+                    or llm_taxonomy_max_source_clusters < 1
+                    or llm_taxonomy_max_source_clusters > 500
+                ):
+                    raise ProjectError(
+                        "project cluster budget is invalid",
+                        field_errors={
+                            "llm_taxonomy_max_source_clusters": (
+                                "Der Wert muss eine ganze Zahl zwischen 1 und 500 sein."
+                            )
+                        },
+                    )
                 renamed = project(
                     project_id,
                     name.strip(),
                     item.ticket_url_template
                     if ticket_url_template_unchanged
                     else ticket_url_template,
+                    item.llm_taxonomy_max_source_clusters
+                    if llm_taxonomy_max_source_clusters_unchanged
+                    else int(llm_taxonomy_max_source_clusters or 0),
+                    item.llm_taxonomy_max_prompt_characters
+                    if llm_taxonomy_max_prompt_characters_unchanged
+                    else int(llm_taxonomy_max_prompt_characters or 0),
+                    item.llm_taxonomy_max_total_keyword_terms
+                    if llm_taxonomy_max_total_keyword_terms_unchanged
+                    else int(llm_taxonomy_max_total_keyword_terms or 0),
                 )
                 self.projects[index] = renamed
                 return renamed
@@ -158,6 +195,10 @@ def test_project_lifecycle_and_deleted_project_is_not_returned(
     assert listed.status_code == 200
     assert [item["name"] for item in listed.json()] == ["Alpha", "Beta"]
     assert [item["ticket_url_template"] for item in listed.json()] == [None, None]
+    assert [item["llm_taxonomy_max_source_clusters"] for item in listed.json()] == [
+        200,
+        200,
+    ]
 
     created = client.post(
         "/api/projects",
@@ -241,6 +282,79 @@ def test_project_settings_update_validates_ticket_url_template(
         updated.json()["ticket_url_template"]
         == "https://tickets.example.test/T-<ticket_id>"
     )
+
+
+def test_project_settings_update_persists_cluster_budgets(client: TestClient) -> None:
+    updated = client.patch(
+        f"/api/projects/{PROJECT_A_ID}",
+        headers=auth_headers(),
+        json={
+            "name": "Alpha",
+            "llm_taxonomy_max_source_clusters": 350,
+            "llm_taxonomy_max_prompt_characters": 240_000,
+            "llm_taxonomy_max_total_keyword_terms": 750_000,
+        },
+    )
+
+    assert updated.status_code == 200
+    assert updated.json()["llm_taxonomy_max_source_clusters"] == 350
+    assert updated.json()["llm_taxonomy_max_prompt_characters"] == 240_000
+    assert updated.json()["llm_taxonomy_max_total_keyword_terms"] == 750_000
+
+
+def test_project_settings_update_rejects_cluster_budget_outside_hard_cap(
+    client: TestClient,
+) -> None:
+    response = client.patch(
+        f"/api/projects/{PROJECT_A_ID}",
+        headers=auth_headers(),
+        json={
+            "name": "Alpha",
+            "llm_taxonomy_max_source_clusters": 501,
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["code"] == "VALIDATION_FAILED"
+    assert response.json()["fieldErrors"] == [
+        {
+            "field": "llm_taxonomy_max_source_clusters",
+            "message": "Der Wert muss eine ganze Zahl zwischen 1 und 500 sein.",
+        }
+    ]
+
+    wrong_type = client.patch(
+        f"/api/projects/{PROJECT_A_ID}",
+        headers=auth_headers(),
+        json={
+            "name": "Alpha",
+            "llm_taxonomy_max_prompt_characters": "240000",
+        },
+    )
+    assert wrong_type.status_code == 422
+    assert wrong_type.json()["code"] == "VALIDATION_FAILED"
+    assert wrong_type.json()["fieldErrors"][0]["field"] == (
+        "llm_taxonomy_max_prompt_characters"
+    )
+
+
+def test_project_settings_update_rejects_unknown_budget_field(
+    client: TestClient,
+) -> None:
+    response = client.patch(
+        f"/api/projects/{PROJECT_A_ID}",
+        headers=auth_headers(),
+        json={
+            "name": "Alpha",
+            "llm_taxonomy_max_prompt_character": 240_000,
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["code"] == "VALIDATION_FAILED"
+    assert response.json()["fieldErrors"] == []
+    unchanged = client.get(f"/api/projects/{PROJECT_A_ID}", headers=auth_headers())
+    assert unchanged.json()["llm_taxonomy_max_prompt_characters"] == 80_000
 
 
 def test_project_settings_update_maps_missing_project_to_safe_problem(

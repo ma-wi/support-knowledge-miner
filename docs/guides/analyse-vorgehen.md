@@ -56,6 +56,7 @@ Empfohlener Start:
 | `min_cluster_size` | ca. 2-5% der Datensätze, mindestens 5 | Größer = weniger, gröbere Cluster. Kleiner = mehr, feinere Cluster. |
 | `min_samples` | leer oder ca. 10-20 | Größer = konservativer, mehr Ausreißer. Kleiner = mehr Zuordnungen. |
 | `selection_epsilon` | `0.0` bis `0.1` | Erhöhen, wenn HDBSCAN zu viele sehr ähnliche Kleincluster erzeugt. |
+| Typische Keywords | 10 | 1-50; helfen beim Vergleichen und fließen in Summaries ein. |
 | Summary-Beispiele | 10 | Für langsame lokale LLMs 3-8; für präzisere Summaries 10-20. |
 
 ### PCA/UMAP-Dimensionen
@@ -99,7 +100,7 @@ Ziel: erkennen, welche Cluster fachlich verwendbar sind.
 - `Score`: durchschnittliche Zuordnungsstärke der Quellen im Cluster. Höher ist stabiler; nur innerhalb desselben Cluster-Sets vergleichen.
 - `Q/A-Mismatch`: semantische Distanz zwischen Kundenfrage und Supportantwort. Ab ca. `0.35` wird gewarnt; dann Quellen prüfen.
 - `Ausreißer`: vom Algorithmus als Randfall erkannt. Nicht automatisch falsch, aber oft nicht FAQ-tauglich.
-- `Status`: manueller Kurationsstatus. `rejected` schließt den Cluster aus der Standardansicht und aus Verfeinerungsquellen aus; `reviewed`, `in_progress`, `unreviewed` sind Workflow-Markierungen.
+- `Status`: manueller Kurationsstatus. `rejected` schließt den Cluster aus der Standardansicht und aus Verfeinerungsquellen aus. Über den direkten Button `Fixieren` unter `Ausschließen` setzt du `fixed`; dann wird der Cluster samt Summary, Keywords und Quellen unverändert in jedes Child übernommen und vom erneuten Clustering ausgeschlossen. `Fixierung aufheben` stellt den automatischen Status wieder her.
 
 Faustregeln:
 
@@ -143,9 +144,13 @@ Typischer Ablauf:
 4. „Eingeschlossene Cluster verfeinern“ verwenden.
 5. Entweder gemeinsam neu clustern oder „separat je Parent-Cluster“ wählen, wenn
    mehrere gute Parent-Cluster unabhängig geschärft werden sollen.
-6. Parameter für das Child-Cluster-Set feiner setzen.
-7. Summaries neu erstellen.
-8. Exportieren.
+6. Parameter für das Child-Cluster-Set feiner setzen oder mit
+   `LLM: Taxonomie konsolidieren` nur redundante Summary-Cluster unter einer groben
+   Parent-Kategorie zusammenführen; eigenständige Anliegen bleiben getrennt.
+7. Alternativ mit `LLM: kompakt zuordnen` alle aktiven Supportpaare gegen die
+   Parent-Taxonomie zuordnen; fachlich unpassende Paare werden Ausreißer.
+8. Summaries prüfen oder neu erstellen.
+9. Exportieren; typische Keywords sind im CSV-/JSON-Export enthalten.
 
 Parameter-Tuning:
 

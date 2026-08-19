@@ -23,6 +23,7 @@ EXPLORER_CSV_COLUMNS = [
     "category",
     "summary_question",
     "summary_answer",
+    "keywords",
     "status",
     "is_excluded",
     "is_outlier",
@@ -175,6 +176,11 @@ def _metadata(row: dict[str, object]) -> dict[str, object]:
     return dict(value) if isinstance(value, dict) else {}
 
 
+def _keywords(row: dict[str, object]) -> list[str]:
+    value = row.get("keywords")
+    return [str(item) for item in value] if isinstance(value, list) else []
+
+
 def _mismatch_value(metadata: dict[str, object], key: str) -> float | None:
     mismatch = metadata.get("qa_mismatch")
     if not isinstance(mismatch, dict):
@@ -194,6 +200,7 @@ def _row_matches_search(row: dict[str, object], search_query: str | None) -> boo
             _effective_text(row, "manual_category", "auto_category"),
             str(row.get("auto_summary_question") or ""),
             str(row.get("auto_summary_answer") or ""),
+            " ".join(_keywords(row)),
             _effective_status(row),
         ]
     ).lower()
@@ -374,7 +381,7 @@ class ExportService:
                        c.dataset_version_id, c.cluster_set_id,
                        c.auto_title, c.manual_title, c.auto_category,
                        c.manual_category, c.auto_status, c.manual_status,
-                       c.auto_summary_question, c.auto_summary_answer,
+                       c.auto_summary_question, c.auto_summary_answer, c.keywords,
                        c.score, c.is_outlier, c.algorithm, c.metadata,
                        c.created_at, c.updated_at, COUNT(cm.id) AS member_count
                 FROM clusters c
@@ -429,6 +436,7 @@ class ExportService:
             "category": _effective_text(row, "manual_category", "auto_category"),
             "summary_question": str(row.get("auto_summary_question") or ""),
             "summary_answer": str(row.get("auto_summary_answer") or ""),
+            "keywords": _json_cell(_keywords(row)),
             "status": status,
             "is_excluded": status == "rejected",
             "is_outlier": bool(row.get("is_outlier")),

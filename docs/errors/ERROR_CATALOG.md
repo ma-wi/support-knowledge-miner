@@ -55,6 +55,53 @@ Active codes are declared below or indexed to a capability catalog.
 
 ## Active entries
 
+### `CLUSTER_TAXONOMY_FAILED`
+
+- Status: active
+- Category: dependency
+- Trigger: Die ausgewählten Parent-Cluster enthalten keine vollständigen Summaries oder ein LLM liefert keine formal auswertbare Taxonomie-JSON-Struktur; fehlende, doppelte und unbekannte Zuordnungen in einer formal gültigen Struktur werden lokal verlustfrei normalisiert.
+- HTTP status: 422 for synchronous validation; background jobs persist the code.
+- Problem type: `urn:skm:error:CLUSTER_TAXONOMY_FAILED`
+- User-facing title: Die Cluster-Taxonomie konnte nicht erstellt werden.
+- User-facing explanation: Die Parent-Summaries sind unvollständig oder die LLM-Antwort konnte nicht sicher den Quellclustern zugeordnet werden.
+- Suggested action: Parent-Summaries und Provider prüfen und ein neues Child starten.
+- Suggested action code: retry
+- Retryable: yes
+- UI placement: Cluster-Set-Karte und Explorer-Kontext
+- Input preservation: Parent-Cluster-Set und Formularauswahl bleiben erhalten.
+- Correlation reference: sichere Cluster-Set- oder Request-ID
+- Security considerations: Keine Rohantwort, Prompts, Supporttexte oder unbekannten IDs anzeigen oder loggen.
+- Backend source: `backend/clusters/service.py`; `backend/api/app.py`
+- API contract: `docs/api/problem-details-contract.yaml`
+- Frontend mapping: `frontend/src/App.tsx` `ERROR_MESSAGES_BY_CODE`
+- Required tests: Parserstruktur-, Partitionsreparatur-, Feldgrenz-, Provider- und UI-Fallbacktests
+
+### `CLUSTER_LLM_ASSIGNMENT_FAILED`
+
+- Status: active
+- Category: dependency
+- Trigger: Die ausgewählte Parent-Taxonomie enthält keine vollständigen Summaries
+  oder das LLM liefert malformed JSON, eine falsche Root-/Objektstruktur oder
+  falsche Feldtypen. Fehlende, doppelte oder unbekannte IDs sind kein Trigger;
+  sie werden deterministisch repariert.
+- HTTP status: 422 for synchronous validation; background jobs persist the code.
+- Problem type: `urn:skm:error:CLUSTER_LLM_ASSIGNMENT_FAILED`
+- User-facing title: Die LLM-Clusterzuordnung konnte nicht erstellt werden.
+- User-facing explanation: Die Taxonomie ist unvollständig oder die LLM-Antwort
+  konnte nicht sicher allen Supportpaaren zugeordnet werden.
+- Suggested action: Taxonomie und Provider prüfen und ein neues Child starten.
+- Suggested action code: retry
+- Retryable: yes
+- UI placement: Cluster-Set-Karte und Explorer-Kontext
+- Input preservation: Parent-Cluster-Set und Formularauswahl bleiben erhalten.
+- Correlation reference: sichere Cluster-Set- oder Request-ID
+- Security considerations: Keine Rohantwort, Prompts, Supporttexte oder unbekannten IDs anzeigen oder loggen.
+- Backend source: `backend/clusters/service.py`; `backend/api/app.py`
+- API contract: `docs/api/problem-details-contract.yaml`
+- Frontend mapping: `frontend/src/App.tsx` `ERROR_MESSAGES_BY_CODE`
+- Required tests: formale Parserfehler, semantische Partitionsreparatur,
+  Ausreißer-Persistenz, Provider- und UI-Fallbacktests
+
 ### `UNEXPECTED_ERROR`
 
 - Status: active
@@ -80,7 +127,7 @@ Active codes are declared below or indexed to a capability catalog.
 
 - Status: active
 - Category: validation
-- Trigger: A submitted form/API payload for a user-triggered action is syntactically or domain-invalid.
+- Trigger: A submitted form/API payload for a user-triggered action is syntactically or domain-invalid, including a project LLM-taxonomy budget outside its documented hard bounds.
 - HTTP status: 422
 - Problem type: `urn:skm:error:VALIDATION_FAILED`
 - User-facing title: Die Eingaben sind ungültig.
@@ -88,14 +135,14 @@ Active codes are declared below or indexed to a capability catalog.
 - Suggested action: Eingaben prüfen und erneut versuchen.
 - Suggested action code: correct-input
 - Retryable: yes
-- UI placement: affected form or provider card
+- UI placement: affected form or provider card, including inline project-settings fields
 - Input preservation: Preserve safe non-secret fields; never echo API keys or provider credentials.
 - Correlation reference: safe request identifier
 - Security considerations: Do not expose validation internals, endpoint credentials, provider bodies or secrets.
 - Backend source: `backend/api/app.py`
 - API contract: `docs/api/problem-details-contract.yaml`
 - Frontend mapping: `frontend/src/App.tsx` `ERROR_MESSAGES_BY_CODE`
-- Required tests: provider API validation tests and frontend normalizer mapping tests
+- Required tests: provider/project API validation tests, field association, input preservation and frontend normalizer mapping tests
 
 ### `PROJECT_NOT_FOUND`
 
@@ -290,15 +337,18 @@ Active codes are declared below or indexed to a capability catalog.
 
 - Status: active
 - Category: business-rule
-- Trigger: Clustering exceeds configured record/dimension/memory budget or summary prompt budget.
+- Trigger: Vector clustering exceeds its configured record, dimension or memory
+  budget, summary generation exceeds its prompt budget, or an LLM-taxonomy job
+  exceeds its snapshotted project budget. LLM taxonomy assignment has no separate
+  total-pair budget.
 - HTTP status: 422
 - Problem type: `urn:skm:error:CLUSTER_BUDGET_EXCEEDED`
 - User-facing title: Die Clusterung ist zu groß.
-- User-facing explanation: Die aktuelle Datenmenge, Dimension oder Zusammenfassung überschreitet das Clusterbudget.
-- Suggested action: Datenmenge, Dimensionen oder Beispiele reduzieren.
+- User-facing explanation: Die aktuelle Datenmenge, Dimension oder Zusammenfassung überschreitet das Clusterbudget. Bei einer LLM-Taxonomie verweist die Meldung auf das passende Projektlimit unter Einstellungen.
+- Suggested action: Datenmenge, Dimensionen oder Beispiele reduzieren oder bei einer LLM-Taxonomie das passende Projektlimit unter Einstellungen erhöhen und ein neues Child starten.
 - Suggested action code: reduce-scope
 - Retryable: yes
-- UI placement: Cluster-Set-Formular
+- UI placement: Cluster-Set-Formular oder Cluster-Set-Status
 - Input preservation: Preserve all fields.
 - Correlation reference: safe request identifier
 - Security considerations: Report only safe capacity metadata.
@@ -311,7 +361,8 @@ Active codes are declared below or indexed to a capability catalog.
 
 - Status: active
 - Category: dependency
-- Trigger: Selected LLM provider cannot be reached for summary generation.
+- Trigger: Selected LLM provider cannot be reached or returns an explicitly
+  incomplete/unusable generation response.
 - HTTP status: 503
 - Problem type: `urn:skm:error:LLM_PROVIDER_UNAVAILABLE`
 - User-facing title: Das LLM ist nicht erreichbar.
@@ -326,7 +377,7 @@ Active codes are declared below or indexed to a capability catalog.
 - Backend source: `backend/clusters/service.py`, `backend/providers/service.py`, `backend/api/app.py`
 - API contract: `backend/api/app.py` Cluster-Set Problem Details routes
 - Frontend mapping: `frontend/src/App.tsx` `ERROR_MESSAGES_BY_CODE`
-- Required tests: provider unavailable tests
+- Required tests: provider unavailable and incomplete-response tests
 
 ### `LLM_CLOUD_CONFIRMATION_REQUIRED`
 

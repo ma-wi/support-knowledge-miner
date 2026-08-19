@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
+import logging
 from typing import Any
 from uuid import UUID
 
@@ -820,6 +821,200 @@ def test_openai_llm_request_uses_structured_outputs(
     assert format_config["name"] == "cluster_summary"
 
 
+def test_openai_llm_request_accepts_bounded_custom_schema(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    RecordingLLMConnection.reset(payload={"output_text": '{"items":[]}'})
+    monkeypatch.setattr(
+        provider_service_module, "HTTPSConnection", RecordingLLMConnection
+    )
+    service = ProviderService()
+    monkeypatch.setattr(
+        service,
+        "_get_configuration_by_ref",
+        lambda _ref: provider_configuration(
+            "openai", endpoint_url=None, model="gpt-4.1-mini"
+        ),
+    )
+    monkeypatch.setattr(service, "_get_api_key_secret", lambda _id: "encrypted")
+    monkeypatch.setattr(
+        provider_service_module, "decrypt_provider_secret", lambda _: "sk-test"
+    )
+    schema: dict[str, object] = {
+        "type": "object",
+        "properties": {"items": {"type": "array"}},
+        "required": ["items"],
+        "additionalProperties": False,
+    }
+
+    text = service.generate_text(
+        "openai",
+        "gpt-4.1-mini",
+        "Prompt",
+        instructions="Return the requested object.",
+        response_schema=schema,
+        schema_name="cluster_taxonomy",
+        max_output_tokens=1234,
+    )
+
+    assert text == '{"items":[]}'
+    body = RecordingLLMConnection.requests[0]["body"]
+    assert isinstance(body, dict)
+    assert body["instructions"] == "Return the requested object."
+    assert body["max_output_tokens"] == 1234
+    text_config = body["text"]
+    assert isinstance(text_config, dict)
+    format_config = text_config["format"]
+    assert isinstance(format_config, dict)
+    assert format_config["name"] == "cluster_taxonomy"
+    assert format_config["schema"] == schema
+
+
+def test_openai_llm_request_accepts_taxonomy_prompt_and_output_hard_caps(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    RecordingLLMConnection.reset(payload={"output_text": '{"items":[]}'})
+    monkeypatch.setattr(
+        provider_service_module, "HTTPSConnection", RecordingLLMConnection
+    )
+    service = ProviderService()
+    monkeypatch.setattr(
+        service,
+        "_get_configuration_by_ref",
+        lambda _ref: provider_configuration(
+            "openai", endpoint_url=None, model="gpt-4.1-mini"
+        ),
+    )
+    monkeypatch.setattr(service, "_get_api_key_secret", lambda _id: "encrypted")
+    monkeypatch.setattr(
+        provider_service_module, "decrypt_provider_secret", lambda _: "sk-test"
+    )
+    prompt = "x" * 500_000
+
+    text = service.generate_text(
+        "openai",
+        "gpt-4.1-mini",
+        prompt,
+        max_prompt_characters=500_000,
+        max_output_tokens=128_000,
+        max_output_characters=1_000_000,
+    )
+
+    assert text == '{"items":[]}'
+    body = RecordingLLMConnection.requests[0]["body"]
+    assert isinstance(body, dict)
+    assert body["input"] == prompt
+    assert body["max_output_tokens"] == 128_000
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"max_prompt_characters": 500_001}, "prompt budget"),
+        ({"max_output_tokens": 128_001}, "output token budget"),
+        ({"max_output_characters": 1_000_001}, "output character budget"),
+    ],
+)
+def test_llm_request_rejects_taxonomy_budgets_above_hard_caps(
+    kwargs: dict[str, Any],
+    message: str,
+) -> None:
+    with pytest.raises(ProviderError, match=message):
+        ProviderService().generate_text(
+            "openai",
+            "gpt-4.1-mini",
+            "Prompt",
+            **kwargs,
+        )
+
+
+def test_openai_llm_raw_response_accepts_exact_byte_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    base = json.dumps({"output_text": "ok"}).encode("utf-8")
+    raw = base + b" " * (provider_service_module.MAX_LLM_RESPONSE_BYTES - len(base))
+    RecordingLLMConnection.reset(payload={}, raw=raw)
+    monkeypatch.setattr(
+        provider_service_module, "HTTPSConnection", RecordingLLMConnection
+    )
+    service = ProviderService()
+    monkeypatch.setattr(
+        service,
+        "_get_configuration_by_ref",
+        lambda _ref: provider_configuration(
+            "openai", endpoint_url=None, model="gpt-4.1-mini"
+        ),
+    )
+    monkeypatch.setattr(service, "_get_api_key_secret", lambda _id: "encrypted")
+    monkeypatch.setattr(
+        provider_service_module, "decrypt_provider_secret", lambda _: "sk-test"
+    )
+
+    assert service.generate_text("openai", "gpt-4.1-mini", "Prompt") == "ok"
+
+
+def test_openai_llm_raw_response_rejects_above_byte_cap_without_echo(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sensitive = b"SECRET_PROVIDER_PAYLOAD"
+    RecordingLLMConnection.reset(
+        payload={},
+        raw=sensitive + b"x" * (provider_service_module.MAX_LLM_RESPONSE_BYTES + 1),
+    )
+    monkeypatch.setattr(
+        provider_service_module, "HTTPSConnection", RecordingLLMConnection
+    )
+    service = ProviderService()
+    monkeypatch.setattr(
+        service,
+        "_get_configuration_by_ref",
+        lambda _ref: provider_configuration(
+            "openai", endpoint_url=None, model="gpt-4.1-mini"
+        ),
+    )
+    monkeypatch.setattr(service, "_get_api_key_secret", lambda _id: "encrypted")
+    monkeypatch.setattr(
+        provider_service_module, "decrypt_provider_secret", lambda _: "sk-test"
+    )
+
+    with pytest.raises(ProviderError, match="response is too large") as error:
+        service.generate_text("openai", "gpt-4.1-mini", "Prompt")
+
+    assert sensitive.decode() not in str(error.value)
+
+
+def test_openai_llm_text_rejects_above_character_cap_without_echo(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sensitive = "SECRET_OUTPUT_TEXT"
+    RecordingLLMConnection.reset(payload={"output_text": sensitive + "x" * 1_000_000})
+    monkeypatch.setattr(
+        provider_service_module, "HTTPSConnection", RecordingLLMConnection
+    )
+    service = ProviderService()
+    monkeypatch.setattr(
+        service,
+        "_get_configuration_by_ref",
+        lambda _ref: provider_configuration(
+            "openai", endpoint_url=None, model="gpt-4.1-mini"
+        ),
+    )
+    monkeypatch.setattr(service, "_get_api_key_secret", lambda _id: "encrypted")
+    monkeypatch.setattr(
+        provider_service_module, "decrypt_provider_secret", lambda _: "sk-test"
+    )
+
+    with pytest.raises(ProviderError, match="response is too large") as error:
+        service.generate_text(
+            "openai",
+            "gpt-4.1-mini",
+            "Prompt",
+            max_output_characters=1_000_000,
+        )
+
+    assert sensitive not in str(error.value)
+
+
 def test_ollama_llm_request_uses_json_mode(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -870,3 +1065,102 @@ def test_openai_incomplete_response_reports_safe_reason() -> None:
                 "output": [],
             }
         )
+
+
+def test_openai_incomplete_partial_response_logs_metadata_without_content(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    sensitive_fragment = "VERTRAULICHER UNVOLLSTÄNDIGER PROVIDERTEXT"
+    caplog.set_level(
+        logging.INFO,
+        logger=provider_service_module.LLM_DIAGNOSTIC_LOGGER.name,
+    )
+
+    with pytest.raises(ProviderError, match="max_output_tokens") as error:
+        ProviderService()._openai_response_text(
+            {
+                "id": "resp-1",
+                "status": "incomplete",
+                "incomplete_details": {"reason": "max_output_tokens"},
+                "output_text": sensitive_fragment,
+                "output": [{"type": "message"}],
+            },
+            diagnostic_correlation_id=PROVIDER_ID,
+        )
+
+    assert "llm_provider_response_incomplete" in caplog.text
+    assert f"correlation_id={PROVIDER_ID}" in caplog.text
+    assert "provider=openai" in caplog.text
+    assert "reason=max_output_tokens" in caplog.text
+    assert f"output_text_characters={len(sensitive_fragment)}" in caplog.text
+    assert "output_items=1" in caplog.text
+    assert sensitive_fragment not in caplog.text
+    assert sensitive_fragment not in str(error.value)
+
+
+def test_openai_incomplete_response_redacts_untrusted_reason_from_log_and_error(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    malicious_reason = "SECRET_REASON\nFORGED_LOG_ENTRY"
+    caplog.set_level(
+        logging.INFO,
+        logger=provider_service_module.LLM_DIAGNOSTIC_LOGGER.name,
+    )
+
+    with pytest.raises(ProviderError) as error:
+        ProviderService()._openai_response_text(
+            {
+                "id": "resp-1",
+                "status": "incomplete",
+                "incomplete_details": {"reason": malicious_reason},
+                "output": [],
+            }
+        )
+
+    assert str(error.value) == "LLM provider returned an incomplete response"
+    assert "reason=unspecified" in caplog.text
+    assert malicious_reason not in caplog.text
+    assert "FORGED_LOG_ENTRY" not in caplog.text
+
+
+def test_llm_diagnostic_correlation_rejects_log_injection_before_provider_call(
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    malicious_correlation = "secret\nFORGED_LOG_ENTRY"
+    caplog.set_level(
+        logging.INFO,
+        logger=provider_service_module.LLM_DIAGNOSTIC_LOGGER.name,
+    )
+    service = ProviderService()
+    monkeypatch.setattr(
+        service,
+        "ensure_text_generation_model",
+        lambda *_args, **_kwargs: pytest.fail("provider access must not be attempted"),
+    )
+
+    with pytest.raises(ProviderError) as error:
+        service.generate_text(
+            "openai",
+            "gpt-5.4-mini",
+            "Prompt",
+            diagnostic_correlation_id=malicious_correlation,  # type: ignore[arg-type]
+        )
+
+    assert str(error.value) == "LLM diagnostic correlation is invalid"
+    assert malicious_correlation not in caplog.text
+    assert "FORGED_LOG_ENTRY" not in caplog.text
+
+    with pytest.raises(ProviderError) as parser_error:
+        service._openai_response_text(
+            {
+                "status": "incomplete",
+                "incomplete_details": {"reason": "max_output_tokens"},
+                "output": [],
+            },
+            diagnostic_correlation_id=malicious_correlation,  # type: ignore[arg-type]
+        )
+
+    assert str(parser_error.value) == "LLM diagnostic correlation is invalid"
+    assert malicious_correlation not in caplog.text
+    assert "FORGED_LOG_ENTRY" not in caplog.text

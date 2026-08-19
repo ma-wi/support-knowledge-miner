@@ -56,6 +56,9 @@ const SYNTHETIC_PROJECT = {
   created_at: "2026-07-22T00:00:00Z",
   updated_at: "2026-07-22T00:00:00Z",
   ticket_url_template: null,
+  llm_taxonomy_max_source_clusters: 200,
+  llm_taxonomy_max_prompt_characters: 80_000,
+  llm_taxonomy_max_total_keyword_terms: 250_000,
 };
 const SYNTHETIC_PROJECT_WITH_TICKET_TEMPLATE = {
   ...SYNTHETIC_PROJECT,
@@ -92,6 +95,17 @@ const SYNTHETIC_PROVIDER = {
   manual_models: ["local-embed"],
   llm_models: ["llama3.1"],
   api_key_set: false,
+  updated_at: "2026-07-22T00:00:00Z",
+};
+const SYNTHETIC_OPENAI_PROVIDER = {
+  id: "provider-openai",
+  provider: "openai",
+  display_name: "OpenAI Testkonfiguration",
+  endpoint_url: null,
+  available_models: ["gpt-4.1-mini"],
+  manual_models: [],
+  llm_models: ["gpt-4.1-mini"],
+  api_key_set: true,
   updated_at: "2026-07-22T00:00:00Z",
 };
 const SYNTHETIC_INDEXING_RUN = {
@@ -161,6 +175,7 @@ const SYNTHETIC_CLUSTER_SET = {
   cluster_count: 3,
   active_cluster_count: 2,
   active_message_pair_count: 3,
+  keyword_count: 10,
 };
 const SYNTHETIC_CHILD_CLUSTER_SET = {
   ...SYNTHETIC_CLUSTER_SET,
@@ -201,6 +216,61 @@ const SYNTHETIC_DUPLICATE_CLUSTER_SET = {
   created_at: "2026-07-22T00:07:00Z",
   updated_at: "2026-07-22T00:07:00Z",
 };
+const SYNTHETIC_RUNNING_TAXONOMY_CLUSTER_SET = {
+  ...SYNTHETIC_CLUSTER_SET,
+  id: "cluster-set-taxonomy-running",
+  parent_cluster_set_id: "cluster-set-1",
+  display_name: "Taxonomie wird konsolidiert",
+  status: "running",
+  progress: 68,
+  phase: "consolidating",
+  derivation_type: "refinement",
+  algorithm: "llm_taxonomy",
+  error_code: null,
+  error_message: null,
+  cluster_count: 0,
+  active_cluster_count: 0,
+  active_message_pair_count: 0,
+  completed_at: null,
+  created_at: "2026-07-22T00:07:30Z",
+  updated_at: "2026-07-22T00:07:38Z",
+};
+const SYNTHETIC_TAXONOMY_FAILED_CLUSTER_SET = {
+  ...SYNTHETIC_CLUSTER_SET,
+  id: "cluster-set-taxonomy-failed",
+  parent_cluster_set_id: "cluster-set-1",
+  display_name: "Taxonomie fehlgeschlagen",
+  status: "failed",
+  progress: 100,
+  phase: "failed",
+  derivation_type: "refinement",
+  algorithm: "llm_taxonomy",
+  error_code: "CLUSTER_TAXONOMY_FAILED",
+  error_message: "synthetic internal detail that must not be displayed",
+  cluster_count: 0,
+  active_cluster_count: 0,
+  active_message_pair_count: 0,
+  created_at: "2026-07-22T00:08:00Z",
+  updated_at: "2026-07-22T00:08:01Z",
+};
+const SYNTHETIC_ASSIGNMENT_FAILED_CLUSTER_SET = {
+  ...SYNTHETIC_CLUSTER_SET,
+  id: "cluster-set-assignment-failed",
+  parent_cluster_set_id: "cluster-set-1",
+  display_name: "LLM-Zuordnung fehlgeschlagen",
+  status: "failed",
+  progress: 100,
+  phase: "failed",
+  derivation_type: "refinement",
+  algorithm: "llm_assignment",
+  error_code: "CLUSTER_LLM_ASSIGNMENT_FAILED",
+  error_message: "synthetic provider response that must not be displayed",
+  cluster_count: 0,
+  active_cluster_count: 0,
+  active_message_pair_count: 0,
+  created_at: "2026-07-22T00:09:00Z",
+  updated_at: "2026-07-22T00:09:01Z",
+};
 const SYNTHETIC_CLUSTERS = [
   {
     id: "cluster-1",
@@ -225,6 +295,9 @@ const SYNTHETIC_CLUSTERS = [
     auto_summary_question: "Wie können Kunden ihr Passwort zurücksetzen?",
     auto_summary_answer:
       "Sende den Link zum Zurücksetzen und erkläre die Frist.",
+    keywords: ["passwort", "reset link", "zugang"],
+    created_at: "2026-07-22T00:00:00Z",
+    updated_at: "2026-07-22T00:00:00Z",
   },
   {
     id: "cluster-2",
@@ -248,6 +321,9 @@ const SYNTHETIC_CLUSTERS = [
     metadata: {},
     auto_summary_question: "Warum wurde eine alte Rechnung belastet?",
     auto_summary_answer: "Prüfe Rechnungsdatum und Erstattungspfad.",
+    keywords: [],
+    created_at: "2026-07-22T00:00:00Z",
+    updated_at: "2026-07-22T00:00:00Z",
   },
   {
     id: "cluster-3",
@@ -271,6 +347,9 @@ const SYNTHETIC_CLUSTERS = [
     metadata: { qa_mismatch: { maximum: 0.78 } },
     auto_summary_question: "Wie wird ein Zubehörteil retourniert?",
     auto_summary_answer: "Erzeuge ein Retourenlabel für Zubehör.",
+    keywords: ["retoure", "zubehör"],
+    created_at: "2026-07-22T00:00:00Z",
+    updated_at: "2026-07-22T00:00:00Z",
   },
 ];
 const SYNTHETIC_CLUSTER_SOURCES = [
@@ -805,7 +884,7 @@ async function fulfillSyntheticApi(
     return true;
   }
   if (path === "/api/providers" && method === "GET") {
-    await apiJson(route, [SYNTHETIC_PROVIDER]);
+    await apiJson(route, [SYNTHETIC_PROVIDER, SYNTHETIC_OPENAI_PROVIDER]);
     return true;
   }
   if (path === "/api/projects/project-alpha" && method === "GET") {
@@ -852,6 +931,15 @@ async function fulfillSyntheticApi(
         payload.ticket_url_template === undefined
           ? SYNTHETIC_PROJECT_WITH_TICKET_TEMPLATE.ticket_url_template
           : payload.ticket_url_template,
+      llm_taxonomy_max_source_clusters:
+        payload.llm_taxonomy_max_source_clusters ??
+        SYNTHETIC_PROJECT.llm_taxonomy_max_source_clusters,
+      llm_taxonomy_max_prompt_characters:
+        payload.llm_taxonomy_max_prompt_characters ??
+        SYNTHETIC_PROJECT.llm_taxonomy_max_prompt_characters,
+      llm_taxonomy_max_total_keyword_terms:
+        payload.llm_taxonomy_max_total_keyword_terms ??
+        SYNTHETIC_PROJECT.llm_taxonomy_max_total_keyword_terms,
     });
     return true;
   }
@@ -934,7 +1022,41 @@ async function fulfillSyntheticApi(
     ].includes(path) &&
     method === "GET"
   ) {
-    await apiJson(route, SYNTHETIC_CLUSTERS);
+    await apiJson(route, apiState.clusters);
+    return true;
+  }
+  if (
+    path.startsWith("/api/projects/project-alpha/clusters/") &&
+    method === "PATCH"
+  ) {
+    const clusterId = path.split("/").at(-1);
+    const clusterIndex = apiState.clusters.findIndex(
+      (cluster) => cluster.id === clusterId,
+    );
+    if (clusterIndex === -1) {
+      await apiJson(route, { detail: "Cluster nicht gefunden." }, 404);
+      return true;
+    }
+    const payload = requestJson(route);
+    const current = apiState.clusters[clusterIndex];
+    const updated = {
+      ...current,
+      manual_title: Object.hasOwn(payload, "manual_title")
+        ? payload.manual_title
+        : current.manual_title,
+      manual_category: Object.hasOwn(payload, "manual_category")
+        ? payload.manual_category
+        : current.manual_category,
+      manual_status: Object.hasOwn(payload, "manual_status")
+        ? payload.manual_status
+        : current.manual_status,
+    };
+    updated.effective_title = updated.manual_title ?? updated.auto_title;
+    updated.effective_category =
+      updated.manual_category ?? updated.auto_category;
+    updated.effective_status = updated.manual_status ?? updated.auto_status;
+    apiState.clusters[clusterIndex] = updated;
+    await apiJson(route, updated);
     return true;
   }
   if (
@@ -999,7 +1121,10 @@ async function configureScenarioPage(
       SYNTHETIC_CLUSTER_SET,
       SYNTHETIC_CHILD_CLUSTER_SET,
       SYNTHETIC_GRANDCHILD_CLUSTER_SET,
+      SYNTHETIC_TAXONOMY_FAILED_CLUSTER_SET,
+      SYNTHETIC_ASSIGNMENT_FAILED_CLUSTER_SET,
     ],
+    clusters: structuredClone(SYNTHETIC_CLUSTERS),
   };
   await context.addInitScript(() => {
     window.sessionStorage.clear();
@@ -1063,7 +1188,7 @@ async function configureScenarioPage(
   await page.evaluate(async () => {
     await document.fonts.ready;
   });
-  return { context, page, blockedRequests };
+  return { context, page, blockedRequests, apiState };
 }
 
 async function enterInvalidCredentials(page) {
@@ -1271,6 +1396,37 @@ async function captureProjectSettingsStates(
     name: "Projekteinstellungen speichern",
   });
   await settingsForm
+    .getByRole("group", { name: "LLM-Taxonomie-Budgets" })
+    .waitFor({ state: "visible", timeout: 10_000 });
+  await captureState(
+    captures,
+    page,
+    viewport,
+    outputRoot,
+    "project-settings-cluster-budgets",
+    "project",
+    onState,
+  );
+
+  await settingsForm.getByLabel("Maximale Quellcluster").fill("501");
+  await settingsForm
+    .getByRole("button", { name: "Einstellungen speichern" })
+    .click();
+  await settingsForm
+    .getByText("Der Wert muss eine ganze Zahl zwischen 1 und 500 sein.")
+    .waitFor({ state: "visible", timeout: 10_000 });
+  await captureState(
+    captures,
+    page,
+    viewport,
+    outputRoot,
+    "project-settings-cluster-budget-validation",
+    "project",
+    onState,
+  );
+
+  await settingsForm.getByLabel("Maximale Quellcluster").fill("200");
+  await settingsForm
     .getByLabel("Ticket-Link-Vorlage")
     .fill("ftp://tickets.example.test/<ticket_id>");
   await settingsForm
@@ -1321,6 +1477,92 @@ async function captureExplorerInteractionStates(
   outputRoot,
   onState,
 ) {
+  const workspace = page.locator(".explorer-table-workspace").first();
+  await page.getByText("passwort", { exact: true }).scrollIntoViewIfNeeded();
+  await workspace.evaluate((element) => {
+    element.scrollLeft = 0;
+  });
+  await captureState(
+    captures,
+    page,
+    viewport,
+    outputRoot,
+    "explorer-keywords",
+    "project",
+    onState,
+  );
+
+  await page.getByLabel("Ausgeschlossene anzeigen").check();
+  await page
+    .getByRole("row", { name: /Veraltete Abrechnung/ })
+    .first()
+    .waitFor({ state: "visible", timeout: 10_000 });
+  await captureState(
+    captures,
+    page,
+    viewport,
+    outputRoot,
+    "explorer-keywords-empty",
+    "project",
+    onState,
+  );
+  await page.getByLabel("Ausgeschlossene anzeigen").uncheck();
+
+  let clusterRow = page
+    .getByRole("row", { name: /Passwort zurücksetzen/ })
+    .first();
+  await clusterRow.getByRole("button", { name: "Fixieren" }).click();
+  await page
+    .getByText("Cluster fixiert.")
+    .waitFor({ state: "visible", timeout: 10_000 });
+  await dismissFeedback(page);
+  clusterRow = page.getByRole("row", { name: /Passwort zurücksetzen/ }).first();
+  if (
+    (await clusterRow
+      .getByRole("combobox", { name: /Status für Passwort zurücksetzen/ })
+      .inputValue()) !== "fixed"
+  ) {
+    fail("direct fix action did not synchronize the status control");
+  }
+  await clusterRow
+    .getByRole("button", { name: "Fixierung aufheben" })
+    .focus();
+  await captureState(
+    captures,
+    page,
+    viewport,
+    outputRoot,
+    "explorer-cluster-fixed-action",
+    "project",
+    onState,
+  );
+
+  await clusterRow
+    .getByRole("button", { name: "Fixierung aufheben" })
+    .click();
+  await page
+    .getByText("Fixierung aufgehoben.")
+    .waitFor({ state: "visible", timeout: 10_000 });
+  await dismissFeedback(page);
+  clusterRow = page.getByRole("row", { name: /Passwort zurücksetzen/ }).first();
+  if (
+    (await clusterRow
+      .getByRole("combobox", { name: /Status für Passwort zurücksetzen/ })
+      .inputValue()) !== ""
+  ) {
+    fail("unfix action did not restore the automatic status control");
+  }
+  await clusterRow.getByRole("button", { name: "Fixieren" }).focus();
+  await captureState(
+    captures,
+    page,
+    viewport,
+    outputRoot,
+    "explorer-cluster-fixed-reset",
+    "project",
+    onState,
+  );
+
   const sortButton = page.getByRole("button", {
     name: /Hinweise \/ Score sortieren/,
   });
@@ -1390,7 +1632,6 @@ async function captureExplorerInteractionStates(
     .getByRole("button", { name: "Kontrollleiste einklappen" })
     .waitFor({ state: "visible", timeout: 10_000 });
 
-  const workspace = page.locator(".explorer-table-workspace").first();
   await workspace.evaluate((element) => {
     element.scrollTop = element.scrollHeight;
   });
@@ -1524,6 +1765,9 @@ async function captureProjectScenarios(
       );
 
       await openProjectList(page);
+      configured.apiState.clusterSets.unshift(
+        SYNTHETIC_RUNNING_TAXONOMY_CLUSTER_SET,
+      );
       await openSyntheticProject(page);
 
       await page.getByRole("tab", { name: "Indizieren", exact: true }).click();
@@ -1545,6 +1789,31 @@ async function captureProjectScenarios(
       await page
         .getByRole("tab", { name: "Cluster-Sets", exact: true })
         .click();
+      const runningTaxonomyCard = page
+        .getByText("Taxonomie wird konsolidiert", { exact: true })
+        .locator("xpath=ancestor::article[1]");
+      await runningTaxonomyCard.waitFor({ state: "visible", timeout: 10_000 });
+      const runningProgress = runningTaxonomyCard.locator("progress");
+      if ((await runningProgress.getAttribute("value")) !== "68") {
+        fail("running LLM taxonomy progress did not expose the estimated value");
+      }
+      await runningTaxonomyCard
+        .getByText(/running · 68%/)
+        .waitFor({ state: "visible", timeout: 10_000 });
+      await captureState(
+        captures,
+        page,
+        viewport,
+        outputRoot,
+        "cluster-set-llm-taxonomy-progress",
+        "project",
+        onState,
+      );
+      configured.apiState.clusterSets = configured.apiState.clusterSets.filter(
+        (clusterSet) => clusterSet.id !== SYNTHETIC_RUNNING_TAXONOMY_CLUSTER_SET.id,
+      );
+      await page.waitForTimeout(2_200);
+      await runningTaxonomyCard.waitFor({ state: "hidden", timeout: 10_000 });
       await page
         .getByRole("button", { name: "Im Explorer laden" })
         .first()
@@ -1555,6 +1824,25 @@ async function captureProjectScenarios(
         viewport,
         outputRoot,
         "cluster-sets-tree",
+        "project",
+        onState,
+      );
+      await page
+        .getByText(
+          "Die Parent-Summaries sind unvollständig oder das LLM hat keine vollständige, eindeutige Taxonomie geliefert. Bitte Summaries, Provider und Modell prüfen.",
+        )
+        .waitFor({ state: "visible", timeout: 10_000 });
+      await page
+        .getByText(
+          "Die Taxonomie ist unvollständig oder das LLM hat nicht alle Supportanfragen eindeutig zugeordnet. Bitte Taxonomie, Provider und Modell prüfen.",
+        )
+        .waitFor({ state: "visible", timeout: 10_000 });
+      await captureState(
+        captures,
+        page,
+        viewport,
+        outputRoot,
+        "cluster-sets-llm-background-errors",
         "project",
         onState,
       );
@@ -1671,8 +1959,104 @@ async function captureProjectScenarios(
         onState,
       );
       await page
+        .getByRole("combobox", { name: "Algorithmus" })
+        .selectOption("llm_taxonomy");
+      await page
+        .getByText(/hierarchischen Taxonomie/)
+        .waitFor({ state: "visible", timeout: 10_000 });
+      await captureState(
+        captures,
+        page,
+        viewport,
+        outputRoot,
+        "cluster-set-llm-taxonomy-form",
+        "project",
+        onState,
+      );
+      const clusterSetSubmit = page.getByRole("button", {
+        name: "Verfeinerung erstellen",
+      });
+      await page
+        .getByRole("combobox", { name: "LLM für Clustering" })
+        .selectOption("");
+      if (!(await clusterSetSubmit.isDisabled())) {
+        fail("LLM taxonomy refinement without a provider was not disabled");
+      }
+      await captureState(
+        captures,
+        page,
+        viewport,
+        outputRoot,
+        "cluster-set-llm-provider-required",
+        "project",
+        onState,
+      );
+      await page
+        .getByRole("combobox", { name: "Algorithmus" })
+        .selectOption("llm_assignment");
+      await page
+        .getByText(/ordnet jede aktive Supportanfrage/)
+        .waitFor({ state: "visible", timeout: 10_000 });
+      await captureState(
+        captures,
+        page,
+        viewport,
+        outputRoot,
+        "cluster-set-llm-assignment-form",
+        "project",
+        onState,
+      );
+      await page
+        .getByRole("combobox", { name: "LLM für Clustering" })
+        .selectOption("provider-openai");
+      await page
+        .getByText(/Originaltexte für diese Aktion an OpenAI übertragen/)
+        .waitFor({ state: "visible", timeout: 10_000 });
+      if (!(await clusterSetSubmit.isDisabled())) {
+        fail("OpenAI refinement without confirmation was not disabled");
+      }
+      await captureState(
+        captures,
+        page,
+        viewport,
+        outputRoot,
+        "cluster-set-llm-openai-confirmation",
+        "project",
+        onState,
+      );
+      await page
         .getByRole("button", { name: "Verfeinerung zurücksetzen" })
         .click();
+      await page
+        .getByRole("combobox", { name: "LLM-Zusammenfassung" })
+        .selectOption("");
+
+      const keywordCountInput = page.getByLabel("Typische Keywords je Cluster");
+      await keywordCountInput.fill("51");
+      const clusterSetForm = page
+        .getByRole("button", { name: "Cluster-Set erstellen" })
+        .locator("xpath=ancestor::form[1]");
+      await clusterSetForm.evaluate((form) => {
+        form.noValidate = true;
+      });
+      await page.getByRole("button", { name: "Cluster-Set erstellen" }).click();
+      await page
+        .getByText(
+          "Die Keyword-Anzahl muss eine ganze Zahl zwischen 1 und 50 sein.",
+        )
+        .waitFor({ state: "visible", timeout: 10_000 });
+      await keywordCountInput.focus();
+      await captureState(
+        captures,
+        page,
+        viewport,
+        outputRoot,
+        "cluster-set-keyword-count-invalid",
+        "project",
+        onState,
+      );
+      await dismissFeedback(page);
+      await keywordCountInput.fill("10");
 
       await originalClusterSetCard
         .getByRole("button", { name: "Im Explorer laden" })

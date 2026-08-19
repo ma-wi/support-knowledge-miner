@@ -151,6 +151,7 @@ class FakeClusterService:
         self.cluster_set = self._cluster_set(
             display_name=payload.display_name or "Cluster-Set",
             vector_basis=payload.vector_basis,
+            keyword_count=payload.keyword_count,
             status="queued",
         )
         return self.cluster_set
@@ -278,6 +279,7 @@ class FakeClusterService:
         cluster_set_id: UUID = CLUSTER_SET_ID,
         display_name: str = "Reset Cluster-Set",
         vector_basis: str = "combined",
+        keyword_count: int = 10,
         status: str = "completed",
         phase: str = "completed",
     ) -> ClusterSet:
@@ -295,6 +297,7 @@ class FakeClusterService:
             phase=phase,
             derivation_type="root",
             vector_basis=vector_basis,
+            keyword_count=keyword_count,
             message_weight=0.5,
             answer_weight=0.5,
             algorithm="hdbscan",
@@ -351,6 +354,7 @@ class FakeClusterService:
             cluster_set_id=CLUSTER_SET_ID,
             auto_summary_question="How do I reset it?",
             auto_summary_answer="Use the reset link.",
+            keywords=["passwort", "zurücksetzen"],
         )
 
 
@@ -537,16 +541,19 @@ def test_cluster_set_api_creates_lists_cancels_deletes_and_exposes_events() -> N
             "llm_provider_id": str(LLM_PROVIDER_ID),
             "llm_model": "llama3.1",
             "llm_sample_count": 2,
+            "keyword_count": 7,
         },
     )
     assert created.status_code == 201
     assert created.json()["display_name"] == "Antworten fein"
     assert created.json()["vector_basis"] == "combined"
+    assert created.json()["keyword_count"] == 7
     assert fake_service.started_by == OWNER_ID
     assert fake_service.started_payload is not None
     assert fake_service.started_payload.llm_provider_id == LLM_PROVIDER_ID
     assert fake_service.started_payload.answer_weight == 0.6
     assert fake_service.started_payload.outlier_threshold == 0.7
+    assert fake_service.started_payload.keyword_count == 7
     assert fake_service.enqueued_id == CLUSTER_SET_ID
 
     listed = client.get(
@@ -557,6 +564,7 @@ def test_cluster_set_api_creates_lists_cancels_deletes_and_exposes_events() -> N
     assert listed.json()[0]["active_cluster_count"] == 1
     assert listed.json()[0]["active_message_pair_count"] == 2
     assert listed.json()[0]["llm_sample_strategy"]["requested"] == 2
+    assert listed.json()[0]["keyword_count"] == 7
 
     clusters = client.get(
         f"/api/projects/{PROJECT_ID}/cluster-sets/{CLUSTER_SET_ID}/clusters",
@@ -565,6 +573,7 @@ def test_cluster_set_api_creates_lists_cancels_deletes_and_exposes_events() -> N
     assert clusters.status_code == 200
     assert clusters.json()[0]["cluster_set_id"] == str(CLUSTER_SET_ID)
     assert clusters.json()[0]["auto_summary_question"] == "How do I reset it?"
+    assert clusters.json()[0]["keywords"] == ["passwort", "zurücksetzen"]
 
     events = client.get(
         f"/api/projects/{PROJECT_ID}/cluster-sets/{CLUSTER_SET_ID}/events",
@@ -1007,7 +1016,9 @@ def test_cluster_set_api_budget_error_uses_cluster_budget_contract() -> None:
     assert payload["title"] == "Die Clusterung ist zu groß."
     assert (
         payload["detail"] == "Die aktuelle Datenmenge, Dimension oder Zusammenfassung "
-        "überschreitet das Clusterbudget."
+        "überschreitet das Clusterbudget. Bitte Datenmenge, Dimensionen oder "
+        "Beispiele reduzieren oder bei einer LLM-Taxonomie das passende "
+        "Projektlimit unter Einstellungen erhöhen und ein neues Child starten."
     )
     assert payload["code"] == "CLUSTER_BUDGET_EXCEEDED"
     assert payload["suggestedAction"] == "reduce-scope"

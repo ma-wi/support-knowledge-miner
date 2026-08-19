@@ -86,7 +86,7 @@ x-skm-problem-codes:
     type: urn:skm:error:CLUSTER_BUDGET_EXCEEDED
     title: Die Clusterung ist zu groß.
     status: 422
-    detail: Die aktuelle Datenmenge, Dimension oder Zusammenfassung überschreitet das Clusterbudget.
+    detail: Die aktuelle Datenmenge, Dimension oder Zusammenfassung überschreitet das Clusterbudget. Bitte Datenmenge, Dimensionen oder Beispiele reduzieren oder bei einer LLM-Taxonomie das passende Projektlimit unter Einstellungen erhöhen und ein neues Child starten.
     suggestedAction: reduce-scope
   LLM_PROVIDER_UNAVAILABLE:
     type: urn:skm:error:LLM_PROVIDER_UNAVAILABLE
@@ -106,6 +106,18 @@ x-skm-problem-codes:
     status: 422
     detail: Die Cluster wurden berechnet, aber die LLM-Zusammenfassung ist nicht sicher verwendbar.
     suggestedAction: retry-summary
+  CLUSTER_TAXONOMY_FAILED:
+    type: urn:skm:error:CLUSTER_TAXONOMY_FAILED
+    title: Die Cluster-Taxonomie konnte nicht erstellt werden.
+    status: 422
+    detail: Die Parent-Summaries sind unvollständig oder das LLM hat keine vollständige und eindeutige Taxonomie geliefert.
+    suggestedAction: retry
+  CLUSTER_LLM_ASSIGNMENT_FAILED:
+    type: urn:skm:error:CLUSTER_LLM_ASSIGNMENT_FAILED
+    title: Die LLM-Zuordnung konnte nicht erstellt werden.
+    status: 422
+    detail: Die Taxonomie ist unvollständig oder das LLM hat nicht alle Supportanfragen vollständig und eindeutig zugeordnet.
+    suggestedAction: retry
   CLUSTER_REDUCTION_UNAVAILABLE:
     type: urn:skm:error:CLUSTER_REDUCTION_UNAVAILABLE
     title: Dimensionsreduzierung ist nicht verfügbar.

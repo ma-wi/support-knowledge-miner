@@ -28,6 +28,8 @@ def test_auth_migration_is_ordered_after_foundation() -> None:
         "0017_provider_instances_and_global_jobs.sql",
         "0018_provider_available_models.sql",
         "0019_project_ticket_url_template.sql",
+        "0020_cluster_keywords_and_fixed_status.sql",
+        "0021_project_cluster_budget_settings.sql",
     ]
 
 

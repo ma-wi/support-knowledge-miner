@@ -57,7 +57,7 @@ def settings(name: str) -> DatabaseSettings:
     return DatabaseSettings(url=os.environ[name])
 
 
-def assert_indexing_provider_constraints(database: DatabaseSettings, user_id: UUID) -> None:
+def assert_indexing_provider_constraints(database: DatabaseSettings, user_id: UUID) -> UUID:
     project_id = uuid4()
     import_id = uuid4()
     dataset_id = uuid4()
@@ -80,9 +80,12 @@ def assert_indexing_provider_constraints(database: DatabaseSettings, user_id: UU
             """
             INSERT INTO dataset_versions (
                 id, project_id, version_number, import_log_id, record_count,
-                source_type, source_name, created_by_user_id
+                source_type, source_name, display_name, created_by_user_id
             )
-            VALUES (%s, %s, 1, %s, 1, 'csv', 'migration.csv', %s)
+            VALUES (
+                %s, %s, 1, %s, 1, 'csv', 'migration.csv',
+                'Migration fixture', %s
+            )
             """,
             (dataset_id, project_id, import_id, user_id),
         )
@@ -141,6 +144,71 @@ def assert_indexing_provider_constraints(database: DatabaseSettings, user_id: UU
             else:
                 raise AssertionError(f"{table} accepted an unsupported provider")
         connection.commit()
+    return project_id
+
+
+def assert_project_cluster_budget_defaults(
+    database: DatabaseSettings, project_id: UUID
+) -> None:
+    with open_database_connection(database) as connection:
+        row = connection.execute(
+            """
+            SELECT llm_taxonomy_max_source_clusters,
+                   llm_taxonomy_max_prompt_characters,
+                   llm_taxonomy_max_total_keyword_terms
+            FROM projects
+            WHERE id = %s
+            """,
+            (project_id,),
+        ).fetchone()
+    if row is None:
+        raise AssertionError("project cluster budget fixture is unavailable")
+    actual = (
+        row["llm_taxonomy_max_source_clusters"],
+        row["llm_taxonomy_max_prompt_characters"],
+        row["llm_taxonomy_max_total_keyword_terms"],
+    )
+    if actual != (200, 80_000, 250_000):
+        raise AssertionError(f"unexpected project cluster budget defaults: {actual}")
+    budget_ranges = (
+        ("llm_taxonomy_max_source_clusters", 1, 500),
+        ("llm_taxonomy_max_prompt_characters", 10_000, 500_000),
+        ("llm_taxonomy_max_total_keyword_terms", 1_000, 1_000_000),
+    )
+    for column, minimum, maximum in budget_ranges:
+        for value in (minimum, maximum):
+            with open_database_connection(database) as connection:
+                with connection.transaction():
+                    connection.execute(
+                        f"UPDATE projects SET {column} = %s WHERE id = %s",
+                        (value, project_id),
+                    )
+        for value in (minimum - 1, maximum + 1):
+            try:
+                with open_database_connection(database) as connection:
+                    with connection.transaction():
+                        connection.execute(
+                            f"UPDATE projects SET {column} = %s WHERE id = %s",
+                            (value, project_id),
+                        )
+            except CheckViolation:
+                pass
+            else:
+                raise AssertionError(
+                    f"project cluster budget accepted {column}={value}"
+                )
+    with open_database_connection(database) as connection:
+        with connection.transaction():
+            connection.execute(
+                """
+                UPDATE projects
+                SET llm_taxonomy_max_source_clusters = 200,
+                    llm_taxonomy_max_prompt_characters = 80000,
+                    llm_taxonomy_max_total_keyword_terms = 250000
+                WHERE id = %s
+                """,
+                (project_id,),
+            )
 
 
 def assert_import_source_id_columns(database: DatabaseSettings) -> None:
@@ -228,11 +296,14 @@ with open_database_connection(fresh) as connection:
         (fresh_user_id, hash_password("fresh-password")),
     )
     connection.commit()
-assert_indexing_provider_constraints(fresh, fresh_user_id)
+fresh_project_id = assert_indexing_provider_constraints(fresh, fresh_user_id)
+assert_project_cluster_budget_defaults(fresh, fresh_project_id)
 
 upgrade = settings("UPGRADE_DATABASE_URL")
 legacy_run_id = uuid4()
-with open_database_connection(upgrade) as connection:
+with open_database_connection(
+    upgrade, register_pgvector_types=False
+) as connection:
     with connection.transaction():
         connection.execute(_SCHEMA_TABLE_SQL)
         for path in _migration_files():
@@ -350,6 +421,9 @@ if upgrade_result.applied_versions != (
     "0016_explorer_exports.sql",
     "0017_provider_instances_and_global_jobs.sql",
     "0018_provider_available_models.sql",
+    "0019_project_ticket_url_template.sql",
+    "0020_cluster_keywords_and_fixed_status.sql",
+    "0021_project_cluster_budget_settings.sql",
 ):
     raise AssertionError(f"unexpected upgrade set: {upgrade_result.applied_versions}")
 assert_import_source_id_columns(upgrade)
@@ -370,5 +444,6 @@ token = AuthService(upgrade).sign_in("user-b@example.test", "user-b-password")
 if token.user.id != second_user_id:
     raise AssertionError("email login resolved the wrong legacy account")
 assert_indexing_provider_constraints(upgrade, second_user_id)
-print("fresh_and_0009_to_0018_migrations=ok")
+assert_project_cluster_budget_defaults(upgrade, legacy_project_id)
+print("fresh_and_0009_to_0021_migrations=ok")
 PY

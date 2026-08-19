@@ -42,6 +42,15 @@ class ProjectNotFoundError(ProjectError):
 
 MAX_TICKET_URL_TEMPLATE_LENGTH: Final = 2048
 TICKET_ID_PLACEHOLDER: Final = "<ticket_id>"
+DEFAULT_LLM_TAXONOMY_MAX_SOURCE_CLUSTERS: Final = 200
+MIN_LLM_TAXONOMY_MAX_SOURCE_CLUSTERS: Final = 1
+HARD_MAX_LLM_TAXONOMY_SOURCE_CLUSTERS: Final = 500
+DEFAULT_LLM_TAXONOMY_MAX_PROMPT_CHARACTERS: Final = 80_000
+MIN_LLM_TAXONOMY_MAX_PROMPT_CHARACTERS: Final = 10_000
+HARD_MAX_LLM_TAXONOMY_PROMPT_CHARACTERS: Final = 500_000
+DEFAULT_CLUSTER_KEYWORD_MAX_TOTAL_TERMS: Final = 250_000
+MIN_CLUSTER_KEYWORD_MAX_TOTAL_TERMS: Final = 1_000
+HARD_MAX_CLUSTER_KEYWORD_TOTAL_TERMS: Final = 1_000_000
 _INVALID_TICKET_URL_TEMPLATE_MESSAGE: Final = (
     "Die Ticket-Link-Vorlage muss eine http(s)-URL mit <ticket_id> sein."
 )
@@ -55,6 +64,9 @@ class PublicProject:
     created_at: datetime
     updated_at: datetime
     ticket_url_template: str | None = None
+    llm_taxonomy_max_source_clusters: int = DEFAULT_LLM_TAXONOMY_MAX_SOURCE_CLUSTERS
+    llm_taxonomy_max_prompt_characters: int = DEFAULT_LLM_TAXONOMY_MAX_PROMPT_CHARACTERS
+    llm_taxonomy_max_total_keyword_terms: int = DEFAULT_CLUSTER_KEYWORD_MAX_TOTAL_TERMS
 
 
 def _clean_name(name: str) -> str:
@@ -101,6 +113,30 @@ def _clean_ticket_url_template(template: str | None) -> str | None:
     return cleaned
 
 
+def _clean_budget(
+    value: int | None,
+    *,
+    field: str,
+    minimum: int,
+    maximum: int,
+) -> int:
+    message = (
+        f"Der Wert muss eine ganze Zahl zwischen {minimum:,} und {maximum:,} sein."
+    ).replace(",", ".")
+    if (
+        value is None
+        or isinstance(value, bool)
+        or not isinstance(value, int)
+        or value < minimum
+        or value > maximum
+    ):
+        raise ProjectError(
+            "project cluster budget is invalid",
+            field_errors={field: message},
+        )
+    return value
+
+
 def _project_from_row(row: dict[str, object]) -> PublicProject:
     return PublicProject(
         id=UUID(str(row["id"])),
@@ -112,6 +148,30 @@ def _project_from_row(row: dict[str, object]) -> PublicProject:
             str(row["ticket_url_template"])
             if row.get("ticket_url_template") is not None
             else None
+        ),
+        llm_taxonomy_max_source_clusters=int(
+            str(
+                row.get(
+                    "llm_taxonomy_max_source_clusters",
+                    DEFAULT_LLM_TAXONOMY_MAX_SOURCE_CLUSTERS,
+                )
+            )
+        ),
+        llm_taxonomy_max_prompt_characters=int(
+            str(
+                row.get(
+                    "llm_taxonomy_max_prompt_characters",
+                    DEFAULT_LLM_TAXONOMY_MAX_PROMPT_CHARACTERS,
+                )
+            )
+        ),
+        llm_taxonomy_max_total_keyword_terms=int(
+            str(
+                row.get(
+                    "llm_taxonomy_max_total_keyword_terms",
+                    DEFAULT_CLUSTER_KEYWORD_MAX_TOTAL_TERMS,
+                )
+            )
         ),
     )
 
@@ -127,7 +187,10 @@ class ProjectService:
                 """
                 SELECT
                     id, name, lifecycle_state, created_at, updated_at,
-                    ticket_url_template
+                    ticket_url_template,
+                    llm_taxonomy_max_source_clusters,
+                    llm_taxonomy_max_prompt_characters,
+                    llm_taxonomy_max_total_keyword_terms
                 FROM projects
                 WHERE deleted_at IS NULL
                 ORDER BY updated_at DESC, name ASC
@@ -141,7 +204,10 @@ class ProjectService:
                 """
                 SELECT
                     id, name, lifecycle_state, created_at, updated_at,
-                    ticket_url_template
+                    ticket_url_template,
+                    llm_taxonomy_max_source_clusters,
+                    llm_taxonomy_max_prompt_characters,
+                    llm_taxonomy_max_total_keyword_terms
                 FROM projects
                 WHERE id = %s AND deleted_at IS NULL
                 """,
@@ -162,7 +228,10 @@ class ProjectService:
                     VALUES (%s, %s, %s, %s)
                     RETURNING
                         id, name, lifecycle_state, created_at, updated_at,
-                        ticket_url_template
+                        ticket_url_template,
+                        llm_taxonomy_max_source_clusters,
+                        llm_taxonomy_max_prompt_characters,
+                        llm_taxonomy_max_total_keyword_terms
                     """,
                     (project_id, clean_name, actor_user_id, actor_user_id),
                 ).fetchone()
@@ -185,6 +254,9 @@ class ProjectService:
             project_id,
             name=name,
             ticket_url_template_unchanged=True,
+            llm_taxonomy_max_source_clusters_unchanged=True,
+            llm_taxonomy_max_prompt_characters_unchanged=True,
+            llm_taxonomy_max_total_keyword_terms_unchanged=True,
             actor_user_id=actor_user_id,
         )
 
@@ -195,41 +267,91 @@ class ProjectService:
         name: str,
         ticket_url_template: str | None = None,
         ticket_url_template_unchanged: bool = False,
+        llm_taxonomy_max_source_clusters: int | None = None,
+        llm_taxonomy_max_source_clusters_unchanged: bool = True,
+        llm_taxonomy_max_prompt_characters: int | None = None,
+        llm_taxonomy_max_prompt_characters_unchanged: bool = True,
+        llm_taxonomy_max_total_keyword_terms: int | None = None,
+        llm_taxonomy_max_total_keyword_terms_unchanged: bool = True,
         actor_user_id: UUID,
     ) -> PublicProject:
         clean_name = _clean_name(name)
-        clean_template = _clean_ticket_url_template(ticket_url_template)
+        clean_template = (
+            None
+            if ticket_url_template_unchanged
+            else _clean_ticket_url_template(ticket_url_template)
+        )
+        clean_source_clusters = (
+            None
+            if llm_taxonomy_max_source_clusters_unchanged
+            else _clean_budget(
+                llm_taxonomy_max_source_clusters,
+                field="llm_taxonomy_max_source_clusters",
+                minimum=MIN_LLM_TAXONOMY_MAX_SOURCE_CLUSTERS,
+                maximum=HARD_MAX_LLM_TAXONOMY_SOURCE_CLUSTERS,
+            )
+        )
+        clean_prompt_characters = (
+            None
+            if llm_taxonomy_max_prompt_characters_unchanged
+            else _clean_budget(
+                llm_taxonomy_max_prompt_characters,
+                field="llm_taxonomy_max_prompt_characters",
+                minimum=MIN_LLM_TAXONOMY_MAX_PROMPT_CHARACTERS,
+                maximum=HARD_MAX_LLM_TAXONOMY_PROMPT_CHARACTERS,
+            )
+        )
+        clean_keyword_terms = (
+            None
+            if llm_taxonomy_max_total_keyword_terms_unchanged
+            else _clean_budget(
+                llm_taxonomy_max_total_keyword_terms,
+                field="llm_taxonomy_max_total_keyword_terms",
+                minimum=MIN_CLUSTER_KEYWORD_MAX_TOTAL_TERMS,
+                maximum=HARD_MAX_CLUSTER_KEYWORD_TOTAL_TERMS,
+            )
+        )
         with open_database_connection(self._settings) as connection:
             with connection.transaction():
-                if ticket_url_template_unchanged:
-                    row = connection.execute(
-                        """
-                        UPDATE projects
-                        SET name = %s,
-                            updated_by_user_id = %s,
-                            updated_at = now()
-                        WHERE id = %s AND deleted_at IS NULL
-                        RETURNING
-                            id, name, lifecycle_state, created_at, updated_at,
-                            ticket_url_template
-                        """,
-                        (clean_name, actor_user_id, project_id),
-                    ).fetchone()
-                else:
-                    row = connection.execute(
-                        """
-                        UPDATE projects
-                        SET name = %s,
-                            ticket_url_template = %s,
-                            updated_by_user_id = %s,
-                            updated_at = now()
-                        WHERE id = %s AND deleted_at IS NULL
-                        RETURNING
-                            id, name, lifecycle_state, created_at, updated_at,
-                            ticket_url_template
-                        """,
-                        (clean_name, clean_template, actor_user_id, project_id),
-                    ).fetchone()
+                row = connection.execute(
+                    """
+                    UPDATE projects
+                    SET name = %s,
+                        ticket_url_template = CASE
+                            WHEN %s THEN ticket_url_template ELSE %s END,
+                        llm_taxonomy_max_source_clusters = CASE
+                            WHEN %s THEN llm_taxonomy_max_source_clusters
+                            ELSE %s END,
+                        llm_taxonomy_max_prompt_characters = CASE
+                            WHEN %s THEN llm_taxonomy_max_prompt_characters
+                            ELSE %s END,
+                        llm_taxonomy_max_total_keyword_terms = CASE
+                            WHEN %s THEN llm_taxonomy_max_total_keyword_terms
+                            ELSE %s END,
+                        updated_by_user_id = %s,
+                        updated_at = now()
+                    WHERE id = %s AND deleted_at IS NULL
+                    RETURNING
+                        id, name, lifecycle_state, created_at, updated_at,
+                        ticket_url_template,
+                        llm_taxonomy_max_source_clusters,
+                        llm_taxonomy_max_prompt_characters,
+                        llm_taxonomy_max_total_keyword_terms
+                    """,
+                    (
+                        clean_name,
+                        ticket_url_template_unchanged,
+                        clean_template,
+                        llm_taxonomy_max_source_clusters_unchanged,
+                        clean_source_clusters,
+                        llm_taxonomy_max_prompt_characters_unchanged,
+                        clean_prompt_characters,
+                        llm_taxonomy_max_total_keyword_terms_unchanged,
+                        clean_keyword_terms,
+                        actor_user_id,
+                        project_id,
+                    ),
+                ).fetchone()
                 if row is None:
                     raise ProjectNotFoundError("project not found")
                 self._audit.record_event(
@@ -245,6 +367,9 @@ class ProjectService:
                             if ticket_url_template_unchanged
                             else clean_template is not None
                         ),
+                        "llm_taxonomy_max_source_clusters": clean_source_clusters,
+                        "llm_taxonomy_max_prompt_characters": clean_prompt_characters,
+                        "llm_taxonomy_max_total_keyword_terms": clean_keyword_terms,
                     },
                 )
         return _project_from_row(dict(row))

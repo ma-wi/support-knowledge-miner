@@ -22,6 +22,9 @@ type ApiProject = {
   created_at: string;
   updated_at: string;
   ticket_url_template: string | null;
+  llm_taxonomy_max_source_clusters: number;
+  llm_taxonomy_max_prompt_characters: number;
+  llm_taxonomy_max_total_keyword_terms: number;
 };
 
 type Project = {
@@ -30,6 +33,9 @@ type Project = {
   lifecycleState: string;
   updatedAt: string;
   ticketUrlTemplate: string | null;
+  llmTaxonomyMaxSourceClusters: number;
+  llmTaxonomyMaxPromptCharacters: number;
+  llmTaxonomyMaxTotalKeywordTerms: number;
 };
 
 type ApiImportLog = {
@@ -73,6 +79,15 @@ type ImportLog = {
 };
 
 const MAX_IMPORT_BYTES = 512 * 1024 * 1024;
+const DEFAULT_LLM_TAXONOMY_MAX_SOURCE_CLUSTERS = 200;
+const MIN_LLM_TAXONOMY_MAX_SOURCE_CLUSTERS = 1;
+const HARD_MAX_LLM_TAXONOMY_SOURCE_CLUSTERS = 500;
+const DEFAULT_LLM_TAXONOMY_MAX_PROMPT_CHARACTERS = 80_000;
+const MIN_LLM_TAXONOMY_MAX_PROMPT_CHARACTERS = 10_000;
+const HARD_MAX_LLM_TAXONOMY_PROMPT_CHARACTERS = 500_000;
+const DEFAULT_LLM_TAXONOMY_MAX_TOTAL_KEYWORD_TERMS = 250_000;
+const MIN_LLM_TAXONOMY_MAX_TOTAL_KEYWORD_TERMS = 1_000;
+const HARD_MAX_LLM_TAXONOMY_TOTAL_KEYWORD_TERMS = 1_000_000;
 
 type ApiProviderConfiguration = {
   id: string;
@@ -207,6 +222,7 @@ type ApiClusterSet = {
   cluster_count: number;
   active_cluster_count?: number;
   active_message_pair_count?: number;
+  keyword_count?: number;
 };
 
 type ApiClusterSetBatchDeleteResponse = {
@@ -251,6 +267,7 @@ type ClusterSet = {
   clusterCount: number;
   activeClusterCount: number;
   activeMessagePairCount: number;
+  keywordCount: number;
 };
 
 type ApiCluster = {
@@ -277,6 +294,7 @@ type ApiCluster = {
   updated_at: string;
   auto_summary_question?: string | null;
   auto_summary_answer?: string | null;
+  keywords?: string[];
 };
 
 type Cluster = {
@@ -303,6 +321,7 @@ type Cluster = {
   updatedAt: string;
   autoSummaryQuestion: string | null;
   autoSummaryAnswer: string | null;
+  keywords: string[];
 };
 
 type ApiClusterSource = {
@@ -426,6 +445,11 @@ const INTERNAL_LAST_NAME_PLACEHOLDER = "-";
 const SESSION_TOKEN_STORAGE_KEY = "skm.session-token";
 const RUN_POLL_INTERVAL_MS = 2000;
 const CLUSTER_SOURCE_PAGE_SIZE = 50;
+const LLM_CLUSTER_ALGORITHMS = new Set(["llm_taxonomy", "llm_assignment"]);
+
+function isLlmClusterAlgorithm(value: string): boolean {
+  return LLM_CLUSTER_ALGORITHMS.has(value);
+}
 const FEEDBACK_LABELS: Record<FeedbackKind, string> = {
   success: "Erfolg",
   info: "Hinweis",
@@ -452,13 +476,17 @@ const ERROR_MESSAGES_BY_CODE: Record<string, string> = {
   CLUSTER_SUMMARY_SAMPLE_COUNT_INVALID:
     "Die Beispielanzahl für Zusammenfassungen ist ungültig. Bitte einen Wert ab 1 wählen.",
   CLUSTER_BUDGET_EXCEEDED:
-    "Die aktuelle Datenmenge, Dimension oder Zusammenfassung überschreitet das Clusterbudget. Bitte Datenmenge, Dimensionen oder Beispiele reduzieren.",
+    "Die aktuelle Datenmenge, Dimension oder Zusammenfassung überschreitet das Clusterbudget. Bitte Datenmenge, Dimensionen oder Beispiele reduzieren oder bei einer LLM-Taxonomie das passende Projektlimit unter Einstellungen erhöhen und ein neues Child starten.",
   LLM_CLOUD_CONFIRMATION_REQUIRED:
     "Diese Zusammenfassung würde Originaltexte an OpenAI senden. Bitte Cloud-Nutzung bewusst bestätigen.",
   LLM_PROVIDER_UNAVAILABLE:
     "Der LLM-Provider ist nicht verfügbar. Bitte Provider-Einstellungen prüfen oder Summaries deaktivieren.",
   CLUSTER_SUMMARY_FAILED:
     "Die Clusterbildung ist abgeschlossen, aber die Zusammenfassung konnte nicht erstellt werden.",
+  CLUSTER_TAXONOMY_FAILED:
+    "Die Parent-Summaries sind unvollständig oder das LLM hat keine vollständige, eindeutige Taxonomie geliefert. Bitte Summaries, Provider und Modell prüfen.",
+  CLUSTER_LLM_ASSIGNMENT_FAILED:
+    "Die Taxonomie ist unvollständig oder das LLM hat nicht alle Supportanfragen eindeutig zugeordnet. Bitte Taxonomie, Provider und Modell prüfen.",
   CLUSTER_SET_CANCEL_NOT_AVAILABLE:
     "Dieses Cluster-Set kann nicht mehr abgebrochen werden. Bitte Liste aktualisieren.",
   CLUSTER_SET_NOT_FOUND:
@@ -571,7 +599,38 @@ function toProject(project: ApiProject): Project {
     lifecycleState: project.lifecycle_state,
     updatedAt: project.updated_at,
     ticketUrlTemplate: project.ticket_url_template ?? null,
+    llmTaxonomyMaxSourceClusters:
+      project.llm_taxonomy_max_source_clusters ??
+      DEFAULT_LLM_TAXONOMY_MAX_SOURCE_CLUSTERS,
+    llmTaxonomyMaxPromptCharacters:
+      project.llm_taxonomy_max_prompt_characters ??
+      DEFAULT_LLM_TAXONOMY_MAX_PROMPT_CHARACTERS,
+    llmTaxonomyMaxTotalKeywordTerms:
+      project.llm_taxonomy_max_total_keyword_terms ??
+      DEFAULT_LLM_TAXONOMY_MAX_TOTAL_KEYWORD_TERMS,
   };
+}
+
+function projectBudgetInput(
+  form: FormData,
+  field: string,
+  minimum: number,
+  maximum: number,
+): { value: number | null; error: string | null } {
+  const raw = String(form.get(field) ?? "").trim();
+  const value = Number(raw);
+  if (
+    raw === "" ||
+    !Number.isSafeInteger(value) ||
+    value < minimum ||
+    value > maximum
+  ) {
+    return {
+      value: null,
+      error: `Der Wert muss eine ganze Zahl zwischen ${minimum.toLocaleString("de-DE")} und ${maximum.toLocaleString("de-DE")} sein.`,
+    };
+  }
+  return { value, error: null };
 }
 
 function formatProjectUpdatedAt(updatedAt: string): string {
@@ -763,6 +822,7 @@ function toClusterSet(clusterSet: ApiClusterSet): ClusterSet {
     activeClusterCount:
       clusterSet.active_cluster_count ?? clusterSet.cluster_count,
     activeMessagePairCount: clusterSet.active_message_pair_count ?? 0,
+    keywordCount: clusterSet.keyword_count ?? 10,
   };
 }
 
@@ -791,6 +851,7 @@ function toCluster(cluster: ApiCluster): Cluster {
     updatedAt: cluster.updated_at,
     autoSummaryQuestion: cluster.auto_summary_question ?? null,
     autoSummaryAnswer: cluster.auto_summary_answer ?? null,
+    keywords: cluster.keywords ?? [],
   };
 }
 
@@ -896,6 +957,7 @@ const CLUSTER_SET_PARAMETER_LABELS: Record<string, string> = {
   llm_sample_strategy: "LLM-Strategie",
   llm_sample_requested: "LLM-Samples",
   llm_sample_seed: "LLM-Seed",
+  keyword_count: "Keywords je Cluster",
 };
 
 const CLUSTER_SET_PARAMETER_ORDER = [
@@ -903,6 +965,7 @@ const CLUSTER_SET_PARAMETER_ORDER = [
   "message_weight",
   "answer_weight",
   "algorithm",
+  "keyword_count",
   "min_cluster_size",
   "min_samples",
   "cluster_selection_epsilon",
@@ -949,6 +1012,7 @@ const CLUSTER_STATUS_ORDER = [
   "unreviewed",
   "in_progress",
   "reviewed",
+  "fixed",
   "rejected",
   "outlier",
 ];
@@ -957,6 +1021,7 @@ const CLUSTER_STATUS_LABELS: Record<string, string> = {
   unreviewed: "unreviewed",
   in_progress: "in_progress",
   reviewed: "reviewed",
+  fixed: "fixiert",
   rejected: "rejected",
   outlier: "outlier",
 };
@@ -1008,6 +1073,7 @@ function clusterSetParameterEntries(
     message_weight: clusterSet.messageWeight,
     answer_weight: clusterSet.answerWeight,
     algorithm: clusterSet.algorithm,
+    keyword_count: clusterSet.keywordCount,
     ...clusterSet.parameters,
   };
   if (clusterSet.llmProvider !== null) {
@@ -1960,13 +2026,42 @@ function App() {
     const form = new FormData(event.currentTarget);
     const name = String(form.get("projectName") ?? "");
     const ticketUrlTemplate = String(form.get("ticketUrlTemplate") ?? "");
+    const sourceClusterBudget = projectBudgetInput(
+      form,
+      "llm_taxonomy_max_source_clusters",
+      MIN_LLM_TAXONOMY_MAX_SOURCE_CLUSTERS,
+      HARD_MAX_LLM_TAXONOMY_SOURCE_CLUSTERS,
+    );
+    const promptCharacterBudget = projectBudgetInput(
+      form,
+      "llm_taxonomy_max_prompt_characters",
+      MIN_LLM_TAXONOMY_MAX_PROMPT_CHARACTERS,
+      HARD_MAX_LLM_TAXONOMY_PROMPT_CHARACTERS,
+    );
+    const keywordTermBudget = projectBudgetInput(
+      form,
+      "llm_taxonomy_max_total_keyword_terms",
+      MIN_LLM_TAXONOMY_MAX_TOTAL_KEYWORD_TERMS,
+      HARD_MAX_LLM_TAXONOMY_TOTAL_KEYWORD_TERMS,
+    );
     setFeedback(null);
+    const fieldErrors: Record<string, string> = {};
     if (!name.trim()) {
-      setProjectSettingsFieldErrors({
-        projectName: "Projektname ist erforderlich.",
-      });
+      fieldErrors.projectName = "Projektname ist erforderlich.";
+    }
+    for (const [field, result] of [
+      ["llm_taxonomy_max_source_clusters", sourceClusterBudget],
+      ["llm_taxonomy_max_prompt_characters", promptCharacterBudget],
+      ["llm_taxonomy_max_total_keyword_terms", keywordTermBudget],
+    ] as const) {
+      if (result.error !== null) {
+        fieldErrors[field] = result.error;
+      }
+    }
+    if (Object.keys(fieldErrors).length > 0) {
+      setProjectSettingsFieldErrors(fieldErrors);
       setProjectSettingsError(
-        "Die Projekteinstellungen konnten nicht gespeichert werden.",
+        "Die Projekteinstellungen konnten nicht gespeichert werden. Bitte Eingaben prüfen.",
       );
       return;
     }
@@ -1983,6 +2078,9 @@ function App() {
             name,
             ticket_url_template:
               ticketUrlTemplate.trim() === "" ? null : ticketUrlTemplate,
+            llm_taxonomy_max_source_clusters: sourceClusterBudget.value,
+            llm_taxonomy_max_prompt_characters: promptCharacterBudget.value,
+            llm_taxonomy_max_total_keyword_terms: keywordTermBudget.value,
           }),
         },
       );
@@ -2923,9 +3021,30 @@ function App() {
     ).trim();
     const llmProviderId = String(form.get("llmProviderId") ?? "");
     const llmModel = String(form.get("llmModel") ?? "").trim();
+    const usesLlmClustering = isLlmClusterAlgorithm(clusterSetAlgorithm);
     const llmSampleCount = parsePositiveInteger(form.get("llmSampleCount"));
+    const keywordCount = parsePositiveInteger(form.get("keywordCount"));
+    if (keywordCount === null || keywordCount > 50) {
+      showFeedback(
+        "error",
+        "Die Keyword-Anzahl muss eine ganze Zahl zwischen 1 und 50 sein.",
+      );
+      return;
+    }
+    if (usesLlmClustering && clusterSetRefinementDraft === null) {
+      showFeedback(
+        "error",
+        "LLM-Clustering benötigt ein abgeschlossenes Parent-Cluster-Set.",
+      );
+      return;
+    }
+    if (usesLlmClustering && (llmProviderId === "" || llmModel === "")) {
+      showFeedback("error", ERROR_MESSAGES_BY_CODE.LLM_PROVIDER_UNAVAILABLE);
+      return;
+    }
     if (
       llmProviderId !== "" &&
+      !usesLlmClustering &&
       !clusterSetLlmSampleAll &&
       llmSampleCount === null
     ) {
@@ -2958,8 +3077,9 @@ function App() {
       );
       return;
     }
-    const algorithmSettings =
-      clusterSetAlgorithm === "agglomerative"
+    const algorithmSettings = usesLlmClustering
+      ? { algorithm: clusterSetAlgorithm }
+      : clusterSetAlgorithm === "agglomerative"
         ? {
             algorithm: "agglomerative",
             linkage,
@@ -3031,19 +3151,24 @@ function App() {
                 ? Number(form.get("answerWeight") ?? 0.5)
                 : 0,
             algorithm_settings: algorithmSettings,
-            outlier_threshold: outlierThresholdRaw
-              ? Number.parseFloat(outlierThresholdRaw)
-              : null,
+            outlier_threshold:
+              !usesLlmClustering && outlierThresholdRaw
+                ? Number.parseFloat(outlierThresholdRaw)
+                : null,
             source_cluster_ids:
               clusterSetRefinementDraft?.sourceClusterIds ?? [],
             llm_provider_id: llmProviderId || null,
             llm_model: llmProviderId ? llmModel || null : null,
-            llm_sample_count:
-              llmProviderId && !clusterSetLlmSampleAll ? llmSampleCount : null,
-            llm_sample_all: clusterSetLlmSampleAll,
+            llm_sample_count: usesLlmClustering
+              ? 10
+              : llmProviderId && !clusterSetLlmSampleAll
+                ? llmSampleCount
+                : null,
+            llm_sample_all: usesLlmClustering ? false : clusterSetLlmSampleAll,
             llm_cloud_use_confirmed:
               clusterSetLlmProviderConfiguration?.provider === "openai" &&
               clusterSetCloudUseConfirmed,
+            keyword_count: keywordCount,
           }),
         },
       );
@@ -3053,6 +3178,9 @@ function App() {
       upsertClusterSet(toClusterSet(created));
       setClusterSetFocusId(created.id);
       setClusterSetRefinementDraft(null);
+      if (usesLlmClustering) {
+        setClusterSetAlgorithm("hdbscan");
+      }
       showFeedback(
         "success",
         "Cluster-Set angelegt. Status wird aktualisiert.",
@@ -3412,9 +3540,13 @@ function App() {
       touchClusterSetFromClusterUpdate(updatedCluster);
       showFeedback(
         "success",
-        manualStatus === "rejected"
-          ? "Cluster ausgeschlossen."
-          : "Cluster wieder eingeschlossen.",
+        manualStatus === "fixed"
+          ? "Cluster fixiert."
+          : manualStatus === null
+            ? "Fixierung aufgehoben."
+            : manualStatus === "rejected"
+              ? "Cluster ausgeschlossen."
+              : "Cluster wieder eingeschlossen.",
       );
     } catch (error: unknown) {
       showFeedback(
@@ -3799,6 +3931,7 @@ function App() {
       cluster.effectiveStatus,
       cluster.autoSummaryQuestion ?? "",
       cluster.autoSummaryAnswer ?? "",
+      cluster.keywords.join(" "),
     ]
       .join("\n")
       .toLowerCase()
@@ -4402,12 +4535,15 @@ function App() {
 
   function renderClusterTableRow(cluster: Cluster) {
     const isExcluded = clusterIsExcluded(cluster);
+    const isFixed = cluster.effectiveStatus === "fixed";
     const mismatchMaximum = mismatchMetric(cluster, "maximum");
     return (
       <tr className={isExcluded ? "excluded-row" : ""} key={cluster.id}>
         <td className="cluster-status-cell">
           <span className={`status-chip ${isExcluded ? "warning" : "active"}`}>
-            {isExcluded ? "ausgeschlossen" : cluster.effectiveStatus}
+            {isExcluded
+              ? "ausgeschlossen"
+              : formatClusterStatusLabel(cluster.effectiveStatus)}
           </span>
           {cluster.isOutlier && (
             <span className="status-chip warning">Ausreißer</span>
@@ -4416,6 +4552,16 @@ function App() {
         <td className="cluster-title-cell">
           <strong>{cluster.effectiveTitle}</strong>
           <p className="hint">Auto: {cluster.autoTitle}</p>
+          {cluster.keywords.length > 0 && (
+            <ul
+              className="cluster-keyword-list"
+              aria-label={`Typische Begriffe für ${cluster.effectiveTitle}`}
+            >
+              {cluster.keywords.map((keyword) => (
+                <li key={keyword}>{keyword}</li>
+              ))}
+            </ul>
+          )}
         </td>
         <td className="cluster-short-cell">{clusterCategory(cluster)}</td>
         <td className="cluster-text-cell">
@@ -4437,6 +4583,12 @@ function App() {
         <td className="cluster-actions-cell">
           <div className="cluster-actions-stack">
             <form
+              key={JSON.stringify([
+                cluster.id,
+                cluster.manualTitle,
+                cluster.manualCategory,
+                cluster.manualStatus,
+              ])}
               className="table-edit-form"
               onSubmit={(event) => updateCluster(event, cluster.id)}
             >
@@ -4467,6 +4619,7 @@ function App() {
                   <option value="unreviewed">unreviewed</option>
                   <option value="in_progress">in_progress</option>
                   <option value="reviewed">reviewed</option>
+                  <option value="fixed">fixiert</option>
                   <option value="rejected">rejected</option>
                   <option value="outlier">outlier</option>
                 </select>
@@ -4494,6 +4647,18 @@ function App() {
                 }
               >
                 {isExcluded ? "Wieder einschließen" : "Ausschließen"}
+              </button>
+              <button
+                type="button"
+                className="secondary"
+                onClick={() =>
+                  void setClusterManualStatus(
+                    cluster.id,
+                    isFixed ? null : "fixed",
+                  )
+                }
+              >
+                {isFixed ? "Fixierung aufheben" : "Fixieren"}
               </button>
             </div>
           </div>
@@ -4673,8 +4838,7 @@ function App() {
         </div>
         {clusterSet.errorCode !== null && (
           <p className="error" role="alert">
-            {clusterSet.errorMessage ??
-              ERROR_MESSAGES_BY_CODE[clusterSet.errorCode] ??
+            {ERROR_MESSAGES_BY_CODE[clusterSet.errorCode] ??
               ERROR_MESSAGES_BY_CODE.UNEXPECTED_ERROR}
           </p>
         )}
@@ -5686,7 +5850,12 @@ function App() {
                               <option value="common">
                                 Gemeinsam neu clustern
                               </option>
-                              <option value="per_parent">
+                              <option
+                                value="per_parent"
+                                disabled={isLlmClusterAlgorithm(
+                                  clusterSetAlgorithm,
+                                )}
+                              >
                                 Separat je Parent-Cluster
                               </option>
                             </select>
@@ -5697,6 +5866,9 @@ function App() {
                             onClick={() => {
                               setClusterSetRefinementDraft(null);
                               setClusterSetRefinementMode("common");
+                              if (isLlmClusterAlgorithm(clusterSetAlgorithm)) {
+                                setClusterSetAlgorithm("hdbscan");
+                              }
                             }}
                           >
                             Verfeinerung zurücksetzen
@@ -5766,16 +5938,42 @@ function App() {
                         </div>
                       )}
                       <label>
+                        Typische Keywords je Cluster
+                        <input
+                          name="keywordCount"
+                          type="number"
+                          min="1"
+                          max="50"
+                          step="1"
+                          defaultValue="10"
+                          required
+                        />
+                      </label>
+                      <label>
                         Algorithmus
                         <select
                           name="clusterAlgorithm"
                           value={clusterSetAlgorithm}
-                          onChange={(event) =>
-                            setClusterSetAlgorithm(event.target.value)
-                          }
+                          onChange={(event) => {
+                            const algorithm = event.target.value;
+                            setClusterSetAlgorithm(algorithm);
+                            if (isLlmClusterAlgorithm(algorithm)) {
+                              setClusterSetRefinementMode("common");
+                            }
+                          }}
                         >
                           <option value="hdbscan">HDBSCAN</option>
                           <option value="agglomerative">Agglomerative</option>
+                          {clusterSetRefinementDraft !== null && (
+                            <>
+                              <option value="llm_taxonomy">
+                                LLM: Taxonomie konsolidieren
+                              </option>
+                              <option value="llm_assignment">
+                                LLM: kompakt zuordnen
+                              </option>
+                            </>
+                          )}
                         </select>
                       </label>
                       {clusterSetAlgorithm === "hdbscan" ? (
@@ -5888,7 +6086,7 @@ function App() {
                             </div>
                           )}
                         </>
-                      ) : (
+                      ) : clusterSetAlgorithm === "agglomerative" ? (
                         <>
                           <div className="inline-form">
                             <label>
@@ -5945,9 +6143,17 @@ function App() {
                             </label>
                           </div>
                         </>
+                      ) : (
+                        <p className="status info" role="status">
+                          {clusterSetAlgorithm === "llm_taxonomy"
+                            ? "Das LLM konsolidiert alle aktiven Parent-Summaries zu einer hierarchischen Taxonomie. Fixierte Cluster und Ausreißer werden unverändert übernommen."
+                            : "Das LLM ordnet jede aktive Supportanfrage anhand der Parent-Taxonomie zu. Nicht passende Anfragen werden Ausreißer."}
+                        </p>
                       )}
                       <label>
-                        LLM-Zusammenfassung
+                        {isLlmClusterAlgorithm(clusterSetAlgorithm)
+                          ? "LLM für Clustering"
+                          : "LLM-Zusammenfassung"}
                         <select
                           name="llmProviderId"
                           value={clusterSetLlmProviderId}
@@ -5955,7 +6161,11 @@ function App() {
                             setClusterSetLlmProviderId(event.target.value)
                           }
                         >
-                          <option value="">Keine Zusammenfassung</option>
+                          <option value="">
+                            {isLlmClusterAlgorithm(clusterSetAlgorithm)
+                              ? "Provider auswählen"
+                              : "Keine Zusammenfassung"}
+                          </option>
                           {llmProviders.map((provider) => (
                             <option key={provider.id} value={provider.id}>
                               {provider.displayName} ·{" "}
@@ -5989,28 +6199,34 @@ function App() {
                               ))}
                             </select>
                           </label>
-                          <label>
-                            Beispiele pro Cluster
-                            <input
-                              name="llmSampleCount"
-                              type="number"
-                              min="1"
-                              step="any"
-                              defaultValue="10"
-                              disabled={clusterSetLlmSampleAll}
-                            />
-                          </label>
-                          <label className="inline-check">
-                            <input
-                              name="llmSampleAll"
-                              type="checkbox"
-                              checked={clusterSetLlmSampleAll}
-                              onChange={(event) =>
-                                setClusterSetLlmSampleAll(event.target.checked)
-                              }
-                            />
-                            Alle Beispiele je Cluster verwenden
-                          </label>
+                          {!isLlmClusterAlgorithm(clusterSetAlgorithm) && (
+                            <>
+                              <label>
+                                Beispiele pro Cluster
+                                <input
+                                  name="llmSampleCount"
+                                  type="number"
+                                  min="1"
+                                  step="any"
+                                  defaultValue="10"
+                                  disabled={clusterSetLlmSampleAll}
+                                />
+                              </label>
+                              <label className="inline-check">
+                                <input
+                                  name="llmSampleAll"
+                                  type="checkbox"
+                                  checked={clusterSetLlmSampleAll}
+                                  onChange={(event) =>
+                                    setClusterSetLlmSampleAll(
+                                      event.target.checked,
+                                    )
+                                  }
+                                />
+                                Alle Beispiele je Cluster verwenden
+                              </label>
+                            </>
+                          )}
                         </>
                       )}
                       {clusterSetLlmProviderConfiguration?.provider ===
@@ -6026,8 +6242,8 @@ function App() {
                               )
                             }
                           />
-                          Ich bestätige, dass Beispieltexte für
-                          Cluster-Zusammenfassungen an OpenAI übertragen werden.
+                          Ich bestätige, dass Originaltexte für diese Aktion an
+                          OpenAI übertragen werden.
                         </label>
                       )}
                       <button
@@ -6038,6 +6254,8 @@ function App() {
                           clusterSetGenerationRequest !== null ||
                           (clusterSetLlmProviderId !== "" &&
                             clusterSetLlmProviderModels.length === 0) ||
+                          (isLlmClusterAlgorithm(clusterSetAlgorithm) &&
+                            clusterSetLlmProviderId === "") ||
                           (clusterSetLlmProviderConfiguration?.provider ===
                             "openai" &&
                             !clusterSetCloudUseConfirmed)
@@ -7008,15 +7226,16 @@ function App() {
 
                 {currentProject && projectTab === "settings" && (
                   <section
-                    className="panel-grid"
+                    className="panel-grid project-settings-grid"
                     aria-label="Projekteinstellungen"
                   >
                     <form
-                      key={`${currentProject.id}:${currentProject.name}:${currentProject.ticketUrlTemplate ?? ""}`}
+                      key={`${currentProject.id}:${currentProject.name}:${currentProject.ticketUrlTemplate ?? ""}:${currentProject.llmTaxonomyMaxSourceClusters}:${currentProject.llmTaxonomyMaxPromptCharacters}:${currentProject.llmTaxonomyMaxTotalKeywordTerms}`}
                       className="panel project-settings-form stack"
                       onSubmit={(event) =>
                         void updateProjectSettings(event, currentProject.id)
                       }
+                      noValidate
                       aria-label="Projekteinstellungen speichern"
                     >
                       <div>
@@ -7091,6 +7310,136 @@ function App() {
                           {projectSettingsFieldErrors.ticket_url_template}
                         </p>
                       )}
+                      <fieldset className="parameter-group">
+                        <legend>LLM-Taxonomie-Budgets</legend>
+                        <p className="hint">
+                          Diese Projektwerte werden beim Start eines neuen
+                          Cluster-Sets eingefroren. Höhere Werte benötigen mehr
+                          LLM-Kontext und lokalen Arbeitsspeicher.
+                        </p>
+                        <label>
+                          Maximale Quellcluster
+                          <input
+                            name="llm_taxonomy_max_source_clusters"
+                            type="number"
+                            inputMode="numeric"
+                            min={MIN_LLM_TAXONOMY_MAX_SOURCE_CLUSTERS}
+                            max={HARD_MAX_LLM_TAXONOMY_SOURCE_CLUSTERS}
+                            step="1"
+                            defaultValue={
+                              currentProject.llmTaxonomyMaxSourceClusters
+                            }
+                            aria-invalid={
+                              projectSettingsFieldErrors.llm_taxonomy_max_source_clusters !==
+                              undefined
+                            }
+                            aria-describedby={
+                              projectSettingsFieldErrors.llm_taxonomy_max_source_clusters !==
+                              undefined
+                                ? "taxonomy-source-clusters-help taxonomy-source-clusters-error"
+                                : "taxonomy-source-clusters-help"
+                            }
+                          />
+                        </label>
+                        <p id="taxonomy-source-clusters-help" className="hint">
+                          Erlaubt: 1 bis 500. Standard: 200 aktive, nicht
+                          fixierte Cluster.
+                        </p>
+                        {projectSettingsFieldErrors.llm_taxonomy_max_source_clusters !==
+                          undefined && (
+                          <p
+                            id="taxonomy-source-clusters-error"
+                            className="field-error"
+                            role="alert"
+                          >
+                            {
+                              projectSettingsFieldErrors.llm_taxonomy_max_source_clusters
+                            }
+                          </p>
+                        )}
+                        <label>
+                          Maximale Promptzeichen
+                          <input
+                            name="llm_taxonomy_max_prompt_characters"
+                            type="number"
+                            inputMode="numeric"
+                            min={MIN_LLM_TAXONOMY_MAX_PROMPT_CHARACTERS}
+                            max={HARD_MAX_LLM_TAXONOMY_PROMPT_CHARACTERS}
+                            step="1"
+                            defaultValue={
+                              currentProject.llmTaxonomyMaxPromptCharacters
+                            }
+                            aria-invalid={
+                              projectSettingsFieldErrors.llm_taxonomy_max_prompt_characters !==
+                              undefined
+                            }
+                            aria-describedby={
+                              projectSettingsFieldErrors.llm_taxonomy_max_prompt_characters !==
+                              undefined
+                                ? "taxonomy-prompt-characters-help taxonomy-prompt-characters-error"
+                                : "taxonomy-prompt-characters-help"
+                            }
+                          />
+                        </label>
+                        <p
+                          id="taxonomy-prompt-characters-help"
+                          className="hint"
+                        >
+                          Erlaubt: 10.000 bis 500.000 Zeichen. Standard: 80.000.
+                        </p>
+                        {projectSettingsFieldErrors.llm_taxonomy_max_prompt_characters !==
+                          undefined && (
+                          <p
+                            id="taxonomy-prompt-characters-error"
+                            className="field-error"
+                            role="alert"
+                          >
+                            {
+                              projectSettingsFieldErrors.llm_taxonomy_max_prompt_characters
+                            }
+                          </p>
+                        )}
+                        <label>
+                          Maximales Keyword-Vokabular
+                          <input
+                            name="llm_taxonomy_max_total_keyword_terms"
+                            type="number"
+                            inputMode="numeric"
+                            min={MIN_LLM_TAXONOMY_MAX_TOTAL_KEYWORD_TERMS}
+                            max={HARD_MAX_LLM_TAXONOMY_TOTAL_KEYWORD_TERMS}
+                            step="1"
+                            defaultValue={
+                              currentProject.llmTaxonomyMaxTotalKeywordTerms
+                            }
+                            aria-invalid={
+                              projectSettingsFieldErrors.llm_taxonomy_max_total_keyword_terms !==
+                              undefined
+                            }
+                            aria-describedby={
+                              projectSettingsFieldErrors.llm_taxonomy_max_total_keyword_terms !==
+                              undefined
+                                ? "taxonomy-keyword-terms-help taxonomy-keyword-terms-error"
+                                : "taxonomy-keyword-terms-help"
+                            }
+                          />
+                        </label>
+                        <p id="taxonomy-keyword-terms-help" className="hint">
+                          Erlaubt: 1.000 bis 1.000.000 unterschiedliche Terme.
+                          Standard: 250.000.
+                        </p>
+                        {projectSettingsFieldErrors.llm_taxonomy_max_total_keyword_terms !==
+                          undefined && (
+                          <p
+                            id="taxonomy-keyword-terms-error"
+                            className="field-error"
+                            role="alert"
+                          >
+                            {
+                              projectSettingsFieldErrors.llm_taxonomy_max_total_keyword_terms
+                            }
+                          </p>
+                        )}
+                      </fieldset>
                       <button
                         type="submit"
                         className="primary"

@@ -108,6 +108,7 @@ class ProjectSettingsConnection:
         normalized = " ".join(query.split())
         if normalized.startswith("UPDATE projects"):
             self.update_params = params
+            assert params is not None
             return FakeResult(
                 {
                     "id": PROJECT_ID,
@@ -116,6 +117,15 @@ class ProjectSettingsConnection:
                     "created_at": NOW,
                     "updated_at": NOW,
                     "ticket_url_template": "https://tickets.example.test/T-<ticket_id>",
+                    "llm_taxonomy_max_source_clusters": (
+                        200 if bool(params[3]) else params[4]
+                    ),
+                    "llm_taxonomy_max_prompt_characters": (
+                        80_000 if bool(params[5]) else params[6]
+                    ),
+                    "llm_taxonomy_max_total_keyword_terms": (
+                        250_000 if bool(params[7]) else params[8]
+                    ),
                 }
             )
         if normalized.startswith("INSERT INTO audit_events"):
@@ -144,10 +154,82 @@ def test_update_project_settings_persists_valid_ticket_url_template(
     assert project.ticket_url_template == "https://tickets.example.test/T-<ticket_id>"
     assert fake_connection.update_params == (
         "Alpha",
+        False,
         "https://tickets.example.test/T-<ticket_id>",
+        True,
+        None,
+        True,
+        None,
+        True,
+        None,
         ACTOR_ID,
         PROJECT_ID,
     )
+
+
+def test_update_project_settings_persists_valid_cluster_budgets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_connection = ProjectSettingsConnection()
+    monkeypatch.setattr(
+        project_service_module,
+        "open_database_connection",
+        lambda _: fake_connection,
+    )
+
+    project = ProjectService().update_project_settings(
+        PROJECT_ID,
+        name="Alpha",
+        ticket_url_template_unchanged=True,
+        llm_taxonomy_max_source_clusters=350,
+        llm_taxonomy_max_source_clusters_unchanged=False,
+        llm_taxonomy_max_prompt_characters=240_000,
+        llm_taxonomy_max_prompt_characters_unchanged=False,
+        llm_taxonomy_max_total_keyword_terms=750_000,
+        llm_taxonomy_max_total_keyword_terms_unchanged=False,
+        actor_user_id=ACTOR_ID,
+    )
+
+    assert project.llm_taxonomy_max_source_clusters == 350
+    assert project.llm_taxonomy_max_prompt_characters == 240_000
+    assert project.llm_taxonomy_max_total_keyword_terms == 750_000
+    assert fake_connection.update_params is not None
+    assert fake_connection.update_params[3:9] == (
+        False,
+        350,
+        False,
+        240_000,
+        False,
+        750_000,
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("llm_taxonomy_max_source_clusters", 0),
+        ("llm_taxonomy_max_source_clusters", 501),
+        ("llm_taxonomy_max_prompt_characters", 9_999),
+        ("llm_taxonomy_max_prompt_characters", 500_001),
+        ("llm_taxonomy_max_total_keyword_terms", 999),
+        ("llm_taxonomy_max_total_keyword_terms", 1_000_001),
+    ],
+)
+def test_update_project_settings_rejects_cluster_budget_outside_hard_caps(
+    field: str, value: int
+) -> None:
+    kwargs: dict[str, object] = {
+        "name": "Alpha",
+        f"{field}_unchanged": False,
+        field: value,
+        "actor_user_id": ACTOR_ID,
+    }
+
+    with pytest.raises(ProjectError) as exc_info:
+        ProjectService().update_project_settings(PROJECT_ID, **kwargs)  # type: ignore[arg-type]
+
+    assert exc_info.value.code == "VALIDATION_FAILED"
+    assert set(exc_info.value.field_errors) == {field}
 
 
 @pytest.mark.parametrize(

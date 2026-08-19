@@ -28,7 +28,38 @@ def test_migration_files_are_ordered() -> None:
         "0017_provider_instances_and_global_jobs.sql",
         "0018_provider_available_models.sql",
         "0019_project_ticket_url_template.sql",
+        "0020_cluster_keywords_and_fixed_status.sql",
+        "0021_project_cluster_budget_settings.sql",
     ]
+
+
+def test_cluster_keywords_and_fixed_status_migration_is_additive() -> None:
+    migration = resources.files("backend.db.migrations").joinpath(
+        "0020_cluster_keywords_and_fixed_status.sql"
+    )
+    sql = migration.read_text(encoding="utf-8")
+
+    assert "ADD COLUMN IF NOT EXISTS keyword_count integer NOT NULL DEFAULT 10" in sql
+    assert "ADD COLUMN IF NOT EXISTS keywords jsonb NOT NULL DEFAULT '[]'::jsonb" in sql
+    assert "keyword_count >= 1 AND keyword_count <= 50" in sql
+    assert "jsonb_typeof(keywords) = 'array'" in sql
+    assert "'outlier', 'fixed'" in sql
+
+
+def test_project_cluster_budget_settings_migration_is_additive_and_bounded() -> None:
+    migration = resources.files("backend.db.migrations").joinpath(
+        "0021_project_cluster_budget_settings.sql"
+    )
+    sql = migration.read_text(encoding="utf-8")
+
+    assert "llm_taxonomy_max_source_clusters integer" in sql
+    assert "NOT NULL DEFAULT 200" in sql
+    assert "llm_taxonomy_max_source_clusters >= 1" in sql
+    assert "llm_taxonomy_max_source_clusters <= 500" in sql
+    assert "llm_taxonomy_max_prompt_characters >= 10000" in sql
+    assert "llm_taxonomy_max_prompt_characters <= 500000" in sql
+    assert "llm_taxonomy_max_total_keyword_terms >= 1000" in sql
+    assert "llm_taxonomy_max_total_keyword_terms <= 1000000" in sql
 
 
 def test_foundation_migration_enables_pgvector() -> None:

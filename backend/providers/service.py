@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from http.client import HTTPConnection, HTTPSConnection, HTTPException
 import json
+import logging
 import math
 import os
 import re
@@ -25,6 +26,7 @@ from backend.providers.secrets import (
     encrypt_provider_secret,
 )
 
+LLM_DIAGNOSTIC_LOGGER = logging.getLogger("uvicorn.error.skm.llm")
 SUPPORTED_PROVIDERS = {"openai", "ollama"}
 MAX_MODELS = 200
 MAX_MODEL_LENGTH = 160
@@ -38,9 +40,12 @@ MAX_EMBEDDING_BATCH_CHARACTERS = 500_000
 MAX_EMBEDDING_RESPONSE_BYTES = 16 * 1024 * 1024
 MAX_EMBEDDING_DIMENSIONS = 8_192
 MAX_LLM_PROMPT_CHARACTERS = 80_000
-MAX_LLM_RESPONSE_BYTES = 1024 * 1024
-MAX_LLM_OUTPUT_CHARACTERS = 10_000
-LLM_SUMMARY_OUTPUT_TOKENS = 4096
+HARD_MAX_LLM_PROMPT_CHARACTERS = 500_000
+MAX_LLM_OUTPUT_TOKENS = 128_000
+MAX_LLM_RESPONSE_BYTES = 8 * 1024 * 1024
+MAX_LLM_OUTPUT_CHARACTERS = 50_000
+HARD_MAX_LLM_OUTPUT_CHARACTERS = 1_000_000
+LLM_SUMMARY_OUTPUT_TOKENS = 700
 LLM_SUMMARY_JSON_INSTRUCTIONS = (
     "You generate compact JSON for support-cluster summaries. Return exactly one "
     "JSON object. Do not include markdown, code fences, comments, prose before the "
@@ -139,6 +144,14 @@ def _provider(provider: str) -> str:
     if cleaned not in SUPPORTED_PROVIDERS:
         raise ProviderError("provider must be openai or ollama")
     return cleaned
+
+
+def _safe_diagnostic_correlation_id(value: object) -> str:
+    if value is None:
+        return "unavailable"
+    if not isinstance(value, UUID):
+        raise ProviderError("LLM diagnostic correlation is invalid")
+    return str(value)
 
 
 def _clean_model(value: str) -> str:
@@ -933,13 +946,59 @@ class ProviderService:
             _require_local_ollama_endpoint(config.endpoint_url)
         return config
 
-    def generate_text(self, provider_ref: UUID | str, model: str, prompt: str) -> str:
+    def generate_text(
+        self,
+        provider_ref: UUID | str,
+        model: str,
+        prompt: str,
+        *,
+        instructions: str = LLM_SUMMARY_JSON_INSTRUCTIONS,
+        response_schema: dict[str, object] | None = None,
+        schema_name: str = "cluster_summary",
+        max_output_tokens: int = LLM_SUMMARY_OUTPUT_TOKENS,
+        max_prompt_characters: int = MAX_LLM_PROMPT_CHARACTERS,
+        max_output_characters: int = MAX_LLM_OUTPUT_CHARACTERS,
+        diagnostic_correlation_id: UUID | None = None,
+    ) -> str:
         """Generate one bounded text response from an explicitly configured LLM."""
+        _safe_diagnostic_correlation_id(diagnostic_correlation_id)
         clean_model = _clean_model(model)
         if not isinstance(prompt, str) or not prompt.strip():
             raise ProviderError("LLM prompt must not be empty")
-        if len(prompt) > MAX_LLM_PROMPT_CHARACTERS:
+        if (
+            isinstance(max_prompt_characters, bool)
+            or not isinstance(max_prompt_characters, int)
+            or max_prompt_characters < 1
+            or max_prompt_characters > HARD_MAX_LLM_PROMPT_CHARACTERS
+        ):
+            raise ProviderError("LLM prompt budget is invalid")
+        if len(prompt) > max_prompt_characters:
             raise ProviderError("LLM prompt is too large")
+        if (
+            not isinstance(instructions, str)
+            or not instructions.strip()
+            or len(instructions) > 10_000
+        ):
+            raise ProviderError("LLM instructions are invalid")
+        if not isinstance(schema_name, str) or not re.fullmatch(
+            r"[a-z][a-z0-9_]{0,63}", schema_name
+        ):
+            raise ProviderError("LLM schema name is invalid")
+        if (
+            isinstance(max_output_tokens, bool)
+            or not isinstance(max_output_tokens, int)
+            or max_output_tokens < 1
+            or max_output_tokens > MAX_LLM_OUTPUT_TOKENS
+        ):
+            raise ProviderError("LLM output token budget is invalid")
+        if (
+            isinstance(max_output_characters, bool)
+            or not isinstance(max_output_characters, int)
+            or max_output_characters < 1
+            or max_output_characters > HARD_MAX_LLM_OUTPUT_CHARACTERS
+        ):
+            raise ProviderError("LLM output character budget is invalid")
+        effective_schema = response_schema or LLM_SUMMARY_JSON_SCHEMA
         config = self.ensure_text_generation_model(provider_ref, clean_model)
         headers = {
             "Accept": "application/json",
@@ -960,22 +1019,25 @@ class ProviderService:
                 path="/v1/responses",
                 body={
                     "model": clean_model,
-                    "instructions": LLM_SUMMARY_JSON_INSTRUCTIONS,
+                    "instructions": instructions,
                     "input": prompt,
-                    "max_output_tokens": LLM_SUMMARY_OUTPUT_TOKENS,
+                    "max_output_tokens": max_output_tokens,
                     "store": False,
                     "text": {
                         "format": {
                             "type": "json_schema",
-                            "name": "cluster_summary",
+                            "name": schema_name,
                             "strict": True,
-                            "schema": LLM_SUMMARY_JSON_SCHEMA,
+                            "schema": effective_schema,
                         }
                     },
                 },
                 headers=headers,
             )
-            text = self._openai_response_text(payload)
+            text = self._openai_response_text(
+                payload,
+                diagnostic_correlation_id=diagnostic_correlation_id,
+            )
         else:
             if config.endpoint_url is None:
                 raise ProviderError("ollama endpoint_url is required")
@@ -989,17 +1051,20 @@ class ProviderService:
                 path=path,
                 body={
                     "model": clean_model,
-                    "system": LLM_SUMMARY_JSON_INSTRUCTIONS,
+                    "system": instructions,
                     "prompt": prompt,
-                    "format": "json",
+                    "format": response_schema or "json",
                     "stream": False,
                     "keep_alive": "5m",
-                    "options": {"temperature": 0, "num_predict": 700},
+                    "options": {
+                        "temperature": 0,
+                        "num_predict": max_output_tokens,
+                    },
                 },
                 headers=headers,
             )
             text = self._ollama_generation_text(payload)
-        if len(text) > MAX_LLM_OUTPUT_CHARACTERS:
+        if len(text) > max_output_characters:
             raise ProviderError("LLM response is too large")
         return text
 
@@ -1308,9 +1373,44 @@ class ProviderService:
         finally:
             connection.close()
 
-    def _openai_response_text(self, payload: Any) -> str:
+    def _openai_response_text(
+        self,
+        payload: Any,
+        *,
+        diagnostic_correlation_id: UUID | None = None,
+    ) -> str:
         if not isinstance(payload, dict):
             raise ProviderError("LLM provider returned an invalid response")
+        safe_correlation_id = _safe_diagnostic_correlation_id(diagnostic_correlation_id)
+        if payload.get("status") == "incomplete":
+            incomplete_details = payload.get("incomplete_details")
+            raw_reason = (
+                incomplete_details.get("reason")
+                if isinstance(incomplete_details, dict)
+                else None
+            )
+            safe_reason = (
+                raw_reason.strip()
+                if isinstance(raw_reason, str)
+                and raw_reason.strip() in {"max_output_tokens", "content_filter"}
+                else "unspecified"
+            )
+            output = payload.get("output")
+            output_text = payload.get("output_text")
+            LLM_DIAGNOSTIC_LOGGER.warning(
+                "llm_provider_response_incomplete correlation_id=%s "
+                "provider=openai reason=%s output_text_characters=%d "
+                "output_items=%d",
+                safe_correlation_id,
+                safe_reason,
+                len(output_text) if isinstance(output_text, str) else 0,
+                len(output) if isinstance(output, list) else 0,
+            )
+            if safe_reason != "unspecified":
+                raise ProviderError(
+                    f"LLM provider returned an incomplete response ({safe_reason})"
+                )
+            raise ProviderError("LLM provider returned an incomplete response")
         output_text = payload.get("output_text")
         if isinstance(output_text, str) and output_text.strip():
             return output_text.strip()
@@ -1331,18 +1431,6 @@ class ProviderService:
                         text_parts.append(text.strip())
         if text_parts:
             return "\n".join(text_parts)
-        if payload.get("status") == "incomplete":
-            incomplete_details = payload.get("incomplete_details")
-            reason = (
-                incomplete_details.get("reason")
-                if isinstance(incomplete_details, dict)
-                else None
-            )
-            if isinstance(reason, str) and reason.strip():
-                raise ProviderError(
-                    f"LLM provider returned an incomplete response ({reason.strip()})"
-                )
-            raise ProviderError("LLM provider returned an incomplete response")
         raise ProviderError("LLM provider returned an empty response")
 
     def _ollama_generation_text(self, payload: Any) -> str:

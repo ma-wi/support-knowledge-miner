@@ -17,13 +17,15 @@ The MVP is explicitly local-only. Do not connect it to production systems, produ
 - Start bounded indexing runs that split long `message` and `answer` texts into
   provider-safe chunks, persist selected-provider embeddings per text variant, and
   expose observable status, progress, metadata, cancellation and safe diagnostics.
-- Generate saved Cluster-Sets with HDBSCAN or bounded Agglomerative clustering
-  from persisted vectors, including vector basis, lineage, outlier, membership,
-  parameter, model, optional LLM summary and source traceability.
+- Generate saved Cluster-Sets with HDBSCAN, bounded Agglomerative clustering,
+  LLM taxonomy consolidation or LLM taxonomy assignment, including characteristic
+  keywords, vector basis, lineage, outlier, membership, optional LLM summary and
+  source traceability. LLM assignment processes the complete selected snapshot in
+  sequential batches without an additional total-pair limit.
 - Review Cluster-Sets in a table-first Explorer with search/filter, category
   grouping, deterministic tri-state sorting, source dialog with optional safe
-  ticket links, exclude/include controls, mismatch hints and refinement from
-  included rows.
+  ticket links, exclude/include and direct fix/unfix controls, mismatch hints and
+  refinement from included rows; fixed clusters are carried unchanged.
 - Export the current filtered Explorer table state as CSV or JSON with persisted
   export metadata; raw source-dialog texts are not implicitly exported.
 - Use the top-right app menu and project tabs to reach sign-in, global settings,
@@ -206,6 +208,26 @@ Backend `auto`, optional PCA reduction with about 10 dimensions,
 label `selection_epsilon` around 0.1. If HDBSCAN still creates too many clusters,
 double `min_cluster_size` first and then try `selection_epsilon` around 0.2.
 
+For a completed Parent set, `LLM: Taxonomie konsolidieren` merges overlapping
+cluster summaries conservatively while retaining one coarse Parent category and
+every distinct support intent. `LLM: kompakt zuordnen` assigns
+each active support pair against the Parent taxonomy and sends unmatched pairs to
+one outlier cluster. Both modes require an enabled LLM model; OpenAI additionally
+requires explicit confirmation. Fixed clusters are copied unchanged and excluded
+from either algorithm.
+
+The project tab `Einstellungen` controls the soft limits used by newly created LLM
+taxonomy jobs: source clusters (default 200, maximum 500), prompt characters
+(default 80,000, maximum 500,000), and total keyword vocabulary (default 250,000,
+maximum 1,000,000). A Cluster-Set snapshots these values when it is created, so a
+later settings change applies only to new jobs. The general 5 GiB vector-clustering
+working-set limit remains fixed.
+
+During the single non-streaming LLM-taxonomy provider call, the saved Cluster-Set
+progress advances through a bounded time estimate from 60 % to at most 74 % so the
+job remains visibly active. Persistence begins at 75 % and only completion reaches
+100 %; this intermediate value is not an exact provider token count.
+
 In another terminal, verify the backend with:
 
 ```bash
@@ -244,6 +266,22 @@ into one chunk retain the provider vector unchanged. Run metadata records the so
 counts without storing source text in diagnostics. Provider failures expose a safe,
 actionable reason such as a context-window violation without copying provider
 response bodies or message text.
+LLM taxonomy and assignment calls log only local correlation, batch, length, budget
+and aggregate validation-count metadata. They never log the prompt, summaries, FAQ
+fields, support content, provider response body or complete ID lists.
+OpenAI GPT-5 taxonomy consolidation and taxonomy-assignment requests can use up to
+128,000 output tokens so reasoning tokens cannot exhaust the former small assignment
+allowance before structured JSON is returned. Other taxonomy models retain 16,000
+tokens and other assignment models retain 4,000. All taxonomy calls allow up to
+1,000,000 response characters. A formally valid response is normalized into a lossless exact
+partition: duplicate or unknown source IDs are ignored and missing sources are
+carried forward from their existing summaries. Provider responses marked as
+incomplete are rejected before partial JSON can be interpreted or stored. Taxonomy
+consolidation derives a one-level coarse category vocabulary from the parent set,
+prefers an existing general category over variants such as `Akkureparatur`, and
+allows no invented or nested categories. It merges titles only when customer intent
+and support process are materially the same; uncertain and rare distinct intents
+remain separate.
 The local backend runs indexing and Cluster-Set work through bounded background
 queues. Additional starts are admitted while earlier jobs are queued/running as
 long as the local worker queues accept them; cancellation remains available per
